@@ -860,6 +860,8 @@ class PlayerViewModel: ObservableObject {
                 ProfileSettings.current.string(forKey: SettingsKey.assOverrideMode)
             ),
             isAnime: isAnime,
+            isLiveStream: isLiveStream,
+            isSports: activeMeta?.isSports ?? false,
             autoplay: true,
             playbackRate: playbackSpeed.rawValue,
             aspectMode: aspectMode,

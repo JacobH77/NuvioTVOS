@@ -339,6 +339,7 @@ final class TmdbSceneCastProvider: SceneCastProviding {
             return await fetchPersonDetail(personId: tmdbId)
         }
         let cleanName = person.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanName.isEmpty, cleanName != "cast" else { return nil }
         if let cached = Self.nameCache.object(forKey: cleanName as NSString) {
             return cached.detail
         }

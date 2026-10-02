@@ -194,6 +194,8 @@ struct DetailsScreen: View {
                         onOpenProduction?(company)
                     },
                     onOpenPerson: { person in
+                        let clean = person.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        guard !clean.isEmpty && clean != "cast" else { return }
                         onOpenPerson?(person)
                     },
                     onCommentSelect: { comment in
@@ -2809,10 +2811,13 @@ struct TvDetailsContent: View {
                                 .disabled(!isDetailsFocusReachable(.episodes))
                             }
 
+                            if hasCastOrTrailer, let meta = uiState.meta {
                                 TvDetailsCastAndTrailer(
                                     meta: meta,
                                     people: uiState.people,
                                     onPersonClick: { person in
+                                        let clean = person.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                        guard !clean.isEmpty && clean != "cast" else { return }
                                         stopBackgroundTrailer(manual: false)
                                         onOpenPerson?(person)
                                     },
@@ -2845,6 +2850,7 @@ struct TvDetailsContent: View {
                                     restoreEpisodeKey != nil
                                         || !isDetailsFocusReachable(.cast)
                                 )
+                            }
 
                                 if !uiState.moreLikeThis.isEmpty {
                                     TvDetailsRelatedRow(
@@ -3130,6 +3136,7 @@ struct TvDetailsContent: View {
     /// Episodes enter the next section through its heading, matching the
     /// Settings-style focus graph instead of jumping over it to a person card.
     private func focusCastHeaderFromEpisodes() {
+        guard hasCastOrTrailer else { return }
         detailsFocusMoveGeneration &+= 1
         let generation = detailsFocusMoveGeneration
         pendingPlayFocusGeneration = nil
@@ -3141,6 +3148,14 @@ struct TvDetailsContent: View {
         }
     }
 
+    private var hasCastOrTrailer: Bool {
+        guard let meta = uiState.meta else { return false }
+        let hasPeople = !uiState.people.isEmpty
+            || !(meta.cast ?? []).isEmpty
+            || !((meta.director ?? []) + (meta.writer ?? [])).isEmpty
+        return hasPeople
+    }
+
     /// Settings has one destination pane; Details has a vertical chain of
     /// sections. Keep only the current section and its immediate neighbors in
     /// the focus graph so tvOS cannot skip Cast and land two rows away.
@@ -3149,7 +3164,9 @@ struct TvDetailsContent: View {
         if let meta = uiState.meta, !(meta.videos ?? []).isEmpty {
             order.append(.episodes)
         }
-        order.append(.cast)
+        if hasCastOrTrailer {
+            order.append(.cast)
+        }
         if !uiState.moreLikeThis.isEmpty { order.append(.related) }
         if uiState.companies.contains(where: { $0.kind == .network }) {
             order.append(.network)
@@ -3958,48 +3975,51 @@ private struct TvDetailsCastAndTrailer: View {
     @State private var focusedPersonIndex = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            HStack(spacing: 18) {
-                TvDetailsSectionButton(
-                    title: L10n.string("details_creator_and_cast", fallback: "Creator and Cast"),
-                    isSelected: false,
-                    focus: headerFocus,
-                    tag: .creatorAndCast,
-                    onFocus: onFocus
-                ) {}
+        let items = displayPeople
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 28) {
+                HStack(spacing: 18) {
+                    TvDetailsSectionButton(
+                        title: L10n.string("details_creator_and_cast", fallback: "Creator and Cast"),
+                        isSelected: false,
+                        focus: headerFocus,
+                        tag: .creatorAndCast,
+                        onFocus: onFocus
+                    ) {}
 
-                Text("|")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundColor(.white.opacity(0.38))
+                    Text("|")
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundColor(.white.opacity(0.38))
 
-                TvDetailsSectionButton(
-                    title: L10n.string("details_trailer", fallback: "Trailer"),
-                    isSelected: false,
-                    focus: headerFocus,
-                    tag: .trailer,
-                    onFocus: onFocus,
-                    action: onTrailerClick
-                )
-                    .disabled(entryLocked)
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 58) {
-                    ForEach(Array(displayPeople.enumerated()), id: \.element.id) { index, person in
-                        TvDetailsPersonCard(
-                            person: person,
-                            onSelect: { onPersonClick(person) },
-                            onFocus: {
-                                focusedPersonIndex = index
-                                onFocus()
-                            }
-                        )
+                    TvDetailsSectionButton(
+                        title: L10n.string("details_trailer", fallback: "Trailer"),
+                        isSelected: false,
+                        focus: headerFocus,
+                        tag: .trailer,
+                        onFocus: onFocus,
+                        action: onTrailerClick
+                    )
                         .disabled(entryLocked)
-                    }
                 }
-                .padding(.trailing, 80)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 58) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, person in
+                            TvDetailsPersonCard(
+                                person: person,
+                                onSelect: { onPersonClick(person) },
+                                onFocus: {
+                                    focusedPersonIndex = index
+                                    onFocus()
+                                }
+                            )
+                            .disabled(entryLocked)
+                        }
+                    }
+                    .padding(.trailing, 80)
+                }
+                .scrollClipDisabledIfAvailable()
             }
-            .scrollClipDisabledIfAvailable()
         }
     }
 
@@ -4022,7 +4042,7 @@ private struct TvDetailsCastAndTrailer: View {
             }
         }
 
-        return [TmdbPersonMetadata(name: L10n.string("details_cast", fallback: "Cast"), role: nil, profileURL: nil, tmdbId: nil)]
+        return []
     }
 }
 

@@ -125,6 +125,10 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
         Self.isSeriesType(type) || videos?.isEmpty == false
     }
 
+    var isMovie: Bool {
+        !isSeries
+    }
+
     /// Whether this item represents anime based on content type, ID prefix, genres, or country/language metadata.
     var isAnime: Bool {
         let typeLower = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -148,6 +152,23 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
                     if let language = language?.lowercased(), language.contains("ja") || language.contains("japanese") {
                         return true
                     }
+                }
+            }
+        }
+        return false
+    }
+
+    /// Whether this item represents sports content based on type, id, or genre tags.
+    var isSports: Bool {
+        let typeLower = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if typeLower == "sports" || typeLower == "sport" || typeLower == "tv" && id.lowercased().contains("sport") {
+            return true
+        }
+        if let genres {
+            for g in genres {
+                let gl = g.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if gl.contains("sport") {
+                    return true
                 }
             }
         }
@@ -548,6 +569,46 @@ struct NuvioVideo: Identifiable, Codable, Hashable {
     let overview: String?
     let released: String?
     let rating: String?
+
+    init(
+        id: String,
+        title: String,
+        season: Int = 0,
+        episode: Int = 0,
+        thumbnail: String? = nil,
+        overview: String? = nil,
+        released: String? = nil,
+        rating: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.season = season
+        self.episode = episode
+        self.thumbnail = thumbnail
+        self.overview = overview
+        self.released = released
+        self.rating = rating
+    }
+
+    init(
+        id: String,
+        title: String,
+        released: String?,
+        season: Int,
+        episode: Int,
+        thumbnail: String? = nil,
+        overview: String? = nil,
+        rating: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.season = season
+        self.episode = episode
+        self.thumbnail = thumbnail
+        self.overview = overview
+        self.released = released
+        self.rating = rating
+    }
 }
 
 extension NuvioMeta {
@@ -4501,7 +4562,7 @@ struct WatchedStoreItem: Identifiable, Codable, Equatable {
     /// Visible when the active source confirmed it, or when nothing has attributed
     /// it yet — an unattributed row is not evidence that the source *lacks* it.
     func isVisible(under source: TraktWatchProgressSource) -> Bool {
-        sources.isEmpty || sources.contains(source.rawValue)
+        sources.isEmpty || sources.contains { $0.caseInsensitiveCompare(source.rawValue) == .orderedSame }
     }
 
     func adding(source: TraktWatchProgressSource) -> WatchedStoreItem {
@@ -6652,7 +6713,8 @@ enum WatchedStore {
                 meta: $0.meta.persistenceSnapshot,
                 watchedAt: $0.watchedAt,
                 season: $0.season,
-                episode: $0.episode
+                episode: $0.episode,
+                sources: $0.sources
             )
         }
         _ = persist(sanitized.sorted { $0.watchedAt > $1.watchedAt })
