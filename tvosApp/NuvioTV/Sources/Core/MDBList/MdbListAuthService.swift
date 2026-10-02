@@ -265,6 +265,7 @@ enum MdbListAuthStore {
         static let expiresAtMillis = "nuvio.tv.mdblist.auth.expiresAtMillis"
         static let pollInterval = "nuvio.tv.mdblist.auth.pollInterval"
         static let deviceCode = "nuvio.tv.mdblist.auth.deviceCode"
+        static let cachedStats = "nuvio.tv.mdblist.auth.cachedStats"
     }
 
     static func state(
@@ -284,6 +285,19 @@ enum MdbListAuthStore {
                 ? nil : defaults.integer(forKey: Key.pollInterval),
             hasOAuthTokens: tokenStorage.tokens(for: profileScope) != nil
         )
+    }
+
+    static func cachedStats(in defaults: UserDefaults = ProfileSettings.current) -> MdbListWatchStats? {
+        guard let data = defaults.data(forKey: Key.cachedStats) else { return nil }
+        return try? JSONDecoder().decode(MdbListWatchStats.self, from: data)
+    }
+
+    static func saveCachedStats(
+        _ stats: MdbListWatchStats,
+        store defaults: UserDefaults = ProfileSettings.current
+    ) {
+        guard let data = try? JSONEncoder().encode(stats) else { return }
+        defaults.set(data, forKey: Key.cachedStats)
     }
 
     static func saveDeviceFlow(
@@ -358,7 +372,7 @@ enum MdbListAuthStore {
         tokenStorage.remove(for: profileScope)
         [
             Key.username, Key.displayName, Key.accountID, Key.deviceCode, Key.userCode,
-            Key.verificationURL, Key.expiresAtMillis, Key.pollInterval
+            Key.verificationURL, Key.expiresAtMillis, Key.pollInterval, Key.cachedStats
         ].forEach { defaults.removeObject(forKey: $0) }
         NotificationCenter.default.post(name: changedNotification, object: nil)
         RemoteTrackingState.normalizeWatchProgressSource(in: defaults)
@@ -381,11 +395,73 @@ struct MdbListUser: Equatable {
     let displayName: String?
 }
 
-struct MdbListWatchStats: Equatable {
+struct MdbListWatchStats: Codable, Equatable {
     let moviesWatched: Int?
     let showsWatched: Int?
     let episodesWatched: Int?
     let totalWatchedHours: Int?
+
+    init(
+        moviesWatched: Int? = nil,
+        showsWatched: Int? = nil,
+        episodesWatched: Int? = nil,
+        totalWatchedHours: Int? = nil
+    ) {
+        self.moviesWatched = moviesWatched
+        self.showsWatched = showsWatched
+        self.episodesWatched = episodesWatched
+        self.totalWatchedHours = totalWatchedHours
+    }
+
+    init(watchedItems: [WatchedStoreItem]) {
+        var movies = Set<String>()
+        var shows = Set<String>()
+        var episodeCount = 0
+        var totalMinutes = 0
+
+        for item in watchedItems {
+            let meta = item.meta
+            let minutes = Self.parseRuntimeMinutes(meta.runtime) ?? (meta.isSeries ? 45 : 100)
+            totalMinutes += minutes
+
+            if meta.isSeries {
+                let showKey = meta.imdbId ?? meta.id
+                shows.insert(showKey)
+                if item.season != nil || item.episode != nil {
+                    episodeCount += 1
+                }
+            } else {
+                let movieKey = meta.imdbId ?? meta.id
+                movies.insert(movieKey)
+            }
+        }
+
+        self.moviesWatched = movies.count
+        self.showsWatched = shows.count
+        self.episodesWatched = episodeCount
+        self.totalWatchedHours = totalMinutes / 60
+    }
+
+    func merging(fallback: MdbListWatchStats) -> MdbListWatchStats {
+        MdbListWatchStats(
+            moviesWatched: moviesWatched ?? fallback.moviesWatched,
+            showsWatched: showsWatched ?? fallback.showsWatched,
+            episodesWatched: episodesWatched ?? fallback.episodesWatched,
+            totalWatchedHours: totalWatchedHours ?? fallback.totalWatchedHours
+        )
+    }
+
+    private static func parseRuntimeMinutes(_ runtime: String?) -> Int? {
+        guard let runtime else { return nil }
+        let numbers = runtime.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+        guard let first = numbers.first, let value = Int(first), value > 0 else { return nil }
+        if runtime.lowercased().contains("hr") || runtime.lowercased().contains("hour") {
+            let hours = value
+            let remainder = numbers.count > 1 ? (Int(numbers[1]) ?? 0) : 0
+            return (hours * 60) + remainder
+        }
+        return value
+    }
 }
 
 enum MdbListDevicePollResult: Equatable {
@@ -648,13 +724,32 @@ final class MdbListAuthService {
     }
 
     func fetchUserStats() async -> MdbListWatchStats? {
+        var remoteStats: MdbListWatchStats?
         do {
             let response = try await authorizedRequest(path: "/user/stats", method: .get)
-            guard (200..<300).contains(response.statusCode) else { return nil }
-            return MdbListWatchStats(data: response.data)
+            if (200..<300).contains(response.statusCode) {
+                remoteStats = MdbListWatchStats(data: response.data)
+            }
         } catch {
-            return nil
+            // endpoint may not exist or request failed
         }
+
+        let localItems = WatchedStore.items().filter {
+            $0.isVisible(under: .mdblist)
+        }
+        let localFallback = localItems.isEmpty ? nil : MdbListWatchStats(watchedItems: localItems)
+
+        let resolved: MdbListWatchStats? = {
+            if let remoteStats, let localFallback {
+                return remoteStats.merging(fallback: localFallback)
+            }
+            return remoteStats ?? localFallback
+        }()
+
+        if let resolved {
+            MdbListAuthStore.saveCachedStats(resolved, store: store)
+        }
+        return resolved
     }
 
     func authorizedRequest(
@@ -1026,6 +1121,7 @@ final class MdbListSettingsViewModel: ObservableObject {
         expiresAtMillis = hasActiveDeviceFlow ? state.expiresAtMillis : nil
         pollInterval = state.pollInterval ?? 5
         mode = state.hasOAuthTokens ? .connected : (hasActiveDeviceFlow ? .awaitingApproval : .disconnected)
+        connectedStats = mode == .connected ? MdbListAuthStore.cachedStats(in: store) : nil
         if mode == .awaitingApproval {
             startPolling(generation: authorizationGeneration)
         } else {

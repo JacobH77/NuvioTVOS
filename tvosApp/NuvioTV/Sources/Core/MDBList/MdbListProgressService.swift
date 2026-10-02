@@ -147,7 +147,46 @@ enum MdbListProgressService {
                 }
                 return result.sorted { $0.0 < $1.0 }
             }
-            return indexed.map(\.1)
+            var results = indexed.map(\.1)
+            let playbackMetas = results.map(\.meta)
+
+            if results.count < maxContinueWatchingItems {
+                let watchedItems = WatchedStore.items().filter {
+                    $0.isVisible(under: .mdblist)
+                }
+                let upNextSeeds = nextUpSeeds(
+                    from: watchedItems,
+                    preferFurthestEpisode: UpNextEpisodeSelectionPolicy.prefersFurthestEpisode
+                )
+                let candidateSeeds = upNextSeeds.filter { seed in
+                    !playbackMetas.contains(where: {
+                        WatchedStore.sameContent($0, seed.meta)
+                    })
+                }
+                let needed = maxContinueWatchingItems - results.count
+                let seedsToInspect = Array(candidateSeeds.prefix(min(needed * 2, 24)))
+
+                let upNextRows = await withTaskGroup(of: (Int, ContinueWatchingItem?).self) { group in
+                    for (index, seed) in seedsToInspect.enumerated() {
+                        group.addTask { @MainActor in
+                            let item = await makeUpNextItem(from: seed, repository: repository)
+                            return (index, item)
+                        }
+                    }
+                    var taskResults: [(Int, ContinueWatchingItem)] = []
+                    for await (index, item) in group {
+                        if let item { taskResults.append((index, item)) }
+                    }
+                    return taskResults.sorted { $0.0 < $1.0 }.map(\.1)
+                }
+
+                for item in upNextRows {
+                    guard results.count < maxContinueWatchingItems else { break }
+                    results.append(item)
+                }
+            }
+
+            return results
         } catch {
             return nil
         }
@@ -227,40 +266,76 @@ enum MdbListProgressService {
         )
         let syncStartedAt = Date()
         do {
-            var query = [URLQueryItem(name: "limit", value: "1000")]
             var remoteItems: [WatchedStoreItem] = []
-            var visitedCursors = Set<String>()
-            var completed = false
+            let mediaTypes = ["movie", "show", "episode", "season"]
 
-            for _ in 0..<1_000 {
-                let response = try await service.authorizedRequest(
-                    path: "/sync/watched",
-                    method: .get,
-                    queryItems: query
-                )
-                guard (200..<300).contains(response.statusCode),
-                      let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
-                    return false
-                }
-                guard ["movies", "shows", "seasons", "episodes"].contains(where: object.keys.contains) else {
-                    return false
-                }
-                remoteItems.append(contentsOf: watchedItems(from: object))
-
-                guard let pagination = object["pagination"] as? [String: Any],
-                      let cursor = string(pagination["next_cursor"]),
-                      !cursor.isEmpty else {
-                    completed = true
-                    break
-                }
-                guard visitedCursors.insert(cursor).inserted else { return false }
-                query = [
+            for mediaType in mediaTypes {
+                var query = [
                     URLQueryItem(name: "limit", value: "1000"),
-                    URLQueryItem(name: "cursor", value: cursor)
+                    URLQueryItem(name: "mediatype", value: mediaType)
                 ]
+                var visitedCursors = Set<String>()
+
+                for _ in 0..<1_000 {
+                    let response = try await service.authorizedRequest(
+                        path: "/sync/watched",
+                        method: .get,
+                        queryItems: query
+                    )
+                    guard (200..<300).contains(response.statusCode) else {
+                        break
+                    }
+                    guard let json = try? JSONSerialization.jsonObject(with: response.data) else {
+                        break
+                    }
+                    let items = watchedItems(from: json)
+                    remoteItems.append(contentsOf: items)
+
+                    var nextCursor: String?
+                    if let object = json as? [String: Any],
+                       let pagination = object["pagination"] as? [String: Any] {
+                        nextCursor = string(pagination["next_cursor"])
+                    }
+                    guard let cursor = nextCursor, !cursor.isEmpty else {
+                        break
+                    }
+                    guard visitedCursors.insert(cursor).inserted else { break }
+                    query = [
+                        URLQueryItem(name: "limit", value: "1000"),
+                        URLQueryItem(name: "mediatype", value: mediaType),
+                        URLQueryItem(name: "cursor", value: cursor)
+                    ]
+                }
             }
 
-            guard completed else { return false }
+            if remoteItems.isEmpty {
+                var query = [URLQueryItem(name: "limit", value: "1000")]
+                var visitedCursors = Set<String>()
+                for _ in 0..<1_000 {
+                    let response = try await service.authorizedRequest(
+                        path: "/sync/watched",
+                        method: .get,
+                        queryItems: query
+                    )
+                    guard (200..<300).contains(response.statusCode),
+                          let json = try? JSONSerialization.jsonObject(with: response.data) else {
+                        break
+                    }
+                    remoteItems.append(contentsOf: watchedItems(from: json))
+                    var nextCursor: String?
+                    if let object = json as? [String: Any],
+                       let pagination = object["pagination"] as? [String: Any] {
+                        nextCursor = string(pagination["next_cursor"])
+                    }
+                    guard let cursor = nextCursor, !cursor.isEmpty, visitedCursors.insert(cursor).inserted else {
+                        break
+                    }
+                    query = [
+                        URLQueryItem(name: "limit", value: "1000"),
+                        URLQueryItem(name: "cursor", value: cursor)
+                    ]
+                }
+            }
 
             // The global watch stores follow the active profile. Do not apply
             // a response that started for one profile after the user switched
@@ -271,7 +346,7 @@ enum MdbListProgressService {
             }
 
             let previous = previousWatchedSnapshots[scope]
-                ?? WatchedStore.items().filter { $0.sources.contains(TraktWatchProgressSource.mdblist.rawValue) }
+                ?? WatchedStore.items().filter { $0.isVisible(under: .mdblist) }
             let merged = WatchedStore.mergedByIdentity(remoteItems)
             guard WatchedStore.reconcileMdbListSnapshot(
                 merged,
@@ -605,9 +680,140 @@ enum MdbListProgressService {
         type == "movie" ? 120 * 60 : 45 * 60
     }
 
+    // MARK: Up Next generation
+
+    private struct UpNextSeed {
+        let meta: NuvioMeta
+        let season: Int
+        let episode: Int
+        let watchedAt: Date
+    }
+
+    private static func nextUpSeeds(
+        from items: [WatchedStoreItem],
+        preferFurthestEpisode: Bool
+    ) -> [UpNextSeed] {
+        var selectedByContentID: [String: UpNextSeed] = [:]
+
+        for item in items {
+            guard item.meta.isSeries,
+                  let season = item.season,
+                  let episode = item.episode,
+                  season > 0,
+                  episode > 0 else { continue }
+
+            let key = item.meta.imdbId?.lowercased()
+                ?? item.meta.type.lowercased() + ":" + item.meta.id.lowercased()
+            let candidate = UpNextSeed(
+                meta: item.meta,
+                season: season,
+                episode: episode,
+                watchedAt: item.watchedAt
+            )
+            guard let current = selectedByContentID[key] else {
+                selectedByContentID[key] = candidate
+                continue
+            }
+            if UpNextEpisodeSelectionPolicy.prefers(
+                candidateSeason: season,
+                candidateEpisode: episode,
+                candidateWatchedAt: item.watchedAt,
+                over: current.season,
+                currentEpisode: current.episode,
+                currentWatchedAt: current.watchedAt,
+                preferFurthestEpisode: preferFurthestEpisode
+            ) {
+                selectedByContentID[key] = candidate
+            }
+        }
+
+        return selectedByContentID.values.sorted { $0.watchedAt > $1.watchedAt }
+    }
+
+    private static func makeUpNextItem(
+        from seed: UpNextSeed,
+        repository: CatalogRepository
+    ) async -> ContinueWatchingItem? {
+        var meta = (try? await repository.getMetadata(
+            id: seed.meta.id,
+            type: "series"
+        )) ?? seed.meta
+
+        var next = nextEpisode(
+            after: (season: seed.season, episode: seed.episode),
+            in: meta
+        )
+        if next == nil, let refreshed = try? await repository.refreshMetadata(
+            id: seed.meta.id,
+            type: "series"
+        ) {
+            meta = refreshed
+            next = nextEpisode(
+                after: (season: seed.season, episode: seed.episode),
+                in: meta
+            )
+        }
+        guard let next, EpisodeReleasePolicy.shouldSurfaceNextEpisode(
+            watchedSeason: seed.season,
+            candidateSeason: next.season,
+            released: next.released
+        ) else {
+            return nil
+        }
+
+        let enriched = await EpisodeMetadataEnrichment.fetch(
+            meta: meta,
+            season: next.season,
+            episode: next.episode
+        )
+        let duration = max(runtimeSeconds(for: meta) ?? 45 * 60, 120)
+        return ContinueWatchingItem(
+            meta: meta,
+            streamUrl: "",
+            position: 1,
+            duration: duration,
+            lastWatchedAt: seed.watchedAt,
+            season: next.season,
+            episode: next.episode,
+            released: enriched?.released ?? next.released,
+            episodeTitleOverride: enriched?.title ?? next.title,
+            episodeOverviewOverride: enriched?.overview ?? next.overview,
+            episodeThumbnailOverride: enriched?.thumbnail ?? next.thumbnail,
+            isUpNext: true,
+            upNextSeedSeason: seed.season
+        )
+    }
+
+    private static func nextEpisode(
+        after current: (season: Int, episode: Int),
+        in meta: NuvioMeta
+    ) -> NuvioVideo? {
+        let episodes = (meta.videos ?? [])
+            .filter { $0.season > 0 }
+            .sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
+        guard let index = episodes.firstIndex(where: {
+            $0.season == current.season && $0.episode == current.episode
+        }) else { return nil }
+        let nextIndex = episodes.index(after: index)
+        return episodes.indices.contains(nextIndex) ? episodes[nextIndex] : nil
+    }
+
     // MARK: Watched decoding
 
-    private static func watchedItems(from object: [String: Any]) -> [WatchedStoreItem] {
+    private static func watchedItems(from json: Any) -> [WatchedStoreItem] {
+        if let object = json as? [String: Any] {
+            var items = watchedItems(fromObject: object)
+            if let list = object["items"] as? [[String: Any]] ?? object["data"] as? [[String: Any]] ?? object["results"] as? [[String: Any]] {
+                items.append(contentsOf: watchedItems(fromRows: list))
+            }
+            return items
+        } else if let rows = json as? [[String: Any]] {
+            return watchedItems(fromRows: rows)
+        }
+        return []
+    }
+
+    private static func watchedItems(fromObject object: [String: Any]) -> [WatchedStoreItem] {
         var result: [WatchedStoreItem] = []
 
         for row in array(object["movies"]) {
@@ -707,6 +913,119 @@ enum MdbListProgressService {
             )
         }
 
+        return result
+    }
+
+    private static func watchedItems(fromRows rows: [[String: Any]]) -> [WatchedStoreItem] {
+        var result: [WatchedStoreItem] = []
+        for row in rows {
+            let rawType = string(row["type"] ?? row["mediatype"])?.lowercased()
+            let isMovie = rawType == "movie" || row["movie"] != nil
+            let isEpisode = rawType == "episode" || row["episode"] != nil
+            let isSeason = rawType == "season" || (row["season"] != nil && !isEpisode && !isMovie)
+            let isShow = rawType == "show" || rawType == "series" || row["show"] != nil
+
+            if isMovie {
+                let target = dictionary(row["movie"]) ?? row
+                if let media = mediaPayload(target), let contentID = media.ids.contentID {
+                    result.append(
+                        WatchedStoreItem(
+                            meta: media.meta(contentID: contentID, type: "movie"),
+                            watchedAt: watchedDate(row: row, target: target) ?? .distantPast,
+                            sources: [TraktWatchProgressSource.mdblist.rawValue]
+                        )
+                    )
+                }
+            } else if isEpisode {
+                let episodeObject = dictionary(row["episode"]) ?? row
+                let showObject = dictionary(row["show"]) ?? dictionary(episodeObject["show"]) ?? row
+                if let media = mediaPayload(showObject),
+                   let contentID = media.ids.contentID,
+                   let season = integer(episodeObject["season"] ?? row["season"]),
+                   season >= 0,
+                   let number = integer(episodeObject["number"] ?? episodeObject["episode"] ?? row["number"] ?? row["episode_number"]),
+                   number > 0,
+                   let watchedAt = watchedDate(row: row, target: episodeObject) {
+                    result.append(
+                        WatchedStoreItem(
+                            meta: media.meta(contentID: contentID, type: "series"),
+                            watchedAt: watchedAt,
+                            season: season,
+                            episode: number,
+                            sources: [TraktWatchProgressSource.mdblist.rawValue]
+                        )
+                    )
+                }
+            } else if isSeason {
+                let seasonObject = dictionary(row["season"]) ?? row
+                let showObject = dictionary(row["show"]) ?? dictionary(seasonObject["show"]) ?? row
+                if let media = mediaPayload(showObject),
+                   let contentID = media.ids.contentID,
+                   let seasonNumber = integer(seasonObject["number"] ?? seasonObject["season"] ?? row["season"]),
+                   seasonNumber >= 0 {
+                    let seasonDate = watchedDate(row: row, target: seasonObject) ?? .distantPast
+                    let episodes = array(seasonObject["episodes"] ?? row["episodes"]).compactMap(dictionary)
+                    var emitted = false
+                    for ep in episodes {
+                        if let number = integer(ep["number"] ?? ep["episode"]), number > 0 {
+                            emitted = true
+                            result.append(
+                                WatchedStoreItem(
+                                    meta: media.meta(contentID: contentID, type: "series"),
+                                    watchedAt: watchedDate(row: ep, target: ep) ?? seasonDate,
+                                    season: seasonNumber,
+                                    episode: number,
+                                    sources: [TraktWatchProgressSource.mdblist.rawValue]
+                                )
+                            )
+                        }
+                    }
+                    if !emitted {
+                        result.append(
+                            WatchedStoreItem(
+                                meta: media.meta(contentID: contentID, type: "series"),
+                                watchedAt: seasonDate,
+                                sources: [TraktWatchProgressSource.mdblist.rawValue]
+                            )
+                        )
+                    }
+                }
+            } else if isShow {
+                let target = dictionary(row["show"]) ?? row
+                if let media = mediaPayload(target), let contentID = media.ids.contentID {
+                    let meta = media.meta(contentID: contentID, type: "series")
+                    let showDate = watchedDate(row: row, target: target) ?? .distantPast
+                    let seasons = array(row["seasons"]).compactMap(dictionary)
+                    var emittedEpisode = false
+                    for season in seasons {
+                        guard let seasonNumber = integer(season["number"] ?? season["season"]), seasonNumber >= 0 else { continue }
+                        let seasonDate = watchedDate(row: season, target: season) ?? showDate
+                        for episode in array(season["episodes"]).compactMap(dictionary) {
+                            guard let number = integer(episode["number"] ?? episode["episode"]), number > 0 else { continue }
+                            emittedEpisode = true
+                            result.append(
+                                WatchedStoreItem(
+                                    meta: meta,
+                                    watchedAt: watchedDate(row: episode, target: episode) ?? seasonDate,
+                                    season: seasonNumber,
+                                    episode: number,
+                                    sources: [TraktWatchProgressSource.mdblist.rawValue]
+                                )
+                            )
+                        }
+                    }
+                    if !emittedEpisode {
+                        result.append(
+                            WatchedStoreItem(
+                                meta: meta,
+                                watchedAt: showDate,
+                                sources: [TraktWatchProgressSource.mdblist.rawValue]
+                            )
+                        )
+                    }
+                }
+            }
+        }
         return result
     }
 

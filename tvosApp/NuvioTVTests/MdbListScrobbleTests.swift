@@ -620,6 +620,214 @@ final class MdbListScrobbleTests: XCTestCase {
         XCTAssertEqual(viewModel.uiState.meta?.name, "tt9999999-full", "Full metadata name should update")
     }
 
+    func testSyncWatchedHistoryQueriesAllMediaTypesAndPopulatesWatchedStore() async throws {
+        var requestedMediaTypes: [String] = []
+        MdbListURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/sync/watched")
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            if let mediatype = components?.queryItems?.first(where: { $0.name == "mediatype" })?.value {
+                requestedMediaTypes.append(mediatype)
+                switch mediatype {
+                case "movie":
+                    return Self.response(
+                        for: request,
+                        json: """
+                        {
+                          "movies": [
+                            {"movie": {"title": "Inception", "year": 2010, "ids": {"imdb": "tt1375666"}}, "watched_at": "2026-09-01T12:00:00Z"}
+                          ]
+                        }
+                        """
+                    )
+                case "show":
+                    return Self.response(
+                        for: request,
+                        json: """
+                        {
+                          "shows": [
+                            {
+                              "show": {"title": "Breaking Bad", "year": 2008, "ids": {"imdb": "tt0903747"}},
+                              "watched_at": "2026-09-02T12:00:00Z",
+                              "seasons": [
+                                {
+                                  "number": 1,
+                                  "episodes": [
+                                    {"number": 1, "watched_at": "2026-09-02T12:30:00Z"}
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """
+                    )
+                case "episode":
+                    return Self.response(
+                        for: request,
+                        json: """
+                        {
+                          "episodes": [
+                            {
+                              "show": {"title": "Better Call Saul", "year": 2015, "ids": {"imdb": "tt3032476"}},
+                              "episode": {"season": 1, "number": 1, "watched_at": "2026-09-03T12:00:00Z"}
+                            }
+                          ]
+                        }
+                        """
+                    )
+                case "season":
+                    return Self.response(
+                        for: request,
+                        json: """
+                        {
+                          "seasons": []
+                        }
+                        """
+                    )
+                default:
+                    return Self.response(for: request, json: "{}")
+                }
+            }
+            return Self.response(for: request, json: "{}")
+        }
+
+        let synced = await MdbListProgressService.syncWatchedHistory(
+            store: defaults,
+            client: client,
+            tokenStorage: tokenStorage,
+            profileScope: "profile-1"
+        )
+        XCTAssertTrue(synced)
+        XCTAssertEqual(requestedMediaTypes, ["movie", "show", "episode", "season"])
+
+        let items = WatchedStore.items().filter { $0.isVisible(under: .mdblist) }
+        XCTAssertTrue(items.contains(where: { $0.meta.id == "tt1375666" && $0.meta.isMovie }))
+        XCTAssertTrue(items.contains(where: { $0.meta.id == "tt0903747" && $0.season == 1 && $0.episode == 1 }))
+        XCTAssertTrue(items.contains(where: { $0.meta.id == "tt3032476" && $0.season == 1 && $0.episode == 1 }))
+    }
+
+    func testContinueWatchingGeneratesUpNextFromWatchedSeriesHistory() async throws {
+        let showMeta = NuvioMeta(
+            id: "tt0903747",
+            name: "Breaking Bad",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt0903747",
+            tmdbId: nil,
+            type: "series",
+            year: 2008,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: "47 min",
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: [
+                NuvioVideo(id: "tt0903747:1:1", title: "Pilot", season: 1, episode: 1, thumbnail: nil, overview: nil, released: "2008-01-20", rating: nil),
+                NuvioVideo(id: "tt0903747:1:2", title: "Cat's in the Bag...", season: 1, episode: 2, thumbnail: nil, overview: nil, released: "2008-01-27", rating: nil)
+            ]
+        )
+        let watchedItem = WatchedStoreItem(
+            meta: showMeta,
+            watchedAt: Date(timeIntervalSince1970: 10000),
+            season: 1,
+            episode: 1,
+            sources: [TraktWatchProgressSource.mdblist.rawValue]
+        )
+        WatchedStore.replaceAll([watchedItem])
+
+        MdbListURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/sync/playback")
+            return Self.response(for: request, json: "[]")
+        }
+
+        let repo = MdbListCatalogRepository()
+        repo.customMeta["tt0903747"] = showMeta
+
+        let cw = await MdbListProgressService.fetchContinueWatching(
+            repository: repo,
+            store: defaults,
+            client: client,
+            tokenStorage: tokenStorage,
+            profileScope: "profile-1"
+        )
+        let items = try XCTUnwrap(cw)
+        XCTAssertEqual(items.count, 1)
+        let upNext = items[0]
+        XCTAssertEqual(upNext.isUpNext, true)
+        XCTAssertEqual(upNext.season, 1)
+        XCTAssertEqual(upNext.episode, 2)
+        XCTAssertEqual(upNext.episodeDisplayTitle, "Cat's in the Bag...")
+    }
+
+    func testMdbListWatchStatsFallbackAndCaching() {
+        let movieItem = WatchedStoreItem(
+            meta: NuvioMeta(id: "tt1", name: "Movie 1", description: nil, posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: "tt1", tmdbId: nil, type: "movie", year: 2020, genres: nil, rating: nil, releaseInfo: nil, runtime: "120 min", cast: nil, director: nil, writer: nil, certification: nil, country: nil, released: nil),
+            watchedAt: Date(),
+            season: nil,
+            episode: nil,
+            sources: [TraktWatchProgressSource.mdblist.rawValue]
+        )
+        let episodeItem = WatchedStoreItem(
+            meta: NuvioMeta(id: "tt2", name: "Show 1", description: nil, posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: "tt2", tmdbId: nil, type: "series", year: 2021, genres: nil, rating: nil, releaseInfo: nil, runtime: "60 min", cast: nil, director: nil, writer: nil, certification: nil, country: nil, released: nil),
+            watchedAt: Date(),
+            season: 1,
+            episode: 1,
+            sources: [TraktWatchProgressSource.mdblist.rawValue]
+        )
+
+        let localStats = MdbListWatchStats(watchedItems: [movieItem, episodeItem])
+        XCTAssertEqual(localStats.moviesWatched, 1)
+        XCTAssertEqual(localStats.showsWatched, 1)
+        XCTAssertEqual(localStats.episodesWatched, 1)
+        XCTAssertEqual(localStats.totalWatchedHours, 3) // 120min + 60min = 180min = 3 hours
+
+        let remoteStats = MdbListWatchStats(moviesWatched: 5, showsWatched: nil, episodesWatched: 10, totalWatchedHours: nil)
+        let merged = remoteStats.merging(fallback: localStats)
+        XCTAssertEqual(merged.moviesWatched, 5)
+        XCTAssertEqual(merged.showsWatched, 1)
+        XCTAssertEqual(merged.episodesWatched, 10)
+        XCTAssertEqual(merged.totalWatchedHours, 3)
+
+        MdbListAuthStore.saveCachedStats(merged, store: defaults)
+        let cached = MdbListAuthStore.cachedStats(in: defaults)
+        XCTAssertEqual(cached, merged)
+    }
+
+    func testUserWatchStatsFallsBackToWatchedStoreWhenApiOmitsFields() async throws {
+        let movieItem = WatchedStoreItem(
+            meta: NuvioMeta(id: "tt1", name: "Movie 1", description: nil, posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: "tt1", tmdbId: nil, type: "movie", year: 2020, genres: nil, rating: nil, releaseInfo: nil, runtime: "120 min", cast: nil, director: nil, writer: nil, certification: nil, country: nil, released: nil),
+            watchedAt: Date(),
+            season: nil,
+            episode: nil,
+            sources: [TraktWatchProgressSource.mdblist.rawValue]
+        )
+        WatchedStore.replaceAll([movieItem])
+
+        MdbListURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/user/stats")
+            return Self.response(for: request, json: #"{"shows_watched": 12}"#)
+        }
+
+        let service = MdbListAuthService(
+            client: client,
+            store: defaults,
+            profileScope: "profile-1",
+            tokenStorage: tokenStorage
+        )
+        let stats = await service.fetchUserStats()
+        let unwrapped = try XCTUnwrap(stats)
+        XCTAssertEqual(unwrapped.showsWatched, 12)
+        XCTAssertEqual(unwrapped.moviesWatched, 1)
+        XCTAssertEqual(unwrapped.totalWatchedHours, 2)
+    }
+
     private static func meta(id: String, type: String) -> NuvioMeta {
         mdbListTestMetadata(id: id, type: type, runtime: nil)
     }
@@ -672,15 +880,17 @@ final class MdbListScrobbleTests: XCTestCase {
     }
 }
 
-private func mdbListTestMetadata(id: String, type: String, runtime: String?) -> NuvioMeta {
-    NuvioMeta(
+private func mdbListTestMetadata(id: String, type: String, runtime: String?, videos: [NuvioVideo]? = nil) -> NuvioMeta {
+    let baseId = id.split(separator: ":").first.map(String.init) ?? id
+    let imdbId = baseId.hasPrefix("tt") ? baseId : nil
+    return NuvioMeta(
         id: id,
         name: type == "movie" ? "Movie" : "Show",
         description: nil,
         posterUrl: nil,
         backgroundUrl: nil,
         logoUrl: nil,
-        imdbId: nil,
+        imdbId: imdbId,
         tmdbId: nil,
         type: type,
         year: 2020,
@@ -693,13 +903,19 @@ private func mdbListTestMetadata(id: String, type: String, runtime: String?) -> 
         writer: nil,
         certification: nil,
         country: nil,
-        released: nil
+        released: nil,
+        videos: videos
     )
 }
 
 private final class MdbListCatalogRepository: MockCatalogRepository {
+    var customMeta: [String: NuvioMeta] = [:]
+
     override func getMetadata(id: String, type: String) async throws -> NuvioMeta {
-        mdbListTestMetadata(
+        if let custom = customMeta[id] {
+            return custom
+        }
+        return mdbListTestMetadata(
             id: id,
             type: type,
             runtime: id == "tmdb:1399" ? "45 min" : "100 min"
