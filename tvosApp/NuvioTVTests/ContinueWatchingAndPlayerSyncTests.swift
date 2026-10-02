@@ -404,6 +404,221 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         manager.schedulePush(scope: .settings, delay: NuvioSyncManager.defaultPushDelay)
         await manager.flushPendingPushesNow()
     }
+
+    // MARK: - WatchedStore & Re-watch Tests
+
+    func testWatchedSnapshotWatchedAtWithAliasing() {
+        let watchedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let seriesMeta = NuvioMeta(
+            id: "tt1234567",
+            name: "Test Show",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt1234567",
+            tmdbId: 100,
+            type: "series",
+            year: 2024,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: []
+        )
+        let episodeItem = WatchedStoreItem(
+            meta: seriesMeta,
+            watchedAt: watchedDate,
+            season: 1,
+            episode: 1,
+            sources: [TraktWatchProgressSource.nuvioSync.rawValue]
+        )
+        let movieMeta = NuvioMeta(
+            id: "tt7654321",
+            name: "Test Movie",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt7654321",
+            tmdbId: 200,
+            type: "movie",
+            year: 2024,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: []
+        )
+        let movieItem = WatchedStoreItem(
+            meta: movieMeta,
+            watchedAt: watchedDate,
+            season: nil,
+            episode: nil,
+            sources: [TraktWatchProgressSource.nuvioSync.rawValue]
+        )
+
+        let snapshot = WatchedSnapshot(items: [episodeItem, movieItem], source: .nuvioSync)
+
+        // Exact match
+        XCTAssertEqual(snapshot.watchedAt(metaId: "tt1234567", season: 1, episode: 1), watchedDate)
+        // Alias match with imdb prefix
+        XCTAssertEqual(snapshot.watchedAt(metaId: "imdb:tt1234567", season: 1, episode: 1), watchedDate)
+        // Different episode returns nil
+        XCTAssertNil(snapshot.watchedAt(metaId: "tt1234567", season: 1, episode: 2))
+
+        // Movie match
+        XCTAssertEqual(snapshot.watchedAt(metaId: "tt7654321"), watchedDate)
+        XCTAssertEqual(snapshot.watchedAt(metaId: "imdb:tt7654321"), watchedDate)
+        XCTAssertNil(snapshot.watchedAt(metaId: "tt9999999"))
+    }
+
+    func testContinueWatchingCandidatesAllowsRewatchingAfterWatchedStoreMark() {
+        let movieMeta = NuvioMeta(
+            id: "tt8888888",
+            name: "Rewatch Movie",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt8888888",
+            tmdbId: 300,
+            type: "movie",
+            year: 2024,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: []
+        )
+
+        let seriesMeta = NuvioMeta(
+            id: "tt8888889",
+            name: "Rewatch Series",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt8888889",
+            tmdbId: 301,
+            type: "series",
+            year: 2024,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: []
+        )
+
+        let movieKey = WatchProgressLedger.progressKey(contentId: movieMeta.id, season: nil, episode: nil)
+        let episodeKey = WatchProgressLedger.progressKey(contentId: seriesMeta.id, season: 1, episode: 1)
+
+        defer {
+            _ = WatchProgressLedger.remove(keys: [movieKey, episodeKey])
+            if WatchedStore.contains(meta: movieMeta) {
+                _ = WatchedStore.toggle(meta: movieMeta)
+            }
+            if WatchedStore.containsEpisode(meta: seriesMeta, season: 1, episode: 1) {
+                _ = WatchedStore.toggleEpisode(meta: seriesMeta, season: 1, episode: 1)
+            }
+        }
+
+        // Mark both as watched now
+        XCTAssertTrue(WatchedStore.markWatched(movieMeta))
+        XCTAssertTrue(WatchedStore.markWatched(seriesMeta, season: 1, episode: 1))
+
+        guard let movieWatchedAt = WatchedStore.watchedAt(meta: movieMeta),
+              let episodeWatchedAt = WatchedStore.watchedAt(meta: seriesMeta, season: 1, episode: 1) else {
+            XCTFail("Watched dates should be recorded")
+            return
+        }
+
+        // 1. Progress recorded BEFORE the watched mark must NOT be offered as a candidate
+        let oldMovieRecord = WatchProgressRecord(
+            progressKey: movieKey,
+            contentId: movieMeta.id,
+            contentType: movieMeta.type,
+            videoId: movieMeta.id,
+            season: nil,
+            episode: nil,
+            position: 300,
+            duration: 1000,
+            lastWatchedAt: movieWatchedAt.addingTimeInterval(-60),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(oldMovieRecord)
+        XCTAssertFalse(WatchProgressLedger.continueWatchingCandidates().contains { $0.contentId == movieMeta.id })
+
+        let oldEpisodeRecord = WatchProgressRecord(
+            progressKey: episodeKey,
+            contentId: seriesMeta.id,
+            contentType: seriesMeta.type,
+            videoId: "\(seriesMeta.id):1:1",
+            season: 1,
+            episode: 1,
+            position: 300,
+            duration: 1000,
+            lastWatchedAt: episodeWatchedAt.addingTimeInterval(-60),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(oldEpisodeRecord)
+        XCTAssertFalse(WatchProgressLedger.continueWatchingCandidates().contains { $0.contentId == seriesMeta.id })
+
+        // 2. Progress recorded AFTER the watched mark (re-watch) MUST be offered as a candidate
+        let newMovieRecord = WatchProgressRecord(
+            progressKey: movieKey,
+            contentId: movieMeta.id,
+            contentType: movieMeta.type,
+            videoId: movieMeta.id,
+            season: nil,
+            episode: nil,
+            position: 300,
+            duration: 1000,
+            lastWatchedAt: movieWatchedAt.addingTimeInterval(60),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(newMovieRecord)
+        XCTAssertTrue(WatchProgressLedger.continueWatchingCandidates().contains { $0.contentId == movieMeta.id })
+
+        let newEpisodeRecord = WatchProgressRecord(
+            progressKey: episodeKey,
+            contentId: seriesMeta.id,
+            contentType: seriesMeta.type,
+            videoId: "\(seriesMeta.id):1:1",
+            season: 1,
+            episode: 1,
+            position: 300,
+            duration: 1000,
+            lastWatchedAt: episodeWatchedAt.addingTimeInterval(60),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(newEpisodeRecord)
+        XCTAssertTrue(WatchProgressLedger.continueWatchingCandidates().contains { $0.contentId == seriesMeta.id })
+    }
 }
 
 

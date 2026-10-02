@@ -4923,6 +4923,15 @@ struct WatchedSnapshot {
     /// Episode keys grouped by normalized series title and year
     let episodeKeysBySeriesTitle: [String: [(year: Int?, keys: Set<String>)]]
 
+    /// Episode watch timestamps keyed by "\(type)|\(identityKey)": [typeKey: ["\(season):\(episode)": Date]]
+    let episodeWatchedDatesByIdentityKey: [String: [String: Date]]
+    /// Episode watch timestamps keyed by lowercased metaId: [metaId.lowercased(): ["\(season):\(episode)": Date]]
+    let episodeWatchedDatesByMetaId: [String: [String: Date]]
+    /// Whole title watch timestamps keyed by "\(type)|\(identityKey)": [typeKey: Date]
+    let wholeTitleWatchedDatesByIdentityKey: [String: Date]
+    /// Whole title watch timestamps keyed by lowercased metaId: [metaId.lowercased(): Date]
+    let wholeTitleWatchedDatesByMetaId: [String: Date]
+
     init(
         items: [WatchedStoreItem],
         source: TraktWatchProgressSource,
@@ -4944,6 +4953,11 @@ struct WatchedSnapshot {
         var epByMetaId: [String: Set<String>] = [:]
         var epBySeriesTitle: [String: [(year: Int?, keys: Set<String>)]] = [:]
 
+        var epDatesByIdentity: [String: [String: Date]] = [:]
+        var epDatesByMetaId: [String: [String: Date]] = [:]
+        var wholeTitleDatesByIdentity: [String: Date] = [:]
+        var wholeTitleDatesByMetaId: [String: Date] = [:]
+
         for item in visible {
             let isEpisode = item.season != nil && item.episode != nil
             let type = isEpisode ? "series" : WatchedStore.normalizedType(item.meta.canonicalType)
@@ -4953,12 +4967,26 @@ struct WatchedSnapshot {
                 for key in contentKeys {
                     let typeKey = "\(type)|\(key)"
                     wholeTitleKeysByType[type, default: []].insert(typeKey)
+                    if let existing = wholeTitleDatesByIdentity[typeKey] {
+                        if item.watchedAt > existing {
+                            wholeTitleDatesByIdentity[typeKey] = item.watchedAt
+                        }
+                    } else {
+                        wholeTitleDatesByIdentity[typeKey] = item.watchedAt
+                    }
                 }
                 wholeTitleCatalogKeys.formUnion(WatchedStore.catalogTitleIdentityKeys(for: item.meta))
 
                 let lowerId = item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if !lowerId.isEmpty {
                     metaIdsByType[type, default: []].insert(lowerId)
+                    if let existing = wholeTitleDatesByMetaId[lowerId] {
+                        if item.watchedAt > existing {
+                            wholeTitleDatesByMetaId[lowerId] = item.watchedAt
+                        }
+                    } else {
+                        wholeTitleDatesByMetaId[lowerId] = item.watchedAt
+                    }
                 }
 
                 if type == "series" {
@@ -4972,12 +5000,26 @@ struct WatchedSnapshot {
                 let lowerId = item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if !lowerId.isEmpty {
                     epByMetaId[lowerId, default: []].insert(epKey)
+                    if let existing = epDatesByMetaId[lowerId]?[epKey] {
+                        if item.watchedAt > existing {
+                            epDatesByMetaId[lowerId, default: [:]][epKey] = item.watchedAt
+                        }
+                    } else {
+                        epDatesByMetaId[lowerId, default: [:]][epKey] = item.watchedAt
+                    }
                 }
 
                 let contentKeys = WatchedStore.contentIdentityKeys(for: item.meta)
                 for key in contentKeys {
                     let typeKey = "\(type)|\(key)"
                     epByIdentity[typeKey, default: []].insert(epKey)
+                    if let existing = epDatesByIdentity[typeKey]?[epKey] {
+                        if item.watchedAt > existing {
+                            epDatesByIdentity[typeKey, default: [:]][epKey] = item.watchedAt
+                        }
+                    } else {
+                        epDatesByIdentity[typeKey, default: [:]][epKey] = item.watchedAt
+                    }
                 }
 
                 if type == "series" {
@@ -5006,6 +5048,11 @@ struct WatchedSnapshot {
         self.episodeKeysByIdentityKey = epByIdentity
         self.episodeKeysByMetaId = epByMetaId
         self.episodeKeysBySeriesTitle = epBySeriesTitle
+
+        self.episodeWatchedDatesByIdentityKey = epDatesByIdentity
+        self.episodeWatchedDatesByMetaId = epDatesByMetaId
+        self.wholeTitleWatchedDatesByIdentityKey = wholeTitleDatesByIdentity
+        self.wholeTitleWatchedDatesByMetaId = wholeTitleDatesByMetaId
     }
 
     func contains(metaId: String, type: String) -> Bool {
@@ -5114,6 +5161,112 @@ struct WatchedSnapshot {
             }
         }
         return false
+    }
+
+    func watchedAt(metaId: String, season: Int, episode: Int) -> Date? {
+        let epKey = "\(season):\(episode)"
+        let lowerId = metaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let date = episodeWatchedDatesByMetaId[lowerId]?[epKey] {
+            return date
+        }
+        if lowerId.hasPrefix("imdb:") {
+            let bareId = String(lowerId.dropFirst(5))
+            if let date = episodeWatchedDatesByMetaId[bareId]?[epKey] {
+                return date
+            }
+        } else if lowerId.hasPrefix("tt") {
+            let prefixedId = "imdb:\(lowerId)"
+            if let date = episodeWatchedDatesByMetaId[prefixedId]?[epKey] {
+                return date
+            }
+        }
+        let contentKeys = WatchedStore.contentIdentityKeys(metaId: metaId, imdbId: nil, tmdbId: nil)
+        for key in contentKeys {
+            if let date = episodeWatchedDatesByIdentityKey["series|\(key)"]?[epKey] {
+                return date
+            }
+        }
+        return nil
+    }
+
+    func watchedAt(meta: NuvioMeta, season: Int, episode: Int) -> Date? {
+        let epKey = "\(season):\(episode)"
+        let lowerId = meta.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let date = episodeWatchedDatesByMetaId[lowerId]?[epKey] {
+            return date
+        }
+        if lowerId.hasPrefix("imdb:") {
+            let bareId = String(lowerId.dropFirst(5))
+            if let date = episodeWatchedDatesByMetaId[bareId]?[epKey] {
+                return date
+            }
+        } else if lowerId.hasPrefix("tt") {
+            let prefixedId = "imdb:\(lowerId)"
+            if let date = episodeWatchedDatesByMetaId[prefixedId]?[epKey] {
+                return date
+            }
+        }
+        let type = "series"
+        let contentKeys = WatchedStore.contentIdentityKeys(for: meta)
+        for key in contentKeys {
+            if let date = episodeWatchedDatesByIdentityKey["\(type)|\(key)"]?[epKey] {
+                return date
+            }
+        }
+        return nil
+    }
+
+    func watchedAt(metaId: String) -> Date? {
+        let lowerId = metaId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let date = wholeTitleWatchedDatesByMetaId[lowerId] {
+            return date
+        }
+        if lowerId.hasPrefix("imdb:") {
+            let bareId = String(lowerId.dropFirst(5))
+            if let date = wholeTitleWatchedDatesByMetaId[bareId] {
+                return date
+            }
+        } else if lowerId.hasPrefix("tt") {
+            let prefixedId = "imdb:\(lowerId)"
+            if let date = wholeTitleWatchedDatesByMetaId[prefixedId] {
+                return date
+            }
+        }
+        let contentKeys = WatchedStore.contentIdentityKeys(metaId: metaId, imdbId: nil, tmdbId: nil)
+        for key in contentKeys {
+            for type in ["movie", "series"] {
+                if let date = wholeTitleWatchedDatesByIdentityKey["\(type)|\(key)"] {
+                    return date
+                }
+            }
+        }
+        return nil
+    }
+
+    func watchedAt(meta: NuvioMeta) -> Date? {
+        let type = WatchedStore.normalizedType(meta.canonicalType)
+        let lowerId = meta.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let date = wholeTitleWatchedDatesByMetaId[lowerId] {
+            return date
+        }
+        if lowerId.hasPrefix("imdb:") {
+            let bareId = String(lowerId.dropFirst(5))
+            if let date = wholeTitleWatchedDatesByMetaId[bareId] {
+                return date
+            }
+        } else if lowerId.hasPrefix("tt") {
+            let prefixedId = "imdb:\(lowerId)"
+            if let date = wholeTitleWatchedDatesByMetaId[prefixedId] {
+                return date
+            }
+        }
+        let contentKeys = WatchedStore.contentIdentityKeys(for: meta)
+        for key in contentKeys {
+            if let date = wholeTitleWatchedDatesByIdentityKey["\(type)|\(key)"] {
+                return date
+            }
+        }
+        return nil
     }
 }
 
@@ -5398,6 +5551,22 @@ enum WatchedStore {
         currentSnapshot().containsEpisode(meta: meta, season: season, episode: episode)
     }
 
+    static func watchedAt(metaId: String, season: Int, episode: Int) -> Date? {
+        currentSnapshot().watchedAt(metaId: metaId, season: season, episode: episode)
+    }
+
+    static func watchedAt(meta: NuvioMeta, season: Int, episode: Int) -> Date? {
+        currentSnapshot().watchedAt(meta: meta, season: season, episode: episode)
+    }
+
+    static func watchedAt(metaId: String) -> Date? {
+        currentSnapshot().watchedAt(metaId: metaId)
+    }
+
+    static func watchedAt(meta: NuvioMeta) -> Date? {
+        currentSnapshot().watchedAt(meta: meta)
+    }
+
     /// "season:episode" keys of every watched episode of a series, for the
     /// Details episode strip.
     static func watchedEpisodeKeys(metaId: String) -> Set<String> {
@@ -5506,6 +5675,7 @@ enum WatchedStore {
             ContinueWatchingStore.markLedgerWatched(meta: meta, season: season, episode: episode)
         }
         ContinueWatchingStore.removeWatched(episodeItems)
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
         syncSeriesWatchedEpisodes(meta, episodesBySeason: episodesBySeason, isWatched: true)
         return true
     }
@@ -5674,6 +5844,7 @@ enum WatchedStore {
             // Same ordering rule as the single-episode path: resume progress is
             // only dropped once the marks it is being replaced by are durable.
             ContinueWatchingStore.removeWatched(written)
+            ContinueWatchingDismissStore.clear(contentId: meta.id)
         }
 
         let traktStore = ProfileSettings.current
@@ -5788,6 +5959,10 @@ enum WatchedStore {
         // The mark is durable now, so it is safe to cancel any pending remote
         // delete. A failed watched-list write must leave that protection intact.
         clearTombstone(meta: meta, season: season, episode: episode)
+
+        if meta.isSeries {
+            ContinueWatchingDismissStore.clear(contentId: meta.id)
+        }
 
         // Only clear Continue Watching after the watched mark is durable, so a
         // failed write does not drop resume progress with nothing to replace it.
@@ -6240,7 +6415,7 @@ enum WatchedStore {
         if !rawID.isEmpty {
             if rawID.hasPrefix("tt") {
                 keys.insert("imdb:\(rawID)")
-            } else if rawID.hasPrefix("tmdb:") || rawID.hasPrefix("trakt:") || rawID.hasPrefix("simkl:") {
+            } else if rawID.hasPrefix("imdb:") || rawID.hasPrefix("tmdb:") || rawID.hasPrefix("trakt:") || rawID.hasPrefix("simkl:") {
                 keys.insert(rawID)
             } else {
                 keys.insert("id:\(rawID)")

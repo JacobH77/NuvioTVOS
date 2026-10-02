@@ -141,11 +141,12 @@ enum ContinueWatchingBuilder {
 
         let currentPlan = planEntries(candidates: candidates, seeds: seeds)
         let existingItems = ContinueWatchingStore.items()
-        let slice = Array(currentPlan.prefix(pageSize))
-        print("[ContinueWatchingBuilder] rebuild: plan count=\(currentPlan.count), slice prefix=\(slice.count) items")
+        print("[ContinueWatchingBuilder] rebuild: plan count=\(currentPlan.count)")
 
-        let page = await materializeSlice(
-            slice: slice,
+        let page = await materializePage(
+            from: currentPlan,
+            startingAt: 0,
+            targetCount: pageSize,
             existingItems: existingItems,
             generation: currentGeneration,
             profileId: profileId
@@ -183,7 +184,7 @@ enum ContinueWatchingBuilder {
             guard currentGeneration == generation else { return }
             plan = currentPlan
             materialized = page.items
-            consumedEntries = slice.count
+            consumedEntries = page.consumed
             materializedProfileId = profileId
             diagnostic = diagText
         }
@@ -211,13 +212,14 @@ enum ContinueWatchingBuilder {
         let currentGeneration = generation
         let profileId = WatchProgressLedger.activeProfileId
         let currentConsumed = consumedEntries
-        let slice = Array(plan.dropFirst(currentConsumed).prefix(pageSize))
-        guard !slice.isEmpty else { return materialized }
+        guard currentConsumed < plan.count else { return materialized }
 
         let existingItems = ContinueWatchingStore.items() + materialized
 
-        let page = await materializeSlice(
-            slice: slice,
+        let page = await materializePage(
+            from: plan,
+            startingAt: currentConsumed,
+            targetCount: pageSize,
             existingItems: existingItems,
             generation: currentGeneration,
             profileId: profileId
@@ -227,9 +229,64 @@ enum ContinueWatchingBuilder {
             return materialized
         }
 
-        consumedEntries += slice.count
+        consumedEntries += page.consumed
         materialized = retainingUnwatched(materialized + page.items)
         return materialized
+    }
+
+    private struct MaterializePageResult: Sendable {
+        let items: [ContinueWatchingItem]
+        let consumed: Int
+        let failedLookups: Int
+    }
+
+    private static func materializePage(
+        from plan: [PlanEntry],
+        startingAt startIndex: Int,
+        targetCount: Int,
+        existingItems: [ContinueWatchingItem],
+        generation currentGeneration: UInt,
+        profileId: String?
+    ) async -> MaterializePageResult {
+        var cursor = startIndex
+        var accumulatedItems: [ContinueWatchingItem] = []
+        var totalFailedLookups = 0
+        var currentExisting = existingItems
+
+        // Examine plan entries in batches until we reach targetCount items
+        // or exhaust the plan. Cap the iteration budget to prevent runaway scans.
+        let maxBatchScan = min(plan.count, startIndex + 60)
+
+        while accumulatedItems.count < targetCount, cursor < plan.count, cursor < maxBatchScan {
+            guard !Task.isCancelled else { break }
+            let needed = targetCount - accumulatedItems.count
+            let batchSize = max(needed, min(10, plan.count - cursor))
+            let sliceEnd = min(cursor + batchSize, plan.count)
+            let slice = Array(plan[cursor..<sliceEnd])
+            cursor = sliceEnd
+
+            let result = await materializeSlice(
+                slice: slice,
+                existingItems: currentExisting,
+                generation: currentGeneration,
+                profileId: profileId
+            )
+            guard !Task.isCancelled else { break }
+
+            accumulatedItems.append(contentsOf: result.items)
+            totalFailedLookups += result.failedLookups
+            currentExisting += result.items
+
+            if accumulatedItems.count >= targetCount {
+                break
+            }
+        }
+
+        return MaterializePageResult(
+            items: accumulatedItems,
+            consumed: cursor - startIndex,
+            failedLookups: totalFailedLookups
+        )
     }
 
     private struct PageResult: Sendable {
@@ -336,9 +393,9 @@ enum ContinueWatchingBuilder {
                 }
                 let next: NuvioVideo?
                 if let current {
-                    next = nextEpisode(after: current, in: meta)
+                    next = nextEpisode(after: current, in: meta, seedWatchedAt: record.lastWatchedAt)
                 } else {
-                    next = firstReleasedEpisode(in: meta)
+                    next = firstReleasedEpisode(in: meta, seedWatchedAt: record.lastWatchedAt)
                 }
                 guard let next else {
                     specs.append(ItemSpec(
@@ -574,17 +631,21 @@ enum ContinueWatchingBuilder {
     /// leaving far fewer visible entries than the account actually had.
     private static func nextEpisode(
         after current: (season: Int, episode: Int),
-        in meta: NuvioMeta
+        in meta: NuvioMeta,
+        seedWatchedAt: Date
     ) -> NuvioVideo? {
-        let watchedKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
         let allVideos = (meta.videos ?? []).sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
         let mainSeasonVideos = allVideos.filter { $0.season > 0 }
         let videos = mainSeasonVideos.isEmpty ? allVideos : mainSeasonVideos
 
         return videos
             .filter { candidate in
-                // Skip episodes that have already been marked watched in WatchedStore
-                !watchedKeys.contains("\(candidate.season):\(candidate.episode)")
+                guard let watchedAt = WatchedStore.watchedAt(
+                    meta: meta,
+                    season: candidate.season,
+                    episode: candidate.episode
+                ) else { return true }
+                return watchedAt < seedWatchedAt
             }
             .first { candidate in
                 guard (candidate.season, candidate.episode) > (current.season, current.episode) else {
@@ -737,14 +798,23 @@ enum ContinueWatchingBuilder {
         return meta.videos?.first { $0.season == season && $0.episode == episode }
     }
 
-    private static func firstReleasedEpisode(in meta: NuvioMeta) -> NuvioVideo? {
-        let watchedKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
+    private static func firstReleasedEpisode(in meta: NuvioMeta, seedWatchedAt: Date) -> NuvioVideo? {
+        if let titleWatchedAt = WatchedStore.watchedAt(meta: meta), titleWatchedAt >= seedWatchedAt {
+            return nil
+        }
         let allVideos = (meta.videos ?? []).sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
         let mainSeasonVideos = allVideos.filter { $0.season > 0 }
         let videos = mainSeasonVideos.isEmpty ? allVideos : mainSeasonVideos
 
         return videos
-            .filter { !watchedKeys.contains("\($0.season):\($0.episode)") }
+            .filter { candidate in
+                guard let watchedAt = WatchedStore.watchedAt(
+                    meta: meta,
+                    season: candidate.season,
+                    episode: candidate.episode
+                ) else { return true }
+                return watchedAt < seedWatchedAt
+            }
             .first { video in
                 EpisodeReleasePolicy.hasAired(video.released)
                     || EpisodeReleasePolicy.isAiringToday(video.released)
