@@ -160,6 +160,7 @@ enum SettingsKey {
     /// key-by-key keyboard with a title list beside the poster grid) or
     /// `"Classic"` (system-keyboard search bar over a full-width poster grid).
     static let searchStyle = "nuvio.tv.settings.layout.searchStyle"
+    static let continueWatchingVisible = "nuvio.tv.settings.layout.continueWatchingVisible"
     static let continueWatchingSort = "nuvio.tv.settings.layout.continueWatchingSort"
     static let upNextFromFurthestEpisode = "nuvio.tv.settings.layout.upNextFromFurthestEpisode"
     static let showUnairedNextUp = "nuvio.tv.settings.layout.showUnairedNextUp"
@@ -316,7 +317,7 @@ enum SettingsKey {
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
         homeLayout, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
         searchStyle,
-        continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
+        continueWatchingVisible, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates,
         traktConnected, traktClientID, traktClientSecret,
@@ -2882,6 +2883,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
     @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
+    @AppStorage(SettingsKey.continueWatchingVisible) private var continueWatchingVisible = true
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
@@ -3032,6 +3034,77 @@ private struct LayoutDiscoverySettingsView: View {
             CollectionsSettingsSection(accentColor: accentColor)
 
             SettingsGroup(
+                title: L10n.string("layout_section_continue_watching", fallback: "Continue Watching"),
+                subtitle: L10n.string(
+                    "layout_section_continue_watching_desc",
+                    fallback: "Settings for the Continue Watching section."
+                )
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_continue_watching_row", fallback: "Continue Watching Row"),
+                    subtitle: L10n.string(
+                        "tvos_layout_continue_watching_subtitle",
+                        fallback: "Show or hide the Continue Watching row on the Home screen"
+                    ),
+                    isOn: $continueWatchingVisible,
+                    accentColor: accentColor
+                )
+                .onChange(of: continueWatchingVisible) { _, _ in
+                    NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
+                    NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
+                }
+
+                SettingsOptionRow(
+                    title: L10n.string("layout_cw_sort_mode", fallback: "Sort Order"),
+                    subtitle: L10n.string(
+                        "layout_cw_sort_mode_sub",
+                        fallback: "How Continue Watching items are arranged"
+                    ),
+                    selection: $continueWatchingSort,
+                    options: continueWatchingSorts,
+                    accentColor: accentColor
+                )
+                .opacity(continueWatchingVisible ? 1 : 0.46)
+                .disabled(!continueWatchingVisible)
+                .onAppear {
+                    if !continueWatchingSorts.contains(continueWatchingSort) {
+                        continueWatchingSort = "Default"
+                    }
+                }
+                .onChange(of: continueWatchingSort) { _, _ in
+                    NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
+                    NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
+                }
+
+                SettingsToggleRow(
+                    title: L10n.string(
+                        "tvos_layout_up_next_furthest",
+                        fallback: "Up Next From Furthest Episode"
+                    ),
+                    subtitle: L10n.string(
+                        "tvos_layout_up_next_furthest_subtitle",
+                        fallback: "Show the next episode after the furthest one watched. Turn off for rewatches to follow the most recently watched episode."
+                    ),
+                    isOn: $upNextFromFurthestEpisode,
+                    accentColor: accentColor
+                )
+                .opacity(continueWatchingVisible ? 1 : 0.46)
+                .disabled(!continueWatchingVisible)
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_layout_show_unaired", fallback: "Show Unaired Next Up"),
+                    subtitle: L10n.string(
+                        "tvos_layout_show_unaired_subtitle",
+                        fallback: "Keep upcoming episodes in Continue Watching with their air date"
+                    ),
+                    isOn: $showUnairedNextUp,
+                    accentColor: accentColor
+                )
+                .opacity(continueWatchingVisible ? 1 : 0.46)
+                .disabled(!continueWatchingVisible)
+            }
+
+            SettingsGroup(
                 title: L10n.string("tvos_layout_discovery", fallback: "Discovery"),
                 subtitle: L10n.string(
                     "tvos_layout_discovery_subtitle",
@@ -3069,49 +3142,6 @@ private struct LayoutDiscoverySettingsView: View {
                         discoverLocation = "Search"
                     }
                 }
-
-                SettingsOptionRow(
-                    title: L10n.string("layout_cw_sort_mode", fallback: "Sort Order"),
-                    subtitle: L10n.string(
-                        "layout_cw_sort_mode_sub",
-                        fallback: "How Continue Watching items are arranged"
-                    ),
-                    selection: $continueWatchingSort,
-                    options: continueWatchingSorts,
-                    accentColor: accentColor
-                )
-                .onAppear {
-                    if !continueWatchingSorts.contains(continueWatchingSort) {
-                        continueWatchingSort = "Default"
-                    }
-                }
-                .onChange(of: continueWatchingSort) { _, _ in
-                    NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
-                    NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
-                }
-
-                SettingsToggleRow(
-                    title: L10n.string(
-                        "tvos_layout_up_next_furthest",
-                        fallback: "Up Next From Furthest Episode"
-                    ),
-                    subtitle: L10n.string(
-                        "tvos_layout_up_next_furthest_subtitle",
-                        fallback: "Show the next episode after the furthest one watched. Turn off for rewatches to follow the most recently watched episode."
-                    ),
-                    isOn: $upNextFromFurthestEpisode,
-                    accentColor: accentColor
-                )
-
-                SettingsToggleRow(
-                    title: L10n.string("tvos_layout_show_unaired", fallback: "Show Unaired Next Up"),
-                    subtitle: L10n.string(
-                        "tvos_layout_show_unaired_subtitle",
-                        fallback: "Keep upcoming episodes in Continue Watching with their air date"
-                    ),
-                    isOn: $showUnairedNextUp,
-                    accentColor: accentColor
-                )
 
                 SettingsToggleRow(
                     title: L10n.string(

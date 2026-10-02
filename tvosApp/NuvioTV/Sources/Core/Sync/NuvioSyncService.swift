@@ -1959,6 +1959,7 @@ enum ContinueWatchingSyncMapper {
 
     static func exportPayload(
         localProfileId: String? = nil,
+        isVisible: Bool? = nil,
         upNextFromFurthestEpisode: Bool,
         showUnairedNextUp: Bool,
         continueWatchingSort: String?,
@@ -1972,7 +1973,7 @@ enum ContinueWatchingSyncMapper {
             existingDict = parsed
         }
 
-        let isVisible = existingDict["isVisible"] as? Bool ?? true
+        let resolvedIsVisible = isVisible ?? (existingDict["isVisible"] as? Bool ?? true)
         let style = existingDict["style"] as? String ?? "Card"
         let useEpisodeThumbnails = existingDict["use_episode_thumbnails_in_cw"] as? Bool ?? true
         let blurNextUp = existingDict["blur_continue_watching_next_up"] as? Bool ?? false
@@ -1981,7 +1982,7 @@ enum ContinueWatchingSyncMapper {
         let sortMode = sortModeToWire(continueWatchingSort)
 
         let payloadDict: [String: Any] = [
-            "isVisible": isVisible,
+            "isVisible": resolvedIsVisible,
             "style": style,
             "upNextFromFurthestEpisode": upNextFromFurthestEpisode,
             "use_episode_thumbnails_in_cw": useEpisodeThumbnails,
@@ -1999,8 +2000,8 @@ enum ContinueWatchingSyncMapper {
         return ""
     }
 
-    static func importPayload(_ remote: Any?) -> (upNextFromFurthestEpisode: Bool?, showUnairedNextUp: Bool?, sortMode: String?, dismissedKeys: Set<String>?) {
-        guard let remote else { return (nil, nil, nil, nil) }
+    static func importPayload(_ remote: Any?) -> (isVisible: Bool?, upNextFromFurthestEpisode: Bool?, showUnairedNextUp: Bool?, sortMode: String?, dismissedKeys: Set<String>?) {
+        guard let remote else { return (nil, nil, nil, nil, nil) }
         var dict: [String: Any]?
         if let jsonString = remote as? String,
            let data = jsonString.data(using: .utf8),
@@ -2009,8 +2010,9 @@ enum ContinueWatchingSyncMapper {
         } else if let parsed = remote as? [String: Any] {
             dict = parsed
         }
-        guard let dict else { return (nil, nil, nil, nil) }
+        guard let dict else { return (nil, nil, nil, nil, nil) }
 
+        let isVisible = dict["isVisible"] as? Bool
         let upNext = dict["upNextFromFurthestEpisode"] as? Bool
         let showUnaired = (dict["show_unaired_next_up"] as? Bool) ?? (dict["showUnairedNextUp"] as? Bool)
         var sortMode: String?
@@ -2019,7 +2021,7 @@ enum ContinueWatchingSyncMapper {
         }
         let dismissedKeys = (dict["dismissedNextUpKeys"] as? [String]).map { Set($0) }
 
-        return (upNext, showUnaired, sortMode, dismissedKeys)
+        return (isVisible, upNext, showUnaired, sortMode, dismissedKeys)
     }
 }
 
@@ -3746,11 +3748,13 @@ fileprivate final class NuvioAPIClient {
         existingPayload: String?
     ) -> String {
         let defaults = ProfileSettings.store(for: localProfileId)
+        let isVisible = defaults.object(forKey: SettingsKey.continueWatchingVisible) as? Bool ?? true
         let upNext = defaults.object(forKey: SettingsKey.upNextFromFurthestEpisode) as? Bool ?? true
         let showUnaired = defaults.object(forKey: SettingsKey.showUnairedNextUp) as? Bool ?? true
         let sort = defaults.string(forKey: SettingsKey.continueWatchingSort)
         return ContinueWatchingSyncMapper.exportPayload(
             localProfileId: localProfileId,
+            isVisible: isVisible,
             upNextFromFurthestEpisode: upNext,
             showUnairedNextUp: showUnaired,
             continueWatchingSort: sort,
@@ -3761,7 +3765,10 @@ fileprivate final class NuvioAPIClient {
     private func importContinueWatchingSettings(_ remote: Any?, localProfileId: String) {
         guard let remote else { return }
         let defaults = ProfileSettings.store(for: localProfileId)
-        let (upNext, showUnaired, sortMode, dismissedKeys) = ContinueWatchingSyncMapper.importPayload(remote)
+        let (isVisible, upNext, showUnaired, sortMode, dismissedKeys) = ContinueWatchingSyncMapper.importPayload(remote)
+        if let isVisible {
+            defaults.set(isVisible, forKey: SettingsKey.continueWatchingVisible)
+        }
         if let upNext {
             defaults.set(upNext, forKey: SettingsKey.upNextFromFurthestEpisode)
         }

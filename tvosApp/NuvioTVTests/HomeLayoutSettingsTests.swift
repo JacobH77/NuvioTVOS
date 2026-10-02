@@ -66,6 +66,26 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertEqual(TVHomeCardIdentity.folderKey(rowID: section.id, folder: section.collectionFolders[0]), key)
     }
 
+    func testContinueWatchingVisibleSetting() {
+        XCTAssertEqual(SettingsKey.continueWatchingVisible, "nuvio.tv.settings.layout.continueWatchingVisible")
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.continueWatchingVisible))
+
+        let defaults = UserDefaults(suiteName: "ContinueWatchingVisibleTestsDefaults")!
+        defaults.removePersistentDomain(forName: "ContinueWatchingVisibleTestsDefaults")
+
+        // Default should be true (on)
+        let isVisibleDefault = defaults.object(forKey: SettingsKey.continueWatchingVisible) as? Bool ?? true
+        XCTAssertTrue(isVisibleDefault)
+
+        // Can be toggled to false
+        defaults.set(false, forKey: SettingsKey.continueWatchingVisible)
+        XCTAssertFalse(defaults.bool(forKey: SettingsKey.continueWatchingVisible))
+
+        // Can be toggled back to true
+        defaults.set(true, forKey: SettingsKey.continueWatchingVisible)
+        XCTAssertTrue(defaults.bool(forKey: SettingsKey.continueWatchingVisible))
+    }
+
     func testFullscreenHeroBackdropSettingsKeyDefined() {
         XCTAssertEqual(SettingsKey.fullscreenHeroBackdrop, "nuvio.tv.settings.layout.fullscreenHeroBackdrop")
         XCTAssertTrue(SettingsKey.all.contains(SettingsKey.fullscreenHeroBackdrop))

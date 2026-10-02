@@ -3194,6 +3194,7 @@ enum ProfileDisplayName {
 
 private final class TVHomeFocusWork {
     struct VisibleSectionsSignature: Equatable {
+        let cwVisible: Bool
         let cwCount: Int
         let cwFirstId: String?
         let upCount: Int
@@ -3446,6 +3447,7 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(SettingsKey.hideUnreleased) private var hideUnreleased = false
+    @AppStorage(SettingsKey.continueWatchingVisible) private var continueWatchingVisible = true
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
@@ -5128,7 +5130,7 @@ struct TVHomeView: View {
     /// lazy viewport retry saved-focus preparation without comparing metadata
     /// arrays or rebuilding work for every card.
     private var initialFocusContentSignature: String {
-        "\(store.hasLoaded)_\(store.sectionsRevision)_\(continueWatchingMetas.count)_\(upcomingMetas.count)"
+        "\(store.hasLoaded)_\(store.sectionsRevision)_\(continueWatchingVisible ? continueWatchingMetas.count : 0)_\(continueWatchingVisible ? upcomingMetas.count : 0)"
     }
 
     /// Finds the saved card without assuming that section or card IDs contain
@@ -5347,10 +5349,11 @@ struct TVHomeView: View {
 
     private var visibleSections: [TVHomeSection] {
         let signature = TVHomeFocusWork.VisibleSectionsSignature(
-            cwCount: continueWatchingMetas.count,
-            cwFirstId: continueWatchingMetas.first?.id,
-            upCount: upcomingMetas.count,
-            upFirstId: upcomingMetas.first?.id,
+            cwVisible: continueWatchingVisible,
+            cwCount: continueWatchingVisible ? continueWatchingMetas.count : 0,
+            cwFirstId: continueWatchingVisible ? continueWatchingMetas.first?.id : nil,
+            upCount: continueWatchingVisible ? upcomingMetas.count : 0,
+            upFirstId: continueWatchingVisible ? upcomingMetas.first?.id : nil,
             localCount: localTitlesSection?.items.count ?? 0,
             jellyfinCount: jellyfinSection?.items.count ?? 0,
             storeRevision: store.sectionsRevision,
@@ -5371,8 +5374,8 @@ struct TVHomeView: View {
             title: L10n.string("tvos_home_upcoming", fallback: "Upcoming"),
             items: upcomingMetas
         )
-        let pinnedSections = (continueWatching.isEmpty ? [] : [resumeSection])
-            + (upcomingMetas.isEmpty ? [] : [upcomingSection])
+        let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
+            + ((upcomingMetas.isEmpty || !continueWatchingVisible) ? [] : [upcomingSection])
             + [localTitlesSection, jellyfinSection].compactMap { $0 }
         let allSections = pinnedSections + store.sections
 

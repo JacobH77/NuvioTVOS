@@ -107,6 +107,7 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
     func testContinueWatchingImportPayload() {
         let remoteJson = """
         {
+            "isVisible": false,
             "upNextFromFurthestEpisode": false,
             "show_unaired_next_up": false,
             "sort_mode": "STREAMING_STYLE",
@@ -114,7 +115,8 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         }
         """
 
-        let (upNext, showUnaired, sortMode, dismissedKeys) = ContinueWatchingSyncMapper.importPayload(remoteJson)
+        let (isVisible, upNext, showUnaired, sortMode, dismissedKeys) = ContinueWatchingSyncMapper.importPayload(remoteJson)
+        XCTAssertEqual(isVisible, false)
         XCTAssertEqual(upNext, false)
         XCTAssertEqual(showUnaired, false)
         XCTAssertEqual(sortMode, "Streaming Style")
