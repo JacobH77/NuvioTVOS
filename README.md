@@ -48,24 +48,24 @@ Download the latest Apple TV `.ipa` from [Releases](https://github.com/bobsupra/
 ## Latest tvOS Beta
 
 <!-- BEGIN LATEST_BETA -->
-**Beta 3.3.9** is the latest tvOS release.
+**Beta 3.4.0** is the latest tvOS release.
 
-[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.3.9/NuvioTV-3.3.9-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.3.9) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
+[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.0/NuvioTV-3.4.0-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.0) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
 <!-- END LATEST_BETA -->
 
 > 🎉 **Thank you for 200+ GitHub Stars!** A huge thank you to everyone in the community for supporting NuvioTVOS and helping us reach 200+ stars!
 
 The IPA requires a compatible tvOS development or sideloading signing workflow before installation.
 
-### New in Beta 3.3.9
+### New in Beta 3.4.0
 
-- **Apple TV-Style Scene Insights (CoreML AI):** Integrated on-device CoreML facial recognition neural networks (**YuNet** + **SFace**) to scan live scenes and match appearing actors to TMDB profiles in real time.
-- **Anime & Animated Voice Cast Fallback:** Automatically identifies anime and animated media, bypassing face scanning to instantly display full episode voice casts and character roles.
-- **Real-Time Music & Subtitle Cue Recognition:** Identifies background songs and soundtrack cues via audio recognition and subtitle parsing, complete with Apple Music and Shazam album art.
-- **Seamless Background Trailers in Details Screen:** Background trailers are now enabled by default; preview trailers inside poster cards and seamlessly resume directly into Details or expand full-screen without rebuffering.
-- **Production Browse & Catalog Rails:** Dedicated production company browse views with live collection item counts.
-- **Simkl & Trakt Synchronization:** Hardened scrobbling, episode matching, and instant settings synchronization.
-- **Release Diagnostics & Watchdog Hardening:** Main thread stall watchdog disabled by default for fluid 60fps UI performance while retaining 30s load failover and AetherEngine recovery.
+- **High-Throughput Stream Disk Caching & Stability:** Multi-tier disk caching architecture with dedicated session isolation, rate-limit cooldown bypass for on-demand chunks, and unified rock-solid stability for both AetherEngine and MPVKit.
+- **Local Stream Scrub Thumbnails:** Instantaneous video frame thumbnail extraction directly from locally cached stream segments.
+- **Modernized Simkl OAuth 2.0 (v2 Client ID):** Upgraded Simkl authentication to the new v2 client credentials and modern OAuth 2.0 Device Flow, automated background token refresh, and bi-directional watch status synchronization.
+- **Continue Watching Row Visibility & Sync Fixes:** Added a dedicated toggle in Layout Settings to show or hide the Continue Watching row, resolved item truncation, and fixed series re-watching progress updates.
+- **Player Engine Routing & Live/Sports Optimization:** Fine-tuned backend engine selection for HLS manifests, live sports streams, custom HTTP headers, and Aether HDR10+ scanning.
+- **Details Screen & Cast Row Polish:** Dynamic active cast member display, trailer playback handoff, and customizable addon priority ordering in settings.
+- **MDBList & Jellyfin Enhancements:** Enhanced MDBList scrobble tracking, server-level API keys for Jellyfin, and accelerated concurrent subtitle addon resolution.
 
 ### Built-in Player
 
