@@ -33,6 +33,8 @@ struct PlaybackLoadRequest: Equatable {
     var cacheProfile: PlaybackCacheProfile
     var assMode: PlaybackASSMode
     var isAnime: Bool
+    var isLiveStream: Bool
+    var isSports: Bool
     var autoplay: Bool
     /// Runtime controls that must survive an Aether → MPV handoff.
     var playbackRate: Float
@@ -65,6 +67,8 @@ struct PlaybackLoadRequest: Equatable {
         cacheProfile: PlaybackCacheProfile = .auto,
         assMode: PlaybackASSMode = .off,
         isAnime: Bool = false,
+        isLiveStream: Bool = false,
+        isSports: Bool = false,
         autoplay: Bool = true,
         playbackRate: Float = 1,
         aspectMode: PlayerAspectMode = .fit,
@@ -90,6 +94,8 @@ struct PlaybackLoadRequest: Equatable {
         self.cacheProfile = cacheProfile
         self.assMode = assMode
         self.isAnime = isAnime
+        self.isLiveStream = isLiveStream
+        self.isSports = isSports
         self.autoplay = autoplay
         self.playbackRate = playbackRate
         self.aspectMode = aspectMode

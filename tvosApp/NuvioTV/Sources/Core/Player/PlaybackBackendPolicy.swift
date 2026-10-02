@@ -53,6 +53,9 @@ enum PlaybackBackendPolicy {
         var requiresMPVAudioControls: Bool
         var assMode: PlaybackASSMode
         var isAnime: Bool = false
+        var isLiveStream: Bool = false
+        var isSports: Bool = false
+        var httpHeaders: [String: String] = [:]
     }
 
     struct Result: Equatable {
@@ -126,6 +129,24 @@ enum PlaybackBackendPolicy {
             )
         }
 
+        let hasSegmentHeaders = input.httpHeaders.keys.contains { key in
+            let lower = key.lowercased()
+            return lower == "referer" || lower == "origin" || lower == "user-agent"
+        }
+        let urlLower = input.urlString.lowercased()
+        let isHLS = urlLower.contains(".m3u8")
+            || urlLower.contains("/m3u/")
+            || urlLower.contains("/hls/")
+            || urlLower.contains("manifest.googlevideo.com")
+        let isLiveOrSports = input.isLiveStream
+            || input.isSports
+            || hasSegmentHeaders
+            || urlLower.contains("nuvio_sport")
+            || urlLower.contains("/api/manifest")
+            || urlLower.contains("streamed.pk")
+            || urlLower.contains("daddylive")
+            || urlLower.contains("cdnlive")
+
         switch input.engineSetting {
         case .mpv:
             if isRemoteHTTP(input.urlString) && !PlaybackEngineCapabilities.mpv.supportsDirectHTTPS {
@@ -150,11 +171,27 @@ enum PlaybackBackendPolicy {
                 statusMessage: nil
             )
         case .auto:
+            if isHLS {
+                return Result(
+                    backend: .aether,
+                    allowAutomaticFallback: true,
+                    reason: "Auto: HLS stream (.m3u8) detected, routing to AetherEngine for native Apple HLS & HTTPS support",
+                    statusMessage: nil
+                )
+            }
             if isAnime {
                 return Result(
                     backend: .mpv,
                     allowAutomaticFallback: true,
                     reason: "Auto: Anime content detected, routing to MPVKit for ASS/typesetting support",
+                    statusMessage: nil
+                )
+            }
+            if isLiveOrSports {
+                return Result(
+                    backend: .mpv,
+                    allowAutomaticFallback: true,
+                    reason: "Auto: Live or sports stream detected, routing to MPVKit for robust live demuxing and header preservation",
                     statusMessage: nil
                 )
             }
@@ -177,7 +214,10 @@ enum PlaybackBackendPolicy {
         streamDescription: String? = nil,
         filename: String? = nil,
         requiresMPVAudioControls: Bool = false,
-        isAnime: Bool = false
+        isAnime: Bool = false,
+        isLiveStream: Bool = false,
+        isSports: Bool = false,
+        httpHeaders: [String: String] = [:]
     ) -> Result {
         let setting = PlayerEngineSetting.migrated(
             from: ProfileSettings.current.string(forKey: SettingsKey.playerEngine)
@@ -197,7 +237,10 @@ enum PlaybackBackendPolicy {
                 engineSetting: setting,
                 requiresMPVAudioControls: requiresMPVAudioControls,
                 assMode: ass,
-                isAnime: detectedAnime
+                isAnime: detectedAnime,
+                isLiveStream: isLiveStream,
+                isSports: isSports,
+                httpHeaders: httpHeaders
             )
         )
     }

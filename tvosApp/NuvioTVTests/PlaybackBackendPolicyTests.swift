@@ -313,6 +313,56 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertEqual(decision.failedURLs, [url])
     }
 
+    func testPlaybackBackendPolicyRoutesHLSToAether() {
+        let input = PlaybackBackendPolicy.Input(
+            urlString: "https://live.stream.test/master.m3u8",
+            engineSetting: .auto,
+            requiresMPVAudioControls: false,
+            assMode: .off,
+            isLiveStream: true
+        )
+        let result = PlaybackBackendPolicy.resolve(input)
+        XCTAssertEqual(result.backend, .aether)
+        XCTAssertTrue(result.allowAutomaticFallback)
+    }
+
+    func testPlaybackBackendPolicyRoutesDirectTSToMPV() {
+        let input = PlaybackBackendPolicy.Input(
+            urlString: "http://live.iptv.test/stream.ts",
+            engineSetting: .auto,
+            requiresMPVAudioControls: false,
+            assMode: .off,
+            isLiveStream: true
+        )
+        let result = PlaybackBackendPolicy.resolve(input)
+        XCTAssertEqual(result.backend, .mpv)
+        XCTAssertTrue(result.allowAutomaticFallback)
+    }
+
+    func testPlaybackBackendPolicyRoutesSportsStreamToMPV() {
+        let input = PlaybackBackendPolicy.Input(
+            urlString: "http://streamed.pk/api/live/stream",
+            engineSetting: .auto,
+            requiresMPVAudioControls: false,
+            assMode: .off,
+            isSports: true
+        )
+        let result = PlaybackBackendPolicy.resolve(input)
+        XCTAssertEqual(result.backend, .mpv)
+    }
+
+    func testPlaybackBackendPolicyRoutesSegmentHeadersToMPV() {
+        let input = PlaybackBackendPolicy.Input(
+            urlString: "http://127.0.0.1/stream",
+            engineSetting: .auto,
+            requiresMPVAudioControls: false,
+            assMode: .off,
+            httpHeaders: ["Referer": "https://streamed.pk"]
+        )
+        let result = PlaybackBackendPolicy.resolve(input)
+        XCTAssertEqual(result.backend, .mpv)
+    }
+
     func testMPVHTTPHeaderOptionsExtractAndEscapeHeaders() {
         let options = MPVHTTPHeaderOptions(headers: [
             "uSeR-aGeNt": "TrailerClient/1.0",

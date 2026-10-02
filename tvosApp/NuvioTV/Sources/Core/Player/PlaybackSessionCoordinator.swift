@@ -106,7 +106,10 @@ final class PlaybackSessionCoordinator: ObservableObject {
                 engineSetting: migratedEngine,
                 requiresMPVAudioControls: requiresMPVAudioControls,
                 assMode: request.assMode,
-                isAnime: request.isAnime
+                isAnime: request.isAnime,
+                isLiveStream: request.isLiveStream,
+                isSports: request.isSports,
+                httpHeaders: request.httpHeaders
             )
         )
         lastPolicyReason = policy.reason

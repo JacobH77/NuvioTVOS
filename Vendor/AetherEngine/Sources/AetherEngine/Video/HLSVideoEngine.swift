@@ -1483,26 +1483,17 @@ public final class HLSVideoEngine: @unchecked Sendable {
         // color_trc/primaries/space all unspecified, so AVPlayer's DV decoder won't engage on the dvh1
         // sample entry (MKV reads Colour element directly into codecpar; MP4 demuxer has no fallback).
         // Forcing the canonical IPT-PQ-c2 tuple writes `colr nclx` so AVPlayer sees the PQ signal.
-        // Primaries/transfer/matrix are spec-fixed for P5, so this is a repair. Range is preserved if
-        // already signaled (full-range P5 is legal, #20); unspecified defaults to limited.
-        // The AE#455 P8.1-as-P5 route needs the same guarantee for the same reason, and lands on the
-        // same tuple: an HDR10 base layer is BT.2020 / PQ / BT.2020-NCL by definition.
-        // Keyed on the sample entry the route chose, not on the variant: a Profile 5 record served as
-        // its base layer (`dolbyVisionHandling = .baseLayerOnly`) is plain hvc1 whose VUI the muxer
-        // stream-copies as it stands.
-        // A record the engine synthesized from the RPU (AE#recordless) needs the repair most of all:
-        // its gate IS an unspecified VUI, which is the signal shape #19 was reported on, and a source
-        // is the same bytes whether the container recorded its profile or not. Measured on one
-        // bitstream in two containers, Dolby's P5 asset with and without its `dvcC`: with the record
-        // `init.mp4` is 883 B carrying `colr nclx` 9 / 16 / 9 full range, without it and without this
-        // override 864 B and no `colr` at all, which would be two deliveries of one picture.
+        // Primaries and transfer are BT.2020 and PQ for P5. Crucially, matrix coefficients (space)
+        // must remain unspecified (AVCOL_SPC_UNSPECIFIED = 2); forcing AVCOL_SPC_BT2020_NCL (matrix 9)
+        // explicitly signals a YCbCr matrix, causing AVPlayer/CoreMedia to decode IPT chroma as YCbCr
+        // and produce a severe purple/green tint. Range is preserved if already signaled; unspecified defaults to limited.
         let p5ColorOverride: MP4SegmentMuxer.ColorOverride?
         if codecTagOverride == "dvh1" {
             let sourceRange = codecpar.pointee.color_range
             p5ColorOverride = MP4SegmentMuxer.ColorOverride(
                 primaries: AVCOL_PRI_BT2020,
                 trc: AVCOL_TRC_SMPTE2084,
-                space: AVCOL_SPC_BT2020_NCL,
+                space: AVCOL_SPC_UNSPECIFIED,
                 range: sourceRange == AVCOL_RANGE_UNSPECIFIED
                     ? AVCOL_RANGE_MPEG
                     : sourceRange

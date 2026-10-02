@@ -9,11 +9,19 @@ final class MPVStreamProtocolBridge: @unchecked Sendable {
 
     private let lock = NSLock()
     private var customHeaders: [String: String] = [:]
+    private var isLiveStream: Bool = false
 
-    func setHTTPHeaders(_ headers: [String: String]) {
+    func setHTTPHeaders(_ headers: [String: String], isLiveStream: Bool = false) {
         lock.lock()
         customHeaders = headers
+        self.isLiveStream = isLiveStream
         lock.unlock()
+    }
+
+    func currentConfiguration() -> (headers: [String: String], isLiveStream: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (customHeaders, isLiveStream)
     }
 
     func currentHTTPHeaders() -> [String: String] {
@@ -32,9 +40,9 @@ final class MPVStreamProtocolBridge: @unchecked Sendable {
             guard let url = URL(string: uri) else { return MPV_ERROR_LOADING_FAILED.rawValue }
 
             let bridge = MPVStreamProtocolBridge.shared
-            let headers = bridge.currentHTTPHeaders()
+            let config = bridge.currentConfiguration()
 
-            guard let session = MPVStreamSession(url: url, headers: headers) else {
+            guard let session = MPVStreamSession(url: url, headers: config.headers, isLiveStream: config.isLiveStream) else {
                 return MPV_ERROR_LOADING_FAILED.rawValue
             }
 
@@ -78,6 +86,7 @@ final class MPVStreamProtocolBridge: @unchecked Sendable {
 private final class MPVStreamSession: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let url: URL
     let headers: [String: String]
+    let isLiveStream: Bool
 
     private let condition = NSCondition()
     private var urlSession: URLSession!
@@ -96,9 +105,10 @@ private final class MPVStreamSession: NSObject, URLSessionDataDelegate, @uncheck
     private let maxBufferSize = 64 * 1024 * 1024 // 64 MB buffer cap
     private let resumeBufferSize = 32 * 1024 * 1024 // 32 MB resume threshold
 
-    init?(url: URL, headers: [String: String]) {
+    init?(url: URL, headers: [String: String], isLiveStream: Bool = false) {
         self.url = url
         self.headers = headers
+        self.isLiveStream = isLiveStream
 
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -193,7 +203,16 @@ private final class MPVStreamSession: NSObject, URLSessionDataDelegate, @uncheck
             }
 
             if isEOF {
-                if totalSize > 0 && currentPosition < totalSize {
+                if isLiveStream {
+                    // Live stream connection closed by server; reconnect seamlessly from offset 0
+                    if consecutiveReadFailures < 50 {
+                        consecutiveReadFailures += 1
+                        isEOF = false
+                        print("[LiveWatchdog][Bridge] 🔄 Live stream connection closed by server, reconnecting seamlessly (attempt \(consecutiveReadFailures)/50)...")
+                        startRangeRequest(from: 0)
+                        continue
+                    }
+                } else if totalSize > 0 && currentPosition < totalSize {
                     // Server closed the stream before delivering the full file (e.g. idle socket drop).
                     // Reconnect automatically from currentPosition.
                     if consecutiveReadFailures < 5 {
@@ -225,8 +244,8 @@ private final class MPVStreamSession: NSObject, URLSessionDataDelegate, @uncheck
                 )
 
                 if (isTransientNetworkError || isTransientHTTPError),
-                   consecutiveReadFailures < 5,
-                   (totalSize <= 0 || currentPosition < totalSize) {
+                   consecutiveReadFailures < (isLiveStream ? 50 : 5),
+                   (isLiveStream || totalSize <= 0 || currentPosition < totalSize) {
                     consecutiveReadFailures += 1
                     taskError = nil
                     isEOF = false
@@ -234,7 +253,7 @@ private final class MPVStreamSession: NSObject, URLSessionDataDelegate, @uncheck
                     let backoff = isTransientHTTPError ? min(Double(consecutiveReadFailures) * 0.5, 2.0) : 0.2
                     condition.wait(until: Date().addingTimeInterval(backoff))
 
-                    startRangeRequest(from: currentPosition)
+                    startRangeRequest(from: isLiveStream ? 0 : currentPosition)
                     continue
                 }
                 print("[MPVStreamBridge] Read failed with error: \(error.localizedDescription)")

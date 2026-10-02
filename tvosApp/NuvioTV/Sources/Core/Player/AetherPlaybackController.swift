@@ -3639,11 +3639,13 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             && frameRateMode.caseInsensitiveCompare("Off") != .orderedSame
 
         var panelInHDR = false
+        var panelPresentsDV = false
         if #available(tvOS 11.0, *) {
             // Prefer current EDR headroom when available; fall back to available HDR modes.
             panelInHDR = AVPlayer.availableHDRModes.contains(.hdr10)
                 || AVPlayer.availableHDRModes.contains(.hlg)
                 || AVPlayer.availableHDRModes.contains(.dolbyVision)
+            panelPresentsDV = AVPlayer.availableHDRModes.contains(.dolbyVision)
         }
 
         let isRemoteHLS = request.videoURL.pathExtension.lowercased() == "m3u8"
@@ -3656,6 +3658,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             httpHeaders: request.httpHeaders,
             matchContentEnabled: matchContent,
             panelIsInHDRMode: panelInHDR,
+            panelPresentsDolbyVision: panelPresentsDV,
             audioBridgeMode: .surroundCompat,
             nativeRemoteHLS: isRemoteHLS,
             // AetherEngine honors this for ASS/SSA codec tracks only; other text

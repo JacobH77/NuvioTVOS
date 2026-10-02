@@ -442,6 +442,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     private var pendingURL: String?
     private var pendingAudioURL: String?
     private var pendingHTTPHeaders: [String: String] = [:]
+    private var pendingIsLiveStream = false
     private var pendingLoadConfiguration: MPVLoadConfiguration?
     private var currentMediaTitle: String?
     private var currentMediaArtist: String?
@@ -828,6 +829,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     func loadFile(_ urlString: String) {
         pendingLoadConfiguration = nil
         pendingHTTPHeaders = [:]
+        pendingIsLiveStream = false
         pendingURL = urlString
         if Thread.isMainThread {
             attemptStartPendingLoad()
@@ -840,6 +842,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         pendingLoadConfiguration = MPVLoadConfiguration(request: request)
         pendingAudioURL = request.audioURL?.absoluteString
         pendingHTTPHeaders = request.httpHeaders
+        pendingIsLiveStream = request.isLiveStream
         pendingURL = request.videoURL.absoluteString
         currentMediaTitle = request.streamName
         currentMediaArtist = request.streamDescription
@@ -883,7 +886,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         guard let url = pendingURL, mpv != nil else { return }
         guard isViewLoaded, view.bounds.width > 1, view.bounds.height > 1 else { return }
         pendingURL = nil
-        applyHTTPHeaders(pendingHTTPHeaders)
+        applyHTTPHeaders(pendingHTTPHeaders, isLiveStream: pendingIsLiveStream)
         pendingHTTPHeaders = [:]
         subtitleTranslationState.reset()
         isMPVSubtitleRendererHiddenForTranslation = false
@@ -2238,8 +2241,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         checkError(mpv_set_property_string(mpv, name, value))
     }
 
-    private func applyHTTPHeaders(_ headers: [String: String]) {
-        MPVStreamProtocolBridge.shared.setHTTPHeaders(headers)
+    private func applyHTTPHeaders(_ headers: [String: String], isLiveStream: Bool = false) {
+        MPVStreamProtocolBridge.shared.setHTTPHeaders(headers, isLiveStream: isLiveStream)
         let options = MPVHTTPHeaderOptions(headers: headers)
         setStringProperty("user-agent", options.userAgent)
         if !options.referrer.isEmpty {
