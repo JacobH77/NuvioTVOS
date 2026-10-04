@@ -281,9 +281,9 @@ class PlayerViewModel: ObservableObject {
     private var activeEpisodeNumbers: (season: Int, episode: Int)?
     private var pendingResumeSeconds: Double?
     private var didApplyResume = false
-    private var pendingExternalSubtitles: [NuvioSubtitle] = []
+    var pendingExternalSubtitles: [NuvioSubtitle] = []
     private var didAddExternalSubtitles = false
-    private var addedExternalSubtitleURLs: Set<String> = []
+    var addedExternalSubtitleURLs: Set<String> = []
     private var pendingSelectedExternalSubtitleURL: String?
     private var subtitleFetchTask: Task<Void, Never>?
     private var activeTrackSelectionKey: String?
@@ -294,10 +294,10 @@ class PlayerViewModel: ObservableObject {
     private var didApplySavedAudioSelection = false
     private var didApplySavedSubtitleSelection = false
     private var didApplyAudioPreference = false
-    private var didApplySubtitlePreference = false
+    var didApplySubtitlePreference = false
     /// Progressive subtitle fetches may improve an automatic match, but must
     /// never replace a subtitle (including Off) explicitly chosen in the panel.
-    private var hasExplicitSubtitleSelection = false
+    var hasExplicitSubtitleSelection = false
     private var lastProgressSave = Date.distantPast
     private var lastSavedProgressPosition: Double?
     /// Last coherent, non-EOF MPV sample. Forced lifecycle saves use this
@@ -1221,6 +1221,19 @@ class PlayerViewModel: ObservableObject {
                     if let pendingIndex = pendingExternalSubtitles.firstIndex(where: { $0.url == sub.url }) {
                         pendingExternalSubtitles[pendingIndex] = sub
                     }
+                    if let trackIndex = subtitles.firstIndex(where: { $0.externalFilename == sub.url }) {
+                        let existingTrack = subtitles[trackIndex]
+                        if let label = sub.label, !label.isEmpty {
+                            subtitles[trackIndex] = SubtitleTrack(
+                                id: existingTrack.id,
+                                name: label,
+                                language: existingTrack.language,
+                                isSelected: existingTrack.isSelected,
+                                externalFilename: existingTrack.externalFilename,
+                                isNativelyRenderedSubtitle: existingTrack.isNativelyRenderedSubtitle
+                            )
+                        }
+                    }
                 }
             } else {
                 availableExternalSubtitles.append(sub)
@@ -1236,18 +1249,34 @@ class PlayerViewModel: ObservableObject {
             sceneCoordinator.updateAvailableSubtitles(availableExternalSubtitles)
         }
 
-        let smartMatched = Self.smartMatchedSubtitles(in: fetched)
-        var addedAnyPending = false
-        for subtitle in smartMatched where !pendingExternalSubtitles.contains(where: { $0.url == subtitle.url }) && !addedExternalSubtitleURLs.contains(subtitle.url) {
-            pendingExternalSubtitles.append(subtitle)
-            addedAnyPending = true
-        }
-        if addedAnyPending {
-            if pendingTrackSelection?.subtitle == nil, !hasExplicitSubtitleSelection {
+        // Never eagerly auto-download external subtitles if:
+        // 1. The user made an explicit subtitle selection (or toggled Off)
+        // 2. A saved subtitle selection is pending
+        // 3. Smart subtitle matching is disabled
+        // 4. An active track in the preferred language is already selected and playing
+        // 5. An external subtitle is already pending or was already loaded into the engine
+        let preferredLanguages = SubtitleLanguagePreferences.orderedFromDefaults()
+        let hasActivePreferredSubtitle = Self.shouldPreserveBackendSubtitleSelection(
+            subtitles.first(where: { $0.isSelected }),
+            preferredLanguages: preferredLanguages
+        )
+        let hasPendingOrAddedSubtitles = !pendingExternalSubtitles.isEmpty || !addedExternalSubtitleURLs.isEmpty
+
+        if !hasExplicitSubtitleSelection,
+           pendingTrackSelection?.subtitle == nil,
+           SubtitleLanguagePreferences.smartMatchingEnabled(),
+           !hasActivePreferredSubtitle,
+           !hasPendingOrAddedSubtitles {
+            let smartMatched = Self.smartMatchedSubtitles(in: availableExternalSubtitles)
+            if let best = smartMatched.first,
+               !addedExternalSubtitleURLs.contains(best.url),
+               !pendingExternalSubtitles.contains(where: { $0.url == best.url }) {
+                pendingExternalSubtitles.append(best)
+                pendingSelectedExternalSubtitleURL = best.url
                 didApplySubtitlePreference = false
+                didAddExternalSubtitles = false
+                addPendingExternalSubtitlesIfNeeded()
             }
-            didAddExternalSubtitles = false
-            addPendingExternalSubtitlesIfNeeded()
         }
     }
 
@@ -3841,21 +3870,23 @@ class PlayerViewModel: ObservableObject {
         return result
     }
 
-    /// The subset of a stream's external subtitles worth auto-loading into mpv:
-    /// the user's preferred languages, when smart subtitle matching is enabled.
-    private static func smartMatchedSubtitles(in subtitles: [NuvioSubtitle]) -> [NuvioSubtitle] {
+    /// The best-matching external subtitle worth auto-loading into the player:
+    /// at most one subtitle matching the user's highest-priority preferred language,
+    /// when smart subtitle matching is enabled.
+    static func smartMatchedSubtitles(in subtitles: [NuvioSubtitle]) -> [NuvioSubtitle] {
         guard !subtitles.isEmpty,
               SubtitleLanguagePreferences.smartMatchingEnabled() else {
             return []
         }
-        var seen: Set<String> = []
-        return SubtitleLanguagePreferences.orderedFromDefaults().flatMap { language in
-            subtitles.filter { subtitle in
+        for language in SubtitleLanguagePreferences.orderedFromDefaults() {
+            if let match = subtitles.first(where: { subtitle in
                 SubtitleLanguagePreferences.matches(subtitle.language, target: language) ||
                 SubtitleLanguagePreferences.matches(subtitle.label, target: language)
+            }) {
+                return [match]
             }
         }
-        .filter { seen.insert($0.url).inserted }
+        return []
     }
 
     private func addPendingExternalSubtitlesIfNeeded() {
@@ -4364,6 +4395,10 @@ class PlayerViewModel: ObservableObject {
     }
 
     func selectSource(_ stream: NuvioStream) {
+        if let unavailableReason = stream.unavailabilityReason {
+            showPlayerToast(unavailableReason)
+            return
+        }
         guard let resolvePlaybackStream,
               let contentId = panelSourceContentId else {
             showPlayerToast("Can't switch sources right now")

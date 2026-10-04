@@ -3584,7 +3584,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         sourceProbe = nil
         let externalRegistration = AetherExternalSubtitleRegistration.make(
             subtitles: request.externalSubtitles,
-            httpHeaders: [:]
+            httpHeaders: request.httpHeaders
         )
         #if os(tvOS) || os(iOS)
         var nowPlaying: [String: Any] = [:]
@@ -3842,11 +3842,11 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             url: url,
             name: subtitle.label ?? (lang.isEmpty ? nil : lang),
             language: lang.isEmpty ? nil : lang,
-            httpHeaders: [:]
+            httpHeaders: currentHTTPHeaders
         )
         let info = engine.addExternalSubtitleTrack(track)
         externalSubtitleURLsByTrackID[info.id] = subtitle.url
-        if select {
+        if select, engine.activeSubtitleTrackIndex != info.id {
             engine.selectSubtitleTrack(index: info.id)
         }
         mapSubtitleTracks(engine.subtitleTracks)

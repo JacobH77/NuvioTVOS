@@ -293,6 +293,208 @@ final class PlayerControlsSettingsTests: XCTestCase {
         XCTAssertEqual(model.availableExternalSubtitles[2].url, "https://subs.strem.io/file/3.srt")
         XCTAssertEqual(model.availableExternalSubtitles[2].label, "French.Release.1080p")
     }
+
+    @MainActor
+    func testSmartMatchedSubtitlesReturnsAtMostOneBestMatch() {
+        let savedLangs = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedSmart = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        addTeardownBlock {
+            if let savedLangs {
+                ProfileSettings.current.set(savedLangs, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedSmart {
+                ProfileSettings.current.set(savedSmart, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+        }
+
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["Czech", "English"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+
+        let tenCzechSubtitles = (1...10).map { i in
+            NuvioSubtitle(
+                url: "https://titulky.com/file/\(i).srt",
+                language: "cze",
+                label: "Release.Czech.\(i)",
+                source: "Titulky"
+            )
+        }
+        let fiveEnglishSubtitles = (11...15).map { i in
+            NuvioSubtitle(
+                url: "https://opensubtitles.org/file/\(i).srt",
+                language: "eng",
+                label: "Release.English.\(i)",
+                source: "OpenSubtitles"
+            )
+        }
+        let allSubtitles = tenCzechSubtitles + fiveEnglishSubtitles
+
+        let matched = PlayerViewModel.smartMatchedSubtitles(in: allSubtitles)
+        XCTAssertEqual(matched.count, 1, "Smart matching must return at most one subtitle to prevent bulk download")
+        XCTAssertEqual(matched.first?.url, "https://titulky.com/file/1.srt")
+    }
+
+    @MainActor
+    func testMergeExternalSubtitlesQueuesAtMostOneBestMatch() {
+        let savedLangs = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedSmart = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        addTeardownBlock {
+            if let savedLangs {
+                ProfileSettings.current.set(savedLangs, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedSmart {
+                ProfileSettings.current.set(savedSmart, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+        }
+
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["Czech"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+
+        let model = PlayerViewModel(
+            sessionCoordinator: PlaybackSessionCoordinator(aetherControllerFactory: { nil })
+        )
+        model.subtitles = [SubtitleTrack(id: "off", name: "Off", language: "", isSelected: true)]
+
+        let tenCzechSubtitles = (1...10).map { i in
+            NuvioSubtitle(
+                url: "https://titulky.com/file/\(i).srt",
+                language: "cze",
+                label: "Release.Czech.\(i)",
+                source: "Titulky"
+            )
+        }
+
+        model.mergeExternalSubtitles(tenCzechSubtitles)
+
+        XCTAssertEqual(model.availableExternalSubtitles.count, 10, "All subtitles must remain browsable in UI")
+        XCTAssertEqual(model.pendingExternalSubtitles.count, 1, "Only the single best match should be queued for download, not all 10")
+        XCTAssertEqual(model.pendingExternalSubtitles.first?.url, "https://titulky.com/file/1.srt")
+    }
+
+    @MainActor
+    func testMergeExternalSubtitlesDoesNotQueueWhenPreferredSubtitleAlreadyActive() {
+        let savedLangs = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedSmart = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        addTeardownBlock {
+            if let savedLangs {
+                ProfileSettings.current.set(savedLangs, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedSmart {
+                ProfileSettings.current.set(savedSmart, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+        }
+
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["Czech"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+
+        let model = PlayerViewModel(
+            sessionCoordinator: PlaybackSessionCoordinator(aetherControllerFactory: { nil })
+        )
+        model.subtitles = [
+            SubtitleTrack(id: "off", name: "Off", language: "", isSelected: false),
+            SubtitleTrack(id: "1", name: "Czech (Embedded)", language: "cze", isSelected: true)
+        ]
+
+        let tenCzechSubtitles = (1...10).map { i in
+            NuvioSubtitle(
+                url: "https://titulky.com/file/\(i).srt",
+                language: "cze",
+                label: "Release.Czech.\(i)",
+                source: "Titulky"
+            )
+        }
+
+        model.mergeExternalSubtitles(tenCzechSubtitles)
+
+        XCTAssertEqual(model.availableExternalSubtitles.count, 10)
+        XCTAssertEqual(model.pendingExternalSubtitles.count, 0, "No external subtitles should be queued when embedded preferred track is active")
+    }
+
+    @MainActor
+    func testMergeExternalSubtitlesDoesNotQueueWhenExplicitSelectionMade() {
+        let savedLangs = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedSmart = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        addTeardownBlock {
+            if let savedLangs {
+                ProfileSettings.current.set(savedLangs, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedSmart {
+                ProfileSettings.current.set(savedSmart, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+        }
+
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["Czech"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+
+        let model = PlayerViewModel(
+            sessionCoordinator: PlaybackSessionCoordinator(aetherControllerFactory: { nil })
+        )
+        model.hasExplicitSubtitleSelection = true
+
+        let tenCzechSubtitles = (1...10).map { i in
+            NuvioSubtitle(
+                url: "https://titulky.com/file/\(i).srt",
+                language: "cze",
+                label: "Release.Czech.\(i)",
+                source: "Titulky"
+            )
+        }
+
+        model.mergeExternalSubtitles(tenCzechSubtitles)
+
+        XCTAssertEqual(model.availableExternalSubtitles.count, 10)
+        XCTAssertEqual(model.pendingExternalSubtitles.count, 0, "No external subtitles should be queued when user has explicitly selected subtitle state")
+    }
+
+    @MainActor
+    func testMergeExternalSubtitlesUpdatesLoadedTrackNameInPlace() {
+        let model = PlayerViewModel(
+            sessionCoordinator: PlaybackSessionCoordinator(aetherControllerFactory: { nil })
+        )
+        let initialSub = NuvioSubtitle(
+            url: "https://subs.strem.io/file/1.srt",
+            language: "eng",
+            label: "OpenSubtitles",
+            source: "OpenSubtitles v3"
+        )
+        model.availableExternalSubtitles = [initialSub]
+        model.subtitles = [
+            SubtitleTrack(
+                id: "1",
+                name: "OpenSubtitles",
+                language: "eng",
+                isSelected: true,
+                externalFilename: "https://subs.strem.io/file/1.srt"
+            )
+        ]
+
+        let updatedSub = NuvioSubtitle(
+            url: "https://subs.strem.io/file/1.srt",
+            language: "eng",
+            label: "Batman.2022.Proper.WEBRip",
+            source: "OpenSubtitles v3"
+        )
+
+        model.mergeExternalSubtitles([updatedSub])
+
+        XCTAssertEqual(model.availableExternalSubtitles[0].label, "Batman.2022.Proper.WEBRip")
+        XCTAssertEqual(model.subtitles[0].name, "Batman.2022.Proper.WEBRip", "Loaded track name must be updated in-place")
+    }
 }
 @MainActor
 private final class ControlledScrubThumbnailProvider: ScrubThumbnailProviding {
