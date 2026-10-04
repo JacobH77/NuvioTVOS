@@ -50,6 +50,7 @@ struct DetailsScreen: View {
     @State private var isStreamPickerPresented = false
     @State private var isSmartPlaybackPending = false
     @State private var isPreparingPlayback = false
+    @State private var streamPickerAvailabilityMessage: String?
     /// Episode line shown under the title in the player ("" for movies).
     @State private var pendingEpisodeSubtitle = ""
     /// The episode a stream is being picked for (nil for movies); drives the
@@ -279,8 +280,10 @@ struct DetailsScreen: View {
                     emptyReason: viewModel.uiState.streamsEmptyReason,
                     includeDebrid: DebridResolver(store: ProfileSettings.current).isEnabled || TorrentSettings.isEnabled(),
                     isResolvingDebrid: isResolvingDebrid,
+                    initialAvailabilityMessage: streamPickerAvailabilityMessage,
                     onSelect: { stream, player in
                         PlaybackStartupTiming.start(title: meta.name)
+                        streamPickerAvailabilityMessage = nil
                         isStreamPickerPresented = false
                         isPreparingPlayback = true
                         playStream(stream, meta: meta, player: player)
@@ -289,6 +292,7 @@ struct DetailsScreen: View {
                         refreshSources()
                     },
                     onDismiss: {
+                        streamPickerAvailabilityMessage = nil
                         isStreamPickerPresented = false
                     }
                 )
@@ -409,6 +413,7 @@ struct DetailsScreen: View {
 
     private func refreshSources() {
         guard let meta = viewModel.uiState.meta else { return }
+        streamPickerAvailabilityMessage = nil
         if let episode = pendingEpisode {
             let streamId = canonicalEpisodeStreamId(for: episode, meta: meta)
             viewModel.prepareStreams(forId: streamId, type: "series", forceRefresh: true)
@@ -419,6 +424,7 @@ struct DetailsScreen: View {
 
     private func startStreamFlow(streamId: String, type: String, reload: Bool, forceManualPicker: Bool = false) {
         guard let meta = viewModel.uiState.meta else { return }
+        streamPickerAvailabilityMessage = nil
 
         if forceManualPicker || !smartStreamSelection {
             isSmartPlaybackPending = false
@@ -447,11 +453,20 @@ struct DetailsScreen: View {
         guard let meta else { return }
 
         let debrid = DebridResolver(store: ProfileSettings.current)
-        let cachedOnly = (ProfileSettings.current.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnlyPreference = (ProfileSettings.current.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnly = SmartPlaybackSelector.effectiveCachedOnly(
+            cachedOnlyPreference,
+            contentType: meta.type
+        )
 
         let activeProfileId = ProfileSettings.activeProfileID
         let preferredTags = LastStreamQualityStore.load(metaId: meta.id, profileId: activeProfileId)
         let preserveAddonOrder = (ProfileSettings.current.object(forKey: SettingsKey.preserveAddonStreamOrder) as? Bool) ?? false
+        let unavailableReason: String? = {
+            let streams = viewModel.uiState.streams
+            guard !streams.isEmpty, streams.allSatisfy({ $0.unavailabilityReason != nil }) else { return nil }
+            return streams.compactMap(\.unavailabilityReason).first
+        }()
 
         let candidateStream: NuvioStream?
         if smartStreamUseTopResult || preserveAddonOrder {
@@ -466,15 +481,16 @@ struct DetailsScreen: View {
                 cachedOnly: cachedOnly,
                 preserveAddonStreams: preserveAddonOrder
             )
+            let available = displayed.filter { $0.unavailabilityReason == nil }
             let pool: [NuvioStream]
             if preserveAddonOrder {
-                pool = displayed
+                pool = available
             } else {
                 // Filter out 0-res / ticket streams if valid streams exist
-                let valid = displayed.filter {
+                let valid = available.filter {
                     !SmartPlaybackSelector.isLowQualityOrTicketStream($0) && StreamPickerListBuilder.resolution(for: $0) >= 720
                 }
-                pool = valid.isEmpty ? displayed : valid
+                pool = valid.isEmpty ? available : valid
             }
             let preferBingeGroup = (ProfileSettings.current.object(forKey: SettingsKey.streamAutoPlayPreferBingeGroup) as? Bool) ?? true
             let reuseBingeGroup = (ProfileSettings.current.object(forKey: SettingsKey.streamAutoPlayReuseBingeGroup) as? Bool) ?? true
@@ -531,7 +547,8 @@ struct DetailsScreen: View {
                     }
                 }
 
-                if debrid.isEnabled {
+                if debrid.isEnabled,
+                   SmartPlaybackSelector.effectiveCachedOnly(true, contentType: meta.type) {
                     return tags.isCached && res >= targetRes
                 }
                 return res >= targetRes
@@ -542,10 +559,18 @@ struct DetailsScreen: View {
                 isPreparingPlayback = true
                 playStream(stream, meta: meta)
             }
-        } else if !viewModel.uiState.isLoadingStreams && (viewModel.uiState.streamsEmptyReason != nil || !viewModel.uiState.streamGroups.isEmpty) {
+        } else if !viewModel.uiState.isLoadingStreams
+                    && (viewModel.uiState.streamsEmptyReason != nil || !viewModel.uiState.streamGroups.isEmpty || unavailableReason != nil) {
             PlaybackStartupTiming.cancel()
             isSmartPlaybackPending = false
             isPreparingPlayback = false
+            if let unavailableReason {
+                streamPickerAvailabilityMessage = L10n.format(
+                    "details_no_sources_available_yet",
+                    fallback: "No sources available yet. %@",
+                    unavailableReason
+                )
+            }
             isStreamPickerPresented = true
         }
     }
@@ -554,6 +579,17 @@ struct DetailsScreen: View {
     /// streams are resolved through the configured debrid provider first, keeping
     /// the picker's spinner up until a link comes back (or the attempt fails).
     private func playStream(_ stream: NuvioStream, meta: NuvioMeta, player: ExternalPlayer? = nil) {
+        if let unavailableReason = stream.unavailabilityReason {
+            PlaybackStartupTiming.cancel()
+            PlaybackStartupBenchmark.shared.cancel()
+            isResolvingDebrid = false
+            isPreparingPlayback = false
+            isSmartPlaybackPending = false
+            streamPickerAvailabilityMessage = unavailableReason
+            isStreamPickerPresented = true
+            return
+        }
+
         let activeProfileId = ProfileSettings.activeProfileID
         LastStreamQualityStore.save(metaId: meta.id, stream: stream, profileId: activeProfileId)
         BingeGroupStore.save(seriesId: meta.id, stream: stream, profileId: activeProfileId)
@@ -1884,6 +1920,16 @@ actor YouTubeTrailerResolver {
 }
 
 enum SmartPlaybackSelector {
+    /// Cached-only is a VOD preference. Live and sports catalogs often have
+    /// no cache markers. Keep the legacy `tv` alias local to this policy instead
+    /// of changing shared type classification used by series handling.
+    static func effectiveCachedOnly(_ preference: Bool, contentType: String) -> Bool {
+        let normalizedType = contentType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return preference
+            && normalizedType != "tv"
+            && !CinemetaCatalogRepository.isLiveContentType(normalizedType)
+    }
+
     static func bestStream(
         from streams: [NuvioStream],
         qualityPreference: String,
@@ -1915,6 +1961,7 @@ enum SmartPlaybackSelector {
         cachedOnly: Bool = false
     ) -> [NuvioStream] {
         let playable = streams.enumerated().compactMap { index, stream -> (index: Int, stream: NuvioStream)? in
+            guard stream.unavailabilityReason == nil else { return nil }
             if let url = stream.directURL?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
                 return (index, stream)
             }
@@ -1982,29 +2029,41 @@ enum SmartPlaybackSelector {
         from streams: [NuvioStream],
         includeDebrid: Bool = false,
         cachedOnly: Bool = false,
-        preserveAddonStreams: Bool = false
+        preserveAddonStreams: Bool = false,
+        includeUnavailable: Bool = false
     ) -> [NuvioStream] {
         let playable = streams.filter { stream in
+            if stream.unavailabilityReason != nil { return includeUnavailable }
             if let url = stream.directURL?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
                 return true
             }
             return includeDebrid && stream.isDebridResolvable
         }
-        let compatible = playable.filter(isPlatformPlaybackCompatible)
-        let nonPromotional = compatible.filter { !isPromotionalStream($0) }
-        var result = nonPromotional.isEmpty ? compatible : nonPromotional
+        let compatible = playable.filter { $0.unavailabilityReason != nil || isPlatformPlaybackCompatible($0) }
+        let available = compatible.filter { $0.unavailabilityReason == nil }
+        let nonPromotional = available.filter { !isPromotionalStream($0) }
+        let selectedAvailable = nonPromotional.isEmpty ? available : nonPromotional
+        let selectedAvailableIDs = Set(selectedAvailable.map(\.id))
+        // Keep notice cards in place without letting them count as promotional
+        // fallback evidence or changing the selected available candidates.
+        var result = compatible.filter {
+            $0.unavailabilityReason != nil || selectedAvailableIDs.contains($0.id)
+        }
         if cachedOnly {
-            result = result.filter(\.isLikelyCached)
+            result = result.filter { $0.unavailabilityReason != nil || $0.isLikelyCached }
         }
         if preserveAddonStreams {
             return result
         }
         let valid = result.filter { stream in
+            guard stream.unavailabilityReason == nil else { return false }
             let tags = StreamQualityTags.parse(stream: stream)
             let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
             return !isLowQualityOrTicketStream(stream) && res >= 720
         }
-        return valid.isEmpty ? result : valid
+        guard !valid.isEmpty else { return result }
+        let validIDs = Set(valid.map(\.id))
+        return result.filter { $0.unavailabilityReason != nil || validIDs.contains($0.id) }
     }
 
     /// Prefer DV / HDR / Atmos when aiming for highest quality.
@@ -2252,7 +2311,8 @@ enum StreamPickerListBuilder {
             from: source,
             includeDebrid: includeDebrid,
             cachedOnly: cachedOnly,
-            preserveAddonStreams: preserveAddonStreams
+            preserveAddonStreams: preserveAddonStreams,
+            includeUnavailable: true
         )
     }
 
@@ -5583,6 +5643,7 @@ private struct TvStreamPickerOverlay: View {
     let includeDebrid: Bool
     /// A torrent stream is being turned into a playable link right now.
     let isResolvingDebrid: Bool
+    var initialAvailabilityMessage: String? = nil
     let onSelect: (NuvioStream, ExternalPlayer?) -> Void
     var onRefresh: (() -> Void)? = nil
     let onDismiss: () -> Void
@@ -5616,11 +5677,21 @@ private struct TvStreamPickerOverlay: View {
     @State private var showRefreshToast = false
     @State private var isRefreshing = false
     @State private var refreshToastTask: Task<Void, Never>?
+    @State private var unavailableAlertMessage: String?
+    @State private var didPresentInitialAvailabilityMessage = false
 
     private let filterAllKey = "filter::all"
     private let sortKey = "filter::sort"
     private let cachedKey = "filter::cached"
     private func filterKey(_ addonId: String) -> String { "filter::\(addonId)" }
+
+    private var effectiveCachedOnly: Bool {
+        SmartPlaybackSelector.effectiveCachedOnly(cachedOnly, contentType: meta.type)
+    }
+
+    private var showsCachedOnlyFilter: Bool {
+        includeDebrid && SmartPlaybackSelector.effectiveCachedOnly(true, contentType: meta.type)
+    }
 
     /// Inputs that may change the visible stream list (not focus).
     private var listCacheKey: StreamPickerListCacheKey {
@@ -5629,7 +5700,7 @@ private struct TvStreamPickerOverlay: View {
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly,
+            cachedOnly: effectiveCachedOnly,
             preserveAddonStreams: preserveAddonOrder
         )
     }
@@ -5731,6 +5802,10 @@ private struct TvStreamPickerOverlay: View {
             .onAppear {
                 refreshDisplayedStreamsIfNeeded()
                 seedInitialFocus()
+                if !didPresentInitialAvailabilityMessage {
+                    didPresentInitialAvailabilityMessage = true
+                    unavailableAlertMessage = initialAvailabilityMessage
+                }
             }
             // Progressive add-on results, filter chips, sort, and debrid toggle
             // all flow through this cache key. Focus is excluded.
@@ -5774,6 +5849,19 @@ private struct TvStreamPickerOverlay: View {
         .task(id: streamCardPresentationCacheKey, priority: .utility) {
             await rebuildStreamCardPresentations()
         }
+        .alert(
+            L10n.string("details_source_unavailable", fallback: "Source unavailable"),
+            isPresented: Binding(
+                get: { unavailableAlertMessage != nil },
+                set: { if !$0 { unavailableAlertMessage = nil } }
+            )
+        ) {
+            Button(L10n.string("common_ok", fallback: "OK"), role: .cancel) {
+                unavailableAlertMessage = nil
+            }
+        } message: {
+            Text(unavailableAlertMessage ?? "")
+        }
     }
 
     /// Rendering always uses the cached list. A progressive source revision may
@@ -5799,6 +5887,14 @@ private struct TvStreamPickerOverlay: View {
         )
     }
 
+    private func select(_ stream: NuvioStream, player: ExternalPlayer?) {
+        guard let reason = stream.unavailabilityReason else {
+            onSelect(stream, player)
+            return
+        }
+        unavailableAlertMessage = reason
+    }
+
     /// Rebuilds the cached list only when derivation inputs actually change.
     private func refreshDisplayedStreamsIfNeeded() {
         let key = listCacheKey
@@ -5809,7 +5905,7 @@ private struct TvStreamPickerOverlay: View {
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly,
+            cachedOnly: effectiveCachedOnly,
             preserveAddonStreams: preserveAddonOrder
         )
         displayedStreams = refreshedStreams
@@ -5907,7 +6003,7 @@ private struct TvStreamPickerOverlay: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if includeDebrid {
+            if showsCachedOnlyFilter {
                 TvStreamFilterButton(
                     title: cachedOnly
                         ? L10n.string("details_cached_only", fallback: "Cached only")
@@ -6001,8 +6097,8 @@ private struct TvStreamPickerOverlay: View {
                                 presentation: streamCardPresentations[stream.id]
                                     ?? TvStreamCardPresentation(pending: badgeSettings),
                                 externalFocus: $focusedItem,
-                                action: { onSelect(stream, nil) },
-                                onSelectPlayer: { player in onSelect(stream, player) }
+                                action: { select(stream, player: nil) },
+                                onSelectPlayer: { player in select(stream, player: player) }
                             )
                             .onAppear {
                                 if let index = streamsToShow.firstIndex(where: { $0.id == stream.id }),
