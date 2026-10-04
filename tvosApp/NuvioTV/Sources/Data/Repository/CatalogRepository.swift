@@ -316,8 +316,13 @@ final class CinemetaCatalogRepository: CatalogRepository {
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
+        let visibility = TVHomeCatalogOrder.homeVisibilityContext()
+        let folderSources = Set(visibility.collectionSources.map {
+            "\($0.addonIdentifier)\u{1F}\($0.contentType)\u{1F}\($0.catalogID)"
+        }).sorted().joined(separator: "|")
+        let explicitHomeKeys = visibility.explicitHomeKeys.sorted().joined(separator: ",")
         let showType = ProfileSettings.current.object(forKey: SettingsKey.homeCatalogShowType) as? Bool ?? true
-        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] order:[\(order)] customTitles:[\(customTitles)] showType:\(showType)"
+        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] order:[\(order)] customTitles:[\(customTitles)] folderSources:[\(folderSources)] explicitHome:[\(explicitHomeKeys)] showType:\(showType)"
     }
     private let baseURL = URL(string: "https://v3-cinemeta.strem.io")!
     private static var cachedMetaById: [String: NuvioMeta] = [:]
@@ -457,6 +462,20 @@ final class CinemetaCatalogRepository: CatalogRepository {
             ("movie_rating", TVHomeCatalogOrder.catalogDisplayTitle("Top Rated", contentType: "movie", showType: showType, addonName: Self.cinemetaDisplayName, customTitle: customTitles[TVHomeCatalogOrder.catalogSettingsKey(addonId: Self.cinemetaAddonId, contentType: "movie", catalogId: "imdbRating")]), "movie", "imdbRating"),
             ("series_rating", TVHomeCatalogOrder.catalogDisplayTitle("Top Rated", contentType: "series", showType: showType, addonName: Self.cinemetaDisplayName, customTitle: customTitles[TVHomeCatalogOrder.catalogSettingsKey(addonId: Self.cinemetaAddonId, contentType: "series", catalogId: "imdbRating")]), "series", "imdbRating")
         ]
+        let homeVisibility = TVHomeCatalogOrder.homeVisibilityContext()
+        let cinemetaManifestURL = baseURL.appendingPathComponent("manifest.json")
+        let eligibleBuiltInIndices = Set(specs.indices.filter { index in
+            let spec = specs[index]
+            return cinemetaEnabled && CatalogHomeVisibilityResolver.shouldInclude(
+                addonID: Self.cinemetaAddonId,
+                contentType: spec.type,
+                catalogID: spec.catalogId,
+                collectionSources: homeVisibility.collectionSources,
+                manifestURL: cinemetaManifestURL,
+                explicitHomeKeys: homeVisibility.explicitHomeKeys,
+                disabledHomeKeys: homeVisibility.disabledCatalogKeys
+            )
+        })
 
         // Load the independent Cinemeta rows concurrently. Previously one
         // transient failure aborted the complete Home request, leaving the
@@ -483,24 +502,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         try Task.checkCancellation()
 
-        // The built-in rows are Cinemeta catalogs, so they answer to the same
-        // hidden-catalog keys as every add-on row — both the account's and the
-        // ones Settings writes locally. Without this, hiding "Popular - Movies"
-        // was the one toggle Home ignored.
-        let disabledBuiltInKeys = TVHomeCatalogOrder.disabledCatalogKeys()
-
         func builtInCatalogs() -> [NuvioCatalog] {
             guard cinemetaEnabled else { return [] }
             var result: [NuvioCatalog] = []
             for (index, spec) in specs.enumerated() {
-                guard let page = pages[index] else { continue }
-                guard !disabledBuiltInKeys.contains(
-                    TVHomeCatalogOrder.catalogSettingsKey(
-                        addonId: Self.cinemetaAddonId,
-                        contentType: spec.type,
-                        catalogId: spec.catalogId
-                    )
-                ) else { continue }
+                guard eligibleBuiltInIndices.contains(index), let page = pages[index] else { continue }
                 cacheMetadata(page)
                 result.append(
                     NuvioCatalog(
@@ -512,7 +518,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         contentType: spec.type,
                         catalogId: spec.catalogId,
                         addonId: Self.cinemetaAddonId,
-                        addonName: Self.cinemetaDisplayName
+                        addonName: Self.cinemetaDisplayName,
+                        manifestURL: cinemetaManifestURL.absoluteString
                     )
                 )
             }
@@ -590,8 +597,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
         if lastProgressiveUpdateCount != addonResult.catalogs.count {
             onUpdate?(catalogs)
         }
-        let missingBuiltIns = pages.indices
+        let missingBuiltIns = eligibleBuiltInIndices
             .filter { pages[$0] == nil }
+            .sorted()
             .map(String.init)
             .joined(separator: ",")
         homeCatalogLoadWasPartial = !missingBuiltIns.isEmpty || addonResult.hadFailures
@@ -600,7 +608,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
         homeCatalogFailureSignature = homeCatalogLoadWasPartial
             ? "builtin:[\(missingBuiltIns)] addons:[\(Self.homeAddonFetchDiagnostic)]"
             : nil
-        guard !catalogs.isEmpty else { throw URLError(.cannotLoadFromNetwork) }
+        if catalogs.isEmpty {
+            guard !homeCatalogLoadWasPartial else { throw URLError(.cannotLoadFromNetwork) }
+            onUpdate?([])
+            return []
+        }
         return catalogs
     }
 
@@ -696,9 +708,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
     private func addonHomeCatalogs(
         onCatalogLoaded: ((NuvioCatalog) -> Void)? = nil
     ) async -> (catalogs: [NuvioCatalog], hadFailures: Bool) {
-        // Catalogs the user hid from Home on another device (synced from the
-        // account). Their key format matches the tvOS catalog id sans `addon_`.
-        let disabledCatalogKeys = TVHomeCatalogOrder.disabledCatalogKeys()
+        let activeProfileID = ProfileSettings.activeProfileID
+        let homeVisibility = TVHomeCatalogOrder.homeVisibilityContext()
         var catalogs: [NuvioCatalog] = []
         var reports: [String] = []
         var hadFailures = false
@@ -706,8 +717,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
 
         for manifestURL in Self.configuredStreamAddonManifestURLs {
             guard !Task.isCancelled else { break }
-            guard let manifest = await manifest(for: manifestURL) else {
-                guard !Task.isCancelled else { break }
+            let resolvedManifest = await manifest(for: manifestURL)
+            guard !Task.isCancelled, ProfileSettings.activeProfileID == activeProfileID else { break }
+            guard let manifest = resolvedManifest else {
                 hadFailures = true
                 reports.append("\(manifestURL.host ?? "unknown"): manifest failed")
                 continue
@@ -715,13 +727,53 @@ final class CinemetaCatalogRepository: CatalogRepository {
             guard manifest.id != Self.cinemetaAddonId else { continue }
 
             let base = manifestURL.deletingLastPathComponent()
-            let eligible = (manifest.catalogs ?? []).filter { catalog in
-                guard catalog.eligibleForHome else { return false }
-                let key = "\(manifest.id)_\(catalog.type)_\(catalog.id)"
-                guard !disabledCatalogKeys.contains(key) else {
-                    return false
-                }
-                return !catalog.requiresGenre || catalog.firstGenreOption != nil
+            let addonDisplayName = manifest.displayName ?? Self.streamAddonName(for: manifestURL)
+            let manifestEligible = (manifest.catalogs ?? []).filter { catalog in
+                catalog.eligibleForHome
+                    && (!catalog.requiresGenre || catalog.firstGenreOption != nil)
+            }
+            let registeredRows = manifestEligible.map { catalog in
+                let settingsKey = TVHomeCatalogOrder.catalogSettingsKey(
+                    addonId: manifest.id,
+                    contentType: catalog.type,
+                    catalogId: catalog.id
+                )
+                return TVHomeCatalogOrder.SnapshotRow(
+                    id: "addon_\(manifest.id)_\(catalog.type)_\(catalog.id)",
+                    title: TVHomeCatalogOrder.catalogDisplayTitle(
+                        catalog.name ?? catalog.id,
+                        contentType: catalog.type,
+                        showType: ProfileSettings.current.object(forKey: SettingsKey.homeCatalogShowType) as? Bool ?? true,
+                        addonName: addonDisplayName,
+                        customTitle: TVHomeCatalogOrder.customTitle(forCatalogKey: settingsKey)
+                    ),
+                    addonName: addonDisplayName,
+                    addonId: manifest.id,
+                    contentType: catalog.type,
+                    catalogId: catalog.id,
+                    manifestURL: manifestURL.absoluteString,
+                    manifestShowInHome: catalog.showInHome,
+                    settingsKey: settingsKey,
+                    posterShape: catalog.posterShape
+                )
+            }
+            TVHomeCatalogOrder.replaceSnapshotRows(
+                forAddonID: manifest.id,
+                addonName: addonDisplayName,
+                with: registeredRows
+            )
+
+            let eligible = manifestEligible.filter { catalog in
+                CatalogHomeVisibilityResolver.shouldInclude(
+                    addonID: manifest.id,
+                    contentType: catalog.type,
+                    catalogID: catalog.id,
+                    collectionSources: homeVisibility.collectionSources,
+                    manifestURL: manifestURL,
+                    explicitHomeKeys: homeVisibility.explicitHomeKeys,
+                    manifestShowInHome: catalog.showInHome,
+                    disabledHomeKeys: homeVisibility.disabledCatalogKeys
+                )
             }
 
             func load(_ catalog: AddonManifestCatalog) async -> NuvioCatalog? {
@@ -745,7 +797,6 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         catalogId: catalog.id
                     )
                     let customTitle = TVHomeCatalogOrder.customTitle(forCatalogKey: catalogKey)
-                    let addonDisplayName = manifest.displayName ?? Self.streamAddonName(for: manifestURL)
                     let catalogName = TVHomeCatalogOrder.catalogDisplayTitle(
                         catalog.name ?? catalog.id,
                         contentType: catalog.type,
@@ -764,6 +815,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         addonId: manifest.id,
                         addonName: addonDisplayName,
                         catalogGenre: catalogGenre,
+                        manifestURL: manifestURL.absoluteString,
+                        manifestShowInHome: catalog.showInHome,
                         posterShape: catalog.posterShape ?? items.first(where: { $0.posterShape != nil })?.posterShape
                     )
                 } catch {
@@ -1929,7 +1982,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             guard let manifest = await manifest(for: manifestURL) else { continue }
             guard seenAddonIds.insert(manifest.id).inserted else { continue }
             let addonName = (manifest.name ?? "").isEmpty ? (manifestURL.host ?? manifest.id) : manifest.name!
-            for catalog in manifest.catalogs ?? [] where catalog.eligibleForHome {
+            for catalog in manifest.catalogs ?? [] where catalog.eligibleForCollectionSource {
                 options.append(
                     AddonCatalogOption(
                         addonId: manifest.id,
@@ -2382,13 +2435,14 @@ struct AddonManifestCatalog: Decodable {
     let type: String
     let id: String
     let name: String?
+    let showInHome: Bool?
     let extra: [AddonManifestCatalogExtra]?
     /// Legacy manifest field predating the structured `extra` array.
     let extraRequired: [String]?
     let posterShape: String?
 
     enum CodingKeys: String, CodingKey {
-        case type, id, name, extra, extraRequired
+        case type, id, name, showInHome, extra, extraRequired
         case posterShape
         case poster_shape
     }
@@ -2398,16 +2452,22 @@ struct AddonManifestCatalog: Decodable {
         type = try container.decode(String.self, forKey: .type)
         id = try container.decode(String.self, forKey: .id)
         name = try container.decodeIfPresent(String.self, forKey: .name)
+        showInHome = try container.decodeIfPresent(Bool.self, forKey: .showInHome)
         extra = try container.decodeIfPresent([AddonManifestCatalogExtra].self, forKey: .extra)
         extraRequired = try container.decodeIfPresent([String].self, forKey: .extraRequired)
         posterShape = try container.decodeIfPresent(String.self, forKey: .posterShape)
             ?? container.decodeIfPresent(String.self, forKey: .poster_shape)
     }
 
-    /// Mirrors the Android app's `shouldShowOnHome()`: search-only catalogs
-    /// belong to the Search tab, and a catalog whose required extras we can't
-    /// supply (anything beyond `genre`) can't be fetched for Home either.
+    /// An explicit manifest opt-out hides the row from Home. Older manifests
+    /// omit this field, so they retain the existing required-extra behavior.
     var eligibleForHome: Bool {
+        showInHome != false && eligibleForCollectionSource
+    }
+
+    /// Search-only catalogs belong to Search, and required extras beyond
+    /// `genre` cannot be supplied by Home or the Collections source picker.
+    var eligibleForCollectionSource: Bool {
         let required = requiredExtraNames
         if required.contains("search") { return false }
         return required.allSatisfy { $0 == "genre" }

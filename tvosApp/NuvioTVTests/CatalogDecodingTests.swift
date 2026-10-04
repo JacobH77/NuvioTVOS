@@ -151,15 +151,14 @@ final class CatalogDecodingTests: XCTestCase {
         XCTAssertEqual(metas.map(\.rating), [7.8, 8.1])
     }
 
-    func testCatalogHomeVisibilityResolverIncludesCollectionSourcesMatchingAndroid() throws {
+    func testCatalogHomeVisibilityResolverHidesCollectionSourcesUnlessExplicit() throws {
         let manifestURL = try XCTUnwrap(URL(string: "https://example.com/manifest.json"))
         let source = CatalogHomeVisibilityResolver.Source(
             addonIdentifier: "https://example.com",
             contentType: "movie",
             catalogID: "popular"
         )
-        // Matching Android TV: direct collection sources remain included in layout and home
-        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
             addonID: "example.addon", contentType: "movie", catalogID: "popular",
             collectionSources: [source], manifestURL: manifestURL, explicitHomeKeys: []
         ))
@@ -174,7 +173,7 @@ final class CatalogDecodingTests: XCTestCase {
         ))
     }
 
-    func testCollectionBackedAddonIncludesAllCatalogsMatchingAndroid() throws {
+    func testCollectionBackedAddonHidesOnlyTheExactFolderSource() throws {
         let manifestURL = try XCTUnwrap(URL(string: "https://example.com/manifest.json"))
         let source = CatalogHomeVisibilityResolver.Source(
             addonIdentifier: "example.addon", contentType: "movie", catalogID: "collection", collectionID: "xperience"
@@ -204,7 +203,7 @@ final class CatalogDecodingTests: XCTestCase {
             collectionSources: [source], manifestURL: manifestURL,
             explicitHomeKeys: [collectionOnlyKey]
         ))
-        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
             addonID: "example.addon", contentType: "movie", catalogID: "collection",
             collectionSources: [source], manifestURL: manifestURL, explicitHomeKeys: []
         ))
@@ -212,6 +211,21 @@ final class CatalogDecodingTests: XCTestCase {
             addonID: "example.addon", contentType: "movie", catalogID: "collection",
             collectionSources: [source], manifestURL: manifestURL,
             explicitHomeKeys: [collectionOnlyKey, "example.addon_movie_collection"]
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon", contentType: "movie", catalogID: "collection",
+            collectionSources: [source], manifestURL: manifestURL,
+            explicitHomeKeys: ["example.addon_movie_collection"]
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon", contentType: "movie", catalogID: "collection",
+            collectionSources: [source], manifestURL: manifestURL,
+            explicitHomeKeys: [], manifestShowInHome: true
+        ))
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon", contentType: "movie", catalogID: "collection",
+            collectionSources: [source], manifestURL: manifestURL,
+            explicitHomeKeys: ["example.addon_movie_collection"], manifestShowInHome: false
         ))
     }
 
@@ -221,9 +235,14 @@ final class CatalogDecodingTests: XCTestCase {
             addonIdentifier: "addon:example.addon:https://example.com/path",
             contentType: "movie", catalogID: "popular"
         )
-        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
             addonID: "example.addon", contentType: "movie", catalogID: "popular",
             collectionSources: [source], manifestURL: manifestURL, explicitHomeKeys: []
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon", contentType: "movie", catalogID: "popular",
+            collectionSources: [source], manifestURL: manifestURL,
+            explicitHomeKeys: ["example.addon_movie_popular"]
         ))
     }
 
@@ -234,25 +253,31 @@ final class CatalogDecodingTests: XCTestCase {
             contentType: "movie",
             catalogID: "top"
         )
-        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
             addonID: "cinemeta", contentType: "movie", catalogID: "top",
             collectionSources: [source], manifestURL: manifestURL, explicitHomeKeys: []
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "cinemeta", contentType: "movie", catalogID: "top",
+            collectionSources: [source], manifestURL: manifestURL,
+            explicitHomeKeys: ["com.linvo.cinemeta_movie_top"]
         ))
     }
 
     func testCatalogHomeVisibilityResolverPreservesURLPathAndQueryCase() throws {
         let manifestURL = try XCTUnwrap(URL(string: "https://example.com/path/manifest.json?token=AbC"))
-        for identifier in [
-            "https://example.com/Path/manifest.json?token=AbC",
-            "https://example.com/path/manifest.json?token=abc"
+        for (identifier, expected) in [
+            ("https://example.com/Path/manifest.json?token=AbC", true),
+            ("https://example.com/path/manifest.json?token=abc", true),
+            ("https://example.com/path/manifest.json?token=AbC", false)
         ] {
             let source = CatalogHomeVisibilityResolver.Source(
                 addonIdentifier: identifier, contentType: "movie", catalogID: "popular"
             )
-            XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            XCTAssertEqual(CatalogHomeVisibilityResolver.shouldInclude(
                 addonID: "example.addon", contentType: "movie", catalogID: "popular",
                 collectionSources: [source], manifestURL: manifestURL, explicitHomeKeys: []
-            ))
+            ), expected)
         }
     }
 
@@ -864,6 +889,7 @@ final class CatalogDecodingTests: XCTestCase {
         XCTAssertTrue(catalog2.supportsSearch)
         XCTAssertFalse(catalog2.supportsDiscover)
         XCTAssertFalse(catalog2.eligibleForHome)
+        XCTAssertFalse(catalog2.eligibleForCollectionSource)
 
         // Catalog with unfulfillable required extra (e.g. requires actor)
         let actorRequiredJSON = """
@@ -881,6 +907,76 @@ final class CatalogDecodingTests: XCTestCase {
         XCTAssertFalse(catalog3.supportsSearch)
         XCTAssertFalse(catalog3.supportsDiscover)
         XCTAssertFalse(catalog3.eligibleForHome)
+        XCTAssertFalse(catalog3.eligibleForCollectionSource)
+    }
+
+    func testManifestShowInHomeOnlyControlsHomeEligibility() throws {
+        let hiddenWithoutRequiredExtras = """
+        {"type":"movie","id":"hidden","showInHome":false}
+        """
+        let visibleWithRequiredGenre = """
+        {"type":"movie","id":"visible","showInHome":true,"extra":[{"name":"genre","isRequired":true,"options":["Adventure"]}]}
+        """
+        let omittedFlagWithRequiredGenre = """
+        {"type":"movie","id":"legacy-visible","extra":[{"name":"genre","isRequired":true,"options":["Adventure"]}]}
+        """
+        let hiddenWithStructuredRequiredGenre = """
+        {"type":"movie","id":"hidden-structured","showInHome":false,"extra":[{"name":"genre","isRequired":true,"options":["Adventure"]}]}
+        """
+        let hiddenWithLegacyRequiredGenre = """
+        {"type":"movie","id":"hidden-legacy","showInHome":false,"extra":[{"name":"genre","isRequired":false,"options":["Adventure"]}],"extraRequired":["genre"]}
+        """
+        let searchOnly = """
+        {"type":"movie","id":"search-only","showInHome":true,"extra":[{"name":"search","isRequired":true}]}
+        """
+
+        let addonHiddenWithoutExtras = try decoder.decode(AddonManifestCatalog.self, from: Data(hiddenWithoutRequiredExtras.utf8))
+        XCTAssertFalse(addonHiddenWithoutExtras.eligibleForHome)
+        XCTAssertTrue(addonHiddenWithoutExtras.eligibleForCollectionSource)
+        XCTAssertTrue(addonHiddenWithoutExtras.supportsDiscover)
+
+        let addonVisibleWithGenre = try decoder.decode(AddonManifestCatalog.self, from: Data(visibleWithRequiredGenre.utf8))
+        XCTAssertTrue(addonVisibleWithGenre.eligibleForHome)
+        XCTAssertTrue(addonVisibleWithGenre.eligibleForCollectionSource)
+
+        let addonOmittedFlagWithGenre = try decoder.decode(AddonManifestCatalog.self, from: Data(omittedFlagWithRequiredGenre.utf8))
+        XCTAssertTrue(addonOmittedFlagWithGenre.eligibleForHome)
+
+        let addonHiddenStructuredGenre = try decoder.decode(AddonManifestCatalog.self, from: Data(hiddenWithStructuredRequiredGenre.utf8))
+        XCTAssertFalse(addonHiddenStructuredGenre.eligibleForHome)
+        XCTAssertTrue(addonHiddenStructuredGenre.eligibleForCollectionSource)
+        XCTAssertTrue(addonHiddenStructuredGenre.supportsDiscover)
+        XCTAssertTrue(addonHiddenStructuredGenre.requiresGenre)
+
+        let addonHiddenLegacyGenre = try decoder.decode(AddonManifestCatalog.self, from: Data(hiddenWithLegacyRequiredGenre.utf8))
+        XCTAssertFalse(addonHiddenLegacyGenre.eligibleForHome)
+        XCTAssertTrue(addonHiddenLegacyGenre.eligibleForCollectionSource)
+        XCTAssertTrue(addonHiddenLegacyGenre.supportsDiscover)
+        XCTAssertTrue(addonHiddenLegacyGenre.requiresGenre)
+
+        let addonSearchOnly = try decoder.decode(AddonManifestCatalog.self, from: Data(searchOnly.utf8))
+        XCTAssertFalse(addonSearchOnly.eligibleForHome)
+        XCTAssertFalse(addonSearchOnly.eligibleForCollectionSource)
+
+        let stremioHiddenWithoutExtras = try decoder.decode(StremioManifestCatalog.self, from: Data(hiddenWithoutRequiredExtras.utf8))
+        XCTAssertFalse(stremioHiddenWithoutExtras.eligibleForHome)
+
+        let stremioVisibleWithGenre = try decoder.decode(StremioManifestCatalog.self, from: Data(visibleWithRequiredGenre.utf8))
+        XCTAssertTrue(stremioVisibleWithGenre.eligibleForHome)
+
+        let stremioOmittedFlagWithGenre = try decoder.decode(StremioManifestCatalog.self, from: Data(omittedFlagWithRequiredGenre.utf8))
+        XCTAssertTrue(stremioOmittedFlagWithGenre.eligibleForHome)
+
+        let stremioHiddenStructuredGenre = try decoder.decode(StremioManifestCatalog.self, from: Data(hiddenWithStructuredRequiredGenre.utf8))
+        XCTAssertFalse(stremioHiddenStructuredGenre.eligibleForHome)
+        XCTAssertTrue(stremioHiddenStructuredGenre.requiresGenre)
+
+        let stremioHiddenLegacyGenre = try decoder.decode(StremioManifestCatalog.self, from: Data(hiddenWithLegacyRequiredGenre.utf8))
+        XCTAssertFalse(stremioHiddenLegacyGenre.eligibleForHome)
+        XCTAssertTrue(stremioHiddenLegacyGenre.requiresGenre)
+
+        let stremioSearchOnly = try decoder.decode(StremioManifestCatalog.self, from: Data(searchOnly.utf8))
+        XCTAssertFalse(stremioSearchOnly.eligibleForHome)
     }
 
     func testSearchDeduplicatesCanonicalAliasesAndPreservesDistinctTitles() {
