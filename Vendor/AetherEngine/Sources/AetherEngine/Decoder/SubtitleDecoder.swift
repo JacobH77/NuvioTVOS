@@ -83,13 +83,62 @@ enum SubtitleDecoder {
         preserveASSMarkup: Bool,
         requested: [Int32?]?
     ) async throws -> [SidecarDecodeResult] {
+        let isHTTP = url.scheme == "http" || url.scheme == "https"
+        let effectiveURL: URL
+        let tempFileToClean: URL?
+
+        if isHTTP {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            for (key, value) in httpHeaders {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            if request.value(forHTTPHeaderField: "User-Agent") == nil {
+                request.setValue("Mozilla/5.0 (AppleTV; tvOS 18.0) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                throw SubtitleDecoderError.openFailed(code: Int32(code))
+            }
+            guard !data.isEmpty else {
+                throw SubtitleDecoderError.noSubtitleStream
+            }
+
+            var ext = url.pathExtension
+            if ext.isEmpty, let suggested = http.suggestedFilename {
+                ext = (suggested as NSString).pathExtension
+            }
+            if ext.isEmpty, let mime = http.mimeType {
+                if mime.contains("vtt") { ext = "vtt" }
+                else if mime.contains("ass") || mime.contains("ssa") { ext = "ass" }
+                else { ext = "srt" }
+            }
+            if ext.isEmpty { ext = "srt" }
+
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sub-\(UUID().uuidString).\(ext)")
+            try data.write(to: tempURL)
+            effectiveURL = tempURL
+            tempFileToClean = tempURL
+        } else {
+            effectiveURL = url
+            tempFileToClean = nil
+        }
+
+        defer {
+            if let tempFileToClean {
+                try? FileManager.default.removeItem(at: tempFileToClean)
+            }
+        }
+
         // Task.cancel() does NOT propagate into detached tasks (isCancelled inside always false).
         // Bridge cancellation explicitly via CancelFlag so the decode loop + AVIO reader abort promptly.
         let token = CancelFlag()
         return try await withTaskCancellationHandler {
             try await Task.detached(priority: .userInitiated) {
                 try decodeFileSync(
-                    url: url, httpHeaders: httpHeaders,
+                    url: effectiveURL, httpHeaders: [:],
                     preserveASSMarkup: preserveASSMarkup, requested: requested, cancel: token
                 )
             }.value

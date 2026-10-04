@@ -1702,6 +1702,44 @@ public final class AetherEngine: ObservableObject {
         boundSurfaces.last { $0.view != nil }?.view
     }
 
+    /// Main-actor snapshot of the native render surface for live diagnostics. Reads only local view,
+    /// layer, and object identity state; it performs no AVFoundation media reads.
+    var nativeSurfaceDiagnostic: String {
+        guard let view = boundView else {
+            let host = nativeHost == nil ? "missing" : "present"
+            return "surface=unbound host=\(host) window=- layerParent=- viewBounds=- layerBounds=- layerFrame=- layerPlayerMatch=- enginePlayerMatch=-"
+        }
+
+        let window = view.window == nil ? "n" : "y"
+        guard let host = nativeHost else {
+            return "surface=bound host=missing window=\(window) layerParent=- viewBounds=\(view.bounds) layerBounds=- layerFrame=- layerPlayerMatch=- enginePlayerMatch=-"
+        }
+
+        let videoLayer = host.playerLayer
+        let expectedLayer: CALayer?
+        #if canImport(UIKit)
+        expectedLayer = view.layer
+        #elseif canImport(AppKit)
+        expectedLayer = view.layer
+        #else
+        expectedLayer = nil
+        #endif
+
+        let layerParent: String
+        if let expectedLayer, let superlayer = videoLayer.superlayer {
+            layerParent = superlayer === expectedLayer ? "expected" : "other"
+        } else if videoLayer.superlayer == nil {
+            layerParent = "none"
+        } else {
+            layerParent = "missing"
+        }
+
+        return "surface=bound host=present window=\(window) layerParent=\(layerParent) "
+            + "viewBounds=\(view.bounds) layerBounds=\(videoLayer.bounds) layerFrame=\(videoLayer.frame) "
+            + "layerPlayerMatch=\(videoLayer.player === host.avPlayer ? "y" : "n") "
+            + "enginePlayerMatch=\(currentAVPlayer === host.avPlayer ? "y" : "n")"
+    }
+
     /// Bind a render surface. Attaches the active layer immediately; re-attaches on session swaps.
     /// Binding a different view detaches the old one, which stays the fallback until it is unbound or
     /// released. A view another engine held is taken over from that engine.

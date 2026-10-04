@@ -1410,6 +1410,9 @@ extension AetherEngine {
     /// cues (decoded plain-text at load), so the overlay backfills instantly with no re-download.
     /// Styled ASS wants raw markup, which the store strips, so it re-decodes via the sidecar path.
     private func selectExternalSubtitleTrack(id: Int, track: ExternalSubtitleTrack) {
+        if activeSubtitleTrackIndex == id, loadedSidecarURL == track.url, (isLoadingSubtitles || !subtitleCues.isEmpty) {
+            return
+        }
         let codec = ExternalSubtitleTrack.codecName(url: track.url, formatHint: track.formatHint)
         let wantsStyledASS = loadedOptions.preserveASSMarkup && codec == "ass"
         if !wantsStyledASS,

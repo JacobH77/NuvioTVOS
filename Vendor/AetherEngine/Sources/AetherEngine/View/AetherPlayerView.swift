@@ -92,12 +92,14 @@ public final class AetherPlayerView: PlatformBaseView {
 
     /// Engine-internal. Replace whichever layer is currently hosted with
     /// `layer`. Synchronous, runs on the main actor, no implicit
-    /// animations so swaps don't flash. Idempotent if the same layer is
-    /// already attached. A previously hosted layer is removed only while it
-    /// still sits in this view: a layer an engine has since presented on
-    /// another surface is not pulled back out of it (AE#536).
+    /// animations so swaps don't flash. Idempotent when the same layer is
+    /// still attached to this view. A previously hosted layer is removed only
+    /// while it still sits in this view: a layer an engine has since presented
+    /// on another surface is not pulled back out of it (AE#536).
     func attach(_ layer: CALayer) {
-        if hostedLayer === layer { return }
+        if hostedLayer === layer,
+           let superlayer = layer.superlayer,
+           superlayer === self.layer { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if let hosted = hostedLayer, hosted.superlayer === self.layer {

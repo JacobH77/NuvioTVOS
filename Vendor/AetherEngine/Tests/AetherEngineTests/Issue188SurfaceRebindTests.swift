@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import QuartzCore
 @testable import AetherEngine
 
 /// #188: `AetherPlayerSurface.updateUIView` was empty, so it only called `bind(view:)` from
@@ -12,6 +13,37 @@ import Foundation
 /// the old engine no longer owns it, and steady-state rebind of the same engine is a no-op swap.
 @Suite("AetherPlayerSurface rebind on engine swap (#188)")
 struct Issue188SurfaceRebindTests {
+
+    @MainActor
+    @Test("Rebinding a detached hosted layer reattaches it while healthy rebinds preserve layer order")
+    func detachedHostedLayerReattachesWithoutHealthyChurn() throws {
+        let view = AetherPlayerView(frame: .init(x: 0, y: 0, width: 640, height: 360))
+        let layer = CALayer()
+        view.attach(layer)
+        #expect(layer.superlayer === view.layer)
+
+        // The layer can be detached outside AetherPlayerView while hostedLayer still remembers it.
+        layer.removeFromSuperlayer()
+        #expect(layer.superlayer == nil)
+        view.attach(layer)
+        #expect(layer.superlayer === view.layer,
+                "rebinding the same detached layer must restore the render surface")
+
+        // Healthy repeated binds must remain idempotent: a later sibling stays above the video layer.
+        let expectedLayer: CALayer
+        #if canImport(UIKit)
+        expectedLayer = view.layer
+        #elseif canImport(AppKit)
+        expectedLayer = try #require(view.layer)
+        #endif
+        let sibling = CALayer()
+        expectedLayer.addSublayer(sibling)
+        view.attach(layer)
+        view.attach(layer)
+
+        #expect(expectedLayer.sublayers?.first === layer)
+        #expect(expectedLayer.sublayers?.last === sibling)
+    }
 
     @MainActor
     @Test("A view bound to a second engine takes over its layer; the first engine's layer is dropped")

@@ -497,6 +497,7 @@ final class LiveTelemetrySampler {
             + "keepUp=\(readings.isPlaybackLikelyToKeepUp ? "y" : "n") empty=\(readings.isPlaybackBufferEmpty ? "y" : "n") "
             + "drop=\(droppedSum)+\(dDrop) stall=\(engine.nativeHost?.stallCount ?? 0) "
             + "ready=\((engine.nativeHost?.playerLayer.isReadyForDisplay ?? false) ? "y" : "n") "
+            + "\(engine.nativeSurfaceDiagnostic) "
             + "thermal=\(thermal) net=\(netMbps.map { String(format: "%.1f", $0) } ?? "-") "
             + "restarts=\(engine.producerRestartCount)",
             category: .engine, level: .verbose
