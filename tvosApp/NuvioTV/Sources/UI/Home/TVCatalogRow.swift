@@ -110,6 +110,65 @@ enum TVHomeFocusRestoration {
     }
 }
 
+enum TVHomeBackAction: Equatable {
+    case returnToRowBeginning(sectionID: String, cardKey: String)
+    case moveToContinueWatchingOrTop(sectionID: String, cardKey: String)
+    case focusGridHero
+    case exitToSidebar
+}
+
+enum TVHomeBackNavigation {
+    static func determineAction(
+        focusedCardID: String?,
+        currentSectionID: String?,
+        currentRowFirstCardKey: String?,
+        currentRowScrollIndex: Int,
+        isGridHeroFocused: Bool,
+        hasGridHero: Bool,
+        continueWatchingOrTopSectionID: String?,
+        continueWatchingOrTopFirstCardKey: String?
+    ) -> TVHomeBackAction {
+        if hasGridHero && isGridHeroFocused {
+            return .exitToSidebar
+        }
+
+        // Determine if focus is at the beginning (index 0) of the currently active row
+        let isAtBeginningOfCurrentRow: Bool
+        if let focusedCardID, let currentRowFirstCardKey {
+            isAtBeginningOfCurrentRow = (focusedCardID == currentRowFirstCardKey && currentRowScrollIndex == 0)
+        } else if isGridHeroFocused {
+            isAtBeginningOfCurrentRow = true
+        } else {
+            isAtBeginningOfCurrentRow = (currentRowScrollIndex == 0)
+        }
+
+        // Step 1: If not at the beginning of the current row, return to the first item of this row
+        if !isAtBeginningOfCurrentRow,
+           let currentSectionID,
+           let currentRowFirstCardKey {
+            return .returnToRowBeginning(sectionID: currentSectionID, cardKey: currentRowFirstCardKey)
+        }
+
+        // Step 2: User is already at the beginning of the current row.
+        // If Grid Hero is present, moving up reaches the Grid Hero.
+        if hasGridHero {
+            return .focusGridHero
+        }
+
+        guard let topSectionID = continueWatchingOrTopSectionID,
+              let topFirstCardKey = continueWatchingOrTopFirstCardKey else {
+            return .exitToSidebar
+        }
+
+        // If the current row is already Continue Watching / Top AND we are at the beginning:
+        if currentSectionID == topSectionID && isAtBeginningOfCurrentRow {
+            return .exitToSidebar
+        }
+
+        return .moveToContinueWatchingOrTop(sectionID: topSectionID, cardKey: topFirstCardKey)
+    }
+}
+
 /// Grid metrics matching Search / Library poster cards (Tabs view mode).
 enum CollectionFolderGridMetrics {
     static let posterWidth: CGFloat = 210
@@ -293,9 +352,20 @@ struct TVCatalogRow: View {
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
+    @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
+    @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
 
     var rowTileShape: CollectionTileShape {
-        explicitTileShape ?? items.first(where: { $0.tileShape != .poster })?.tileShape ?? .poster
+        if let explicitTileShape {
+            return explicitTileShape
+        }
+        if id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId {
+            return continueWatchingLandscape ? .landscape : .poster
+        }
+        if landscapePosters {
+            return .landscape
+        }
+        return items.first(where: { $0.tileShape != .poster })?.tileShape ?? .poster
     }
 
     private var rowPosterWidth: CGFloat {

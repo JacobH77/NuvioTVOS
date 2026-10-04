@@ -613,7 +613,8 @@ struct CollectionFolderBrowseView: View {
                 }
                 continue
             }
-            let batch = pageItems(page, source: source)
+            let rawBatch = pageItems(page, source: source)
+            let batch = await TmdbDetailsService.localizedMetadata(for: rawBatch)
             var sourceIds = Set<String>()
             let resolved = batch.filter { sourceIds.insert($0.id).inserted }
             rows.append(
@@ -700,7 +701,8 @@ struct CollectionFolderBrowseView: View {
                     .browse(source, cursor: requestedSkip)
                 guard let latestIndex = catalogRows.firstIndex(where: { $0.id == rowId }) else { return }
 
-                let batch = pageItems(page, source: source)
+                let rawBatch = pageItems(page, source: source)
+                let batch = await TmdbDetailsService.localizedMetadata(for: rawBatch)
                 var existingRowIds = Set(catalogRows[latestIndex].items.map(\.id))
                 let newItems = batch.filter { existingRowIds.insert($0.id).inserted }
                 catalogRows[latestIndex].items.append(contentsOf: newItems)
@@ -824,6 +826,7 @@ private struct CollectionFolderHomeStyleRow: View {
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
+    @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
 
     private var stripHeight: CGFloat {
         let imageHeight: CGFloat = layoutMode == "Compact" ? 255 : 315
@@ -877,7 +880,8 @@ private struct CollectionFolderHomeStyleRow: View {
             let rowSmoothFocus = smoothFocus
             let rowFocusHighlighter = focusHighlighter
             let rowFastNavigation = fastNavigation
-            let rowTileShape = items.first(where: { $0.tileShape != .poster })?.tileShape ?? .poster
+            let baseTileShape = items.first(where: { $0.tileShape != .poster })?.tileShape ?? .poster
+            let rowTileShape = (baseTileShape == .poster && landscapePosters) ? .landscape : baseTileShape
             let posterCardWidth = TVCollectionFolderCardLayout.cardWidth(shape: rowTileShape, layoutMode: rowHomeLayout)
             let rowCardSpacing: CGFloat = rowHomeLayout == "Compact" ? 22.0 : 28.0
             let rowStep = posterCardWidth + rowCardSpacing

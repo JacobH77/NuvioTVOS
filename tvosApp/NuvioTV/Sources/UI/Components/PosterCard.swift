@@ -714,17 +714,17 @@ struct PosterCard: View {
            let continueEpisodeArtworkURL, !continueEpisodeArtworkURL.isEmpty {
             return continueEpisodeArtworkURL
         }
-        if isEffectivelyAlwaysLandscape {
+        if meta.posterShape == "landscape" || meta.tileShape == .landscape {
             return meta.posterUrl ?? meta.backgroundUrl
         }
         return meta.backgroundUrl ?? meta.posterUrl
     }
 
     private var imageUrl: String? {
-        if isEffectivelyAlwaysLandscape {
-            return meta.posterUrl ?? landscapeArtworkURL
+        if effectiveLandscape {
+            return landscapeArtworkURL
         }
-        return effectiveLandscape ? landscapeArtworkURL : meta.posterUrl
+        return meta.posterUrl
     }
 
     private var landscapePreloadURL: String? {
@@ -899,6 +899,8 @@ extension PosterCard: Equatable {
             && lhs.meta.type == rhs.meta.type
             && lhs.meta.trailerYtIds == rhs.meta.trailerYtIds
             && lhs.isLandscape == rhs.isLandscape
+            && lhs.isAlwaysLandscape == rhs.isAlwaysLandscape
+            && lhs.tileShape == rhs.tileShape
             && lhs.continueProgress == rhs.continueProgress
             && lhs.continueRemainingText == rhs.continueRemainingText
             && lhs.continueEpisodeText == rhs.continueEpisodeText
