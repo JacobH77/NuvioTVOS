@@ -209,11 +209,35 @@ extension PlayerView {
             onEnd: {
                 screensaverDebugLog("[ScreensaverDebug][Input] RemoteSeekPressCatcher onEnd: isWaking=\(isWakingFromBackground)")
                 viewModel.stopRepeatingSkip()
+            },
+            canRevealControls: { canRevealControlsFromRemotePress },
+            onTapUp: {
+                // Capture the first physical Up after Back/Menu returns from controls;
+                // the focus sink can consume that press during focus handoff.
+                guard canRevealControlsFromRemotePress else { return }
+                viewModel.revealControls()
             }
         )
         .allowsHitTesting(false)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+
+    private var canRevealControlsFromRemotePress: Bool {
+        !viewModel.showControls
+            && !viewModel.showSettingsPanel
+            && !viewModel.showScenePanel
+            && !viewModel.postPlayState.isVisible
+            && viewModel.sidePanel == nil
+            && viewModel.currentErrorDiagnostic == nil
+            && !viewModel.showNextEpisodeCard
+            && !viewModel.showSkipSegmentCard
+            && !viewModel.isScrubbing
+            && !viewModel.isHoldingSeek
+            && viewModel.pendingSeekDelta == 0
+            && !viewModel.moveSuppressed
+            && !viewModel.controlsAutoHideSuspended
+            && !isWakingFromBackground
     }
 
     @ViewBuilder

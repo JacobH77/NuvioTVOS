@@ -36,6 +36,8 @@ struct RemoteSeekPressCatcher: UIViewRepresentable {
     let onBeginBackward: () -> Void
     let onBeginForward: () -> Void
     let onEnd: () -> Void
+    var canRevealControls: () -> Bool = { false }
+    var onTapUp: () -> Void = {}
 
     func makeUIView(context: Context) -> SeekPressHostView {
         let view = SeekPressHostView()
@@ -45,7 +47,9 @@ struct RemoteSeekPressCatcher: UIViewRepresentable {
             onTapForward: onTapForward,
             onBeginBackward: onBeginBackward,
             onBeginForward: onBeginForward,
-            onEnd: onEnd
+            onEnd: onEnd,
+            canRevealControls: canRevealControls,
+            onTapUp: onTapUp
         )
         return view
     }
@@ -57,7 +61,9 @@ struct RemoteSeekPressCatcher: UIViewRepresentable {
             onTapForward: onTapForward,
             onBeginBackward: onBeginBackward,
             onBeginForward: onBeginForward,
-            onEnd: onEnd
+            onEnd: onEnd,
+            canRevealControls: canRevealControls,
+            onTapUp: onTapUp
         )
     }
 
@@ -77,6 +83,8 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
     private var onBeginBackward: () -> Void = {}
     private var onBeginForward: () -> Void = {}
     private var onEnd: () -> Void = {}
+    private var canRevealControls: () -> Bool = { false }
+    private var onTapUp: () -> Void = {}
 
     private var activeDirection: Direction?
     private var isActive = false
@@ -85,6 +93,7 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
     private var forwardHoldRecognizer: UILongPressGestureRecognizer?
     private var backwardTapRecognizer: UITapGestureRecognizer?
     private var forwardTapRecognizer: UITapGestureRecognizer?
+    private var upTapRecognizer: UITapGestureRecognizer?
 
     func configure(
         isActive: Bool,
@@ -92,7 +101,9 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
         onTapForward: @escaping () -> Void,
         onBeginBackward: @escaping () -> Void,
         onBeginForward: @escaping () -> Void,
-        onEnd: @escaping () -> Void
+        onEnd: @escaping () -> Void,
+        canRevealControls: @escaping () -> Bool,
+        onTapUp: @escaping () -> Void
     ) {
         self.isActive = isActive
         self.onTapBackward = onTapBackward
@@ -100,6 +111,8 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
         self.onBeginBackward = onBeginBackward
         self.onBeginForward = onBeginForward
         self.onEnd = onEnd
+        self.canRevealControls = canRevealControls
+        self.onTapUp = onTapUp
         updateRecognizerState()
     }
 
@@ -125,17 +138,25 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
             pressType: .rightArrow,
             action: #selector(handleForwardTap(_:))
         )
+        let upTap = makeTapRecognizer(
+            pressType: .upArrow,
+            action: #selector(handleUpTap(_:))
+        )
+        upTap.allowedTouchTypes = []
+        upTap.isEnabled = true
 
         backwardTap.require(toFail: backwardHold)
         forwardTap.require(toFail: forwardHold)
 
         window.addGestureRecognizer(backwardTap)
         window.addGestureRecognizer(forwardTap)
+        window.addGestureRecognizer(upTap)
         window.addGestureRecognizer(backwardHold)
         window.addGestureRecognizer(forwardHold)
 
         backwardTapRecognizer = backwardTap
         forwardTapRecognizer = forwardTap
+        upTapRecognizer = upTap
         backwardHoldRecognizer = backwardHold
         forwardHoldRecognizer = forwardHold
         attachedWindow = window
@@ -154,6 +175,9 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
             if let forwardTapRecognizer {
                 attachedWindow.removeGestureRecognizer(forwardTapRecognizer)
             }
+            if let upTapRecognizer {
+                attachedWindow.removeGestureRecognizer(upTapRecognizer)
+            }
             if let backwardHoldRecognizer {
                 attachedWindow.removeGestureRecognizer(backwardHoldRecognizer)
             }
@@ -163,6 +187,7 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
         }
         backwardTapRecognizer = nil
         forwardTapRecognizer = nil
+        upTapRecognizer = nil
         backwardHoldRecognizer = nil
         forwardHoldRecognizer = nil
         attachedWindow = nil
@@ -193,6 +218,9 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
         forwardHoldRecognizer?.isEnabled = enabled
         backwardTapRecognizer?.isEnabled = isActive && activeDirection == nil
         forwardTapRecognizer?.isEnabled = isActive && activeDirection == nil
+        // Keep the Up catcher installed; its live closure suppresses presses
+        // whenever playback state says controls should stay hidden.
+        upTapRecognizer?.isEnabled = true
     }
 
     @objc private func handleBackwardTap(_ recognizer: UITapGestureRecognizer) {
@@ -203,6 +231,11 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
     @objc private func handleForwardTap(_ recognizer: UITapGestureRecognizer) {
         guard isActive, activeDirection == nil else { return }
         onTapForward()
+    }
+
+    @objc private func handleUpTap(_ recognizer: UITapGestureRecognizer) {
+        guard canRevealControls() else { return }
+        onTapUp()
     }
 
     @objc private func handleBackwardHold(_ recognizer: UILongPressGestureRecognizer) {
@@ -245,6 +278,13 @@ final class SeekPressHostView: UIView, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
-        isActive || activeDirection != nil
+        if gestureRecognizer === upTapRecognizer {
+            return canRevealControls()
+        }
+        return isActive || activeDirection != nil
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        gestureRecognizer !== upTapRecognizer
     }
 }
