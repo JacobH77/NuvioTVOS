@@ -157,6 +157,112 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertTrue(playable.isEmpty)
     }
 
+    func testEffectiveCachedOnlyExemptsLiveAliasesAndPreservesVODPreference() {
+        let liveTypes = [
+            "channel", "channels", "live", "livetv", "live-tv", "live_tv", "iptv",
+            "radio", "sports", "sport", "stream", "streams", "event", "events",
+            "broadcast", "feed", "tv"
+        ]
+
+        for type in liveTypes {
+            XCTAssertFalse(SmartPlaybackSelector.effectiveCachedOnly(true, contentType: type), type)
+            XCTAssertFalse(
+                SmartPlaybackSelector.effectiveCachedOnly(true, contentType: " \(type.uppercased()) "),
+                "Expected normalized live type \(type) to disable cached-only"
+            )
+        }
+
+        for type in ["movie", "series"] {
+            XCTAssertTrue(SmartPlaybackSelector.effectiveCachedOnly(true, contentType: type), type)
+            XCTAssertFalse(SmartPlaybackSelector.effectiveCachedOnly(false, contentType: type), type)
+        }
+        XCTAssertFalse(SmartPlaybackSelector.effectiveCachedOnly(false, contentType: "sport"))
+    }
+
+    func testLiveStreamListsAndSmartRankingIgnoreSavedCachedOnlyPreference() {
+        let uncached1080p = NuvioStream(
+            url: "https://cdn.example/live-uncached-1080.mkv",
+            name: "1080p WEB-DL",
+            description: "12 GB",
+            addonName: "Live provider"
+        )
+        let cached1080p = NuvioStream(
+            url: "https://cdn.example/live-cached-1080.mkv",
+            name: "1080p RD+ Cached",
+            description: "⚡",
+            addonName: "Debrid provider",
+            isCached: true
+        )
+        let streams = [uncached1080p, cached1080p]
+        let allStreamIDs = Set(streams.map(\.id))
+
+        for type in ["sport", "tv", "channel"] {
+            let cachedOnly = SmartPlaybackSelector.effectiveCachedOnly(true, contentType: type)
+            XCTAssertFalse(cachedOnly, type)
+
+            let displayed = StreamPickerListBuilder.displayedStreams(
+                streams: streams,
+                groups: [],
+                selectedAddonId: nil,
+                sortOption: .quality,
+                includeDebrid: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(Set(displayed.map(\.id)), allStreamIDs, type)
+
+            let best = SmartPlaybackSelector.bestStream(
+                from: [uncached1080p],
+                qualityPreference: "Highest",
+                subtitleLanguages: [],
+                shouldMatchSubtitles: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(best?.id, uncached1080p.id, type)
+
+            let ranked = SmartPlaybackSelector.rankedStreams(
+                from: streams,
+                qualityPreference: "Highest",
+                subtitleLanguages: [],
+                shouldMatchSubtitles: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(Set(ranked.map(\.id)), allStreamIDs, type)
+        }
+
+        for type in ["movie", "series"] {
+            let cachedOnly = SmartPlaybackSelector.effectiveCachedOnly(true, contentType: type)
+            XCTAssertTrue(cachedOnly, type)
+
+            let displayed = StreamPickerListBuilder.displayedStreams(
+                streams: streams,
+                groups: [],
+                selectedAddonId: nil,
+                sortOption: .quality,
+                includeDebrid: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(displayed.map(\.id), [cached1080p.id], type)
+
+            let ranked = SmartPlaybackSelector.rankedStreams(
+                from: streams,
+                qualityPreference: "Highest",
+                subtitleLanguages: [],
+                shouldMatchSubtitles: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(ranked.map(\.id), [cached1080p.id], type)
+
+            let best = SmartPlaybackSelector.bestStream(
+                from: streams,
+                qualityPreference: "Highest",
+                subtitleLanguages: [],
+                shouldMatchSubtitles: false,
+                cachedOnly: cachedOnly
+            )
+            XCTAssertEqual(best?.id, cached1080p.id, type)
+        }
+    }
+
     func testBadges() {
         let stream = NuvioStream(
             url: "https://cdn.example/x.mkv",

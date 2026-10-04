@@ -326,7 +326,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertTrue(result.allowAutomaticFallback)
     }
 
-    func testPlaybackBackendPolicyRoutesDirectTSToMPV() {
+    func testPlaybackBackendPolicyRoutesDirectTSToAether() {
         let input = PlaybackBackendPolicy.Input(
             urlString: "http://live.iptv.test/stream.ts",
             engineSetting: .auto,
@@ -335,11 +335,11 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             isLiveStream: true
         )
         let result = PlaybackBackendPolicy.resolve(input)
-        XCTAssertEqual(result.backend, .mpv)
+        XCTAssertEqual(result.backend, .aether)
         XCTAssertTrue(result.allowAutomaticFallback)
     }
 
-    func testPlaybackBackendPolicyRoutesSportsStreamToMPV() {
+    func testPlaybackBackendPolicyRoutesSportsStreamToAether() {
         let input = PlaybackBackendPolicy.Input(
             urlString: "http://streamed.pk/api/live/stream",
             engineSetting: .auto,
@@ -348,10 +348,10 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             isSports: true
         )
         let result = PlaybackBackendPolicy.resolve(input)
-        XCTAssertEqual(result.backend, .mpv)
+        XCTAssertEqual(result.backend, .aether)
     }
 
-    func testPlaybackBackendPolicyRoutesSegmentHeadersToMPV() {
+    func testPlaybackBackendPolicyRoutesSegmentHeadersToAether() {
         let input = PlaybackBackendPolicy.Input(
             urlString: "http://127.0.0.1/stream",
             engineSetting: .auto,
@@ -360,7 +360,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             httpHeaders: ["Referer": "https://streamed.pk"]
         )
         let result = PlaybackBackendPolicy.resolve(input)
-        XCTAssertEqual(result.backend, .mpv)
+        XCTAssertEqual(result.backend, .aether)
     }
 
     func testMPVHTTPHeaderOptionsExtractAndEscapeHeaders() {
@@ -2792,8 +2792,14 @@ final class EpisodeResumeIsolationTests: XCTestCase {
             episode: 2,
             episodeId: "tt-test:1:2"
         )
+        let rebuildProfileId = WatchProgressLedger.activeProfileId
         let rebuildSnapshot = WatchProgressLedger.records()
-        XCTAssertTrue(ContinueWatchingBuilder.rebuildInputIsCurrent(rebuildSnapshot))
+        XCTAssertTrue(
+            ContinueWatchingBuilder.rebuildInputIsCurrent(
+                rebuildSnapshot,
+                profileId: rebuildProfileId
+            )
+        )
 
         ContinueWatchingStore.markPlaybackCompleted(
             meta: meta,
@@ -2809,8 +2815,38 @@ final class EpisodeResumeIsolationTests: XCTestCase {
             seedSeason: 1
         )
 
-        XCTAssertFalse(ContinueWatchingBuilder.rebuildInputIsCurrent(rebuildSnapshot))
+        XCTAssertFalse(
+            ContinueWatchingBuilder.rebuildInputIsCurrent(
+                rebuildSnapshot,
+                profileId: rebuildProfileId
+            )
+        )
         XCTAssertTrue(ContinueWatchingStore.item(for: meta.id)?.isUpNextEntry == true)
+    }
+
+    /// An account switch can leave identical raw ledgers while changing which
+    /// watched-history seeds the row represents. A stale rebuild must not commit.
+    @MainActor
+    func testRebuildRejectsProfileSwitchWithIdenticalLedger() {
+        let rebuildProfileId = WatchProgressLedger.activeProfileId
+        let rebuildSnapshot = WatchProgressLedger.records()
+        XCTAssertTrue(rebuildSnapshot.isEmpty)
+
+        let otherProfileId = "\(profileId)-other"
+        WatchProgressLedger.eraseProfile(otherProfileId)
+        defer {
+            WatchProgressLedger.setActiveProfile(rebuildProfileId)
+            WatchProgressLedger.eraseProfile(otherProfileId)
+        }
+
+        WatchProgressLedger.setActiveProfile(otherProfileId)
+        XCTAssertEqual(WatchProgressLedger.records(), rebuildSnapshot)
+        XCTAssertFalse(
+            ContinueWatchingBuilder.rebuildInputIsCurrent(
+                rebuildSnapshot,
+                profileId: rebuildProfileId
+            )
+        )
     }
 
     /// A just-finished episode must outrank months-old progress when the metadata

@@ -189,9 +189,9 @@ enum PlaybackBackendPolicy {
             }
             if isLiveOrSports {
                 return Result(
-                    backend: .mpv,
+                    backend: .aether,
                     allowAutomaticFallback: true,
-                    reason: "Auto: Live or sports stream detected, routing to MPVKit for robust live demuxing and header preservation",
+                    reason: "Auto: Live or sports stream detected, routing to AetherEngine",
                     statusMessage: nil
                 )
             }
