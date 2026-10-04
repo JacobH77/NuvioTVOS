@@ -144,6 +144,9 @@ enum SettingsKey {
     /// rows by this; kept separate from `homeCatalogOrder` (the local tvOS
     /// reorder) so a pull never disturbs the built-in rows or a local reorder.
     static let homeCatalogSyncedOrder = "nuvio.tv.settings.layout.homeCatalogSyncedOrder"
+    /// JSON `[String]` of catalogs explicitly enabled locally in Home Layout.
+    /// Derived profile data; this is deliberately excluded from `all`.
+    static let homeCatalogExplicitEnabled = "nuvio.tv.settings.layout.homeCatalogExplicitEnabled"
     /// JSON `[String: String]` of catalog key (`<addonId>_<type>_<catalogId>`) → custom display title
     /// synced from the webapp or Android app.
     static let homeCatalogCustomTitles = "nuvio.tv.settings.layout.homeCatalogCustomTitles"
@@ -155,12 +158,14 @@ enum SettingsKey {
     static let fullscreenHeroBackdrop = "nuvio.tv.settings.layout.fullscreenHeroBackdrop"
     static let posterLabels = "nuvio.tv.settings.layout.posterLabels"
     static let catalogAddonNames = "nuvio.tv.settings.layout.catalogAddonNames"
+    static let landscapePosters = "nuvio.tv.settings.layout.landscapePosters"
     static let discoverLocation = "nuvio.tv.settings.layout.discoverLocation"
     /// Which Search screen the Search tab shows: `"Netflix"` (embedded
     /// key-by-key keyboard with a title list beside the poster grid) or
     /// `"Classic"` (system-keyboard search bar over a full-width poster grid).
     static let searchStyle = "nuvio.tv.settings.layout.searchStyle"
     static let continueWatchingVisible = "nuvio.tv.settings.layout.continueWatchingVisible"
+    static let continueWatchingLandscape = "nuvio.tv.settings.layout.continueWatchingLandscape"
     static let continueWatchingSort = "nuvio.tv.settings.layout.continueWatchingSort"
     static let upNextFromFurthestEpisode = "nuvio.tv.settings.layout.upNextFromFurthestEpisode"
     static let showUnairedNextUp = "nuvio.tv.settings.layout.showUnairedNextUp"
@@ -315,9 +320,9 @@ enum SettingsKey {
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
-        homeLayout, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
+        homeLayout, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, landscapePosters, discoverLocation,
         searchStyle,
-        continueWatchingVisible, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
+        continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates,
         traktConnected, traktClientID, traktClientSecret,
@@ -2451,6 +2456,7 @@ private struct HomeLayoutLivePreview: View {
     var fullscreenHeroBackdrop: Bool = true
     let posterLabels: Bool
     let catalogAddonNames: Bool
+    var landscapePosters: Bool = false
     let accentColor: Color
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadius = AppCardStyle.defaultCornerRadiusRaw
@@ -2743,10 +2749,17 @@ private struct HomeLayoutLivePreview: View {
                         }
                     }
 
-                    // 2. PORTRAIT POSTER CARDS
-                    ForEach(0..<5, id: \.self) { idx in
-                        let item = movies[idx % movies.count]
-                        miniPortraitCard(width: 66, height: 98, item: item)
+                    // 2. PORTRAIT / LANDSCAPE POSTER CARDS
+                    if landscapePosters {
+                        ForEach(0..<2, id: \.self) { idx in
+                            let item = movies[idx % movies.count]
+                            miniLandscapeCard(width: 172, height: 98, item: item)
+                        }
+                    } else {
+                        ForEach(0..<5, id: \.self) { idx in
+                            let item = movies[idx % movies.count]
+                            miniPortraitCard(width: 66, height: 98, item: item)
+                        }
                     }
                 }
             }
@@ -2756,9 +2769,16 @@ private struct HomeLayoutLivePreview: View {
                 rowHeader(title: "Popular - Series", addon: "TMDB")
 
                 HStack(spacing: 10) {
-                    ForEach(2..<8, id: \.self) { idx in
-                        let item = movies[idx % movies.count]
-                        miniPortraitCard(width: 66, height: 40, item: item, isPeeking: true)
+                    if landscapePosters {
+                        ForEach(2..<5, id: \.self) { idx in
+                            let item = movies[idx % movies.count]
+                            miniLandscapeCard(width: 172, height: 40, item: item, isPeeking: true)
+                        }
+                    } else {
+                        ForEach(2..<8, id: \.self) { idx in
+                            let item = movies[idx % movies.count]
+                            miniPortraitCard(width: 66, height: 40, item: item, isPeeking: true)
+                        }
                     }
                 }
             }
@@ -2870,6 +2890,63 @@ private struct HomeLayoutLivePreview: View {
             }
         }
     }
+
+    private func miniLandscapeCard(
+        width: CGFloat,
+        height: CGFloat,
+        item: MovieItem,
+        isFocused: Bool = false,
+        isPeeking: Bool = false
+    ) -> some View {
+        let radius = cardCornerRadius(forWidth: width, isLandscape: true)
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+
+        return VStack(alignment: .leading, spacing: 2) {
+            ZStack(alignment: .topTrailing) {
+                LinearGradient(
+                    colors: item.colors,
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                if item.hasWatchedBadge && !isPeeking {
+                    Circle()
+                        .fill(Color(red: 0.10, green: 0.75, blue: 0.40))
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 7, weight: .heavy))
+                                .foregroundColor(.white)
+                        )
+                        .padding(4)
+                }
+            }
+            .frame(width: width, height: height)
+            .clipShape(shape)
+            .modifier(
+                LiquidGlassCardModifier(
+                    cornerRadius: radius,
+                    isFocused: isFocused,
+                    isEnabled: liquidGlassCards
+                )
+            )
+            .overlay(
+                shape
+                    .stroke(
+                        isFocused ? AppFocusOutline.color : Color.clear,
+                        lineWidth: isFocused ? 2 : 0
+                    )
+            )
+
+            if posterLabels && !isPeeking {
+                Text(item.title)
+                    .font(.system(size: 7, weight: isFocused ? .bold : .medium))
+                    .foregroundColor(isFocused ? .white : .white.opacity(0.65))
+                    .lineLimit(1)
+                    .frame(width: width, alignment: .leading)
+            }
+        }
+    }
 }
 
 private struct LayoutDiscoverySettingsView: View {
@@ -2881,9 +2958,11 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
+    @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
     @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
     @AppStorage(SettingsKey.continueWatchingVisible) private var continueWatchingVisible = true
+    @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
@@ -2915,6 +2994,7 @@ private struct LayoutDiscoverySettingsView: View {
                     fullscreenHeroBackdrop: fullscreenHeroBackdrop,
                     posterLabels: posterLabels,
                     catalogAddonNames: catalogAddonNames,
+                    landscapePosters: landscapePosters,
                     accentColor: accentColor
                 )
 
@@ -2988,6 +3068,16 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $catalogAddonNames,
                     accentColor: accentColor
                 )
+
+                SettingsToggleRow(
+                    title: L10n.string("layout_landscape_posters", fallback: "Landscape Posters"),
+                    subtitle: L10n.string(
+                        "layout_landscape_posters_sub",
+                        fallback: "Switch between portrait and landscape cards for Modern view."
+                    ),
+                    isOn: $landscapePosters,
+                    accentColor: accentColor
+                )
             }
 
             SettingsGroup(
@@ -3050,6 +3140,22 @@ private struct LayoutDiscoverySettingsView: View {
                     accentColor: accentColor
                 )
                 .onChange(of: continueWatchingVisible) { _, _ in
+                    NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
+                    NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
+                }
+
+                SettingsToggleRow(
+                    title: L10n.string("layout_cw_landscape", fallback: "Landscape Cards"),
+                    subtitle: L10n.string(
+                        "layout_cw_landscape_sub",
+                        fallback: "Show Continue Watching cards in wide landscape format"
+                    ),
+                    isOn: $continueWatchingLandscape,
+                    accentColor: accentColor
+                )
+                .opacity(continueWatchingVisible ? 1 : 0.46)
+                .disabled(!continueWatchingVisible)
+                .onChange(of: continueWatchingLandscape) { _, _ in
                     NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
                     NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
                 }
@@ -3259,11 +3365,12 @@ private struct HeroCatalogSelectionRow: View {
     private func loadCatalogs() {
         // A row hidden from Home stays in the snapshot so it can be restored, but
         // it has no items to draw a hero from — so it is not offered here.
+        let visibility = TVHomeCatalogOrder.homeVisibilityContext()
         catalogs = layoutVisibleHomeCatalogRows().filter {
             $0.id != TVHomeSection.continueWatchingId
                 && $0.id != TVHomeSection.upcomingId
                 && !$0.id.hasPrefix(TVHomeSection.collectionIdPrefix)
-                && TVHomeCatalogOrder.isRowEnabled($0)
+                && TVHomeCatalogOrder.isRowEnabled($0, context: visibility)
         }
     }
 }
@@ -3321,6 +3428,7 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
                     addonId: nil,
                     contentType: builtIn.type,
                     catalogId: builtIn.catalogId,
+                    manifestURL: "https://v3-cinemeta.strem.io/manifest.json",
                     settingsKey: TVHomeCatalogOrder.catalogSettingsKey(
                         addonId: CinemetaCatalogRepository.cinemetaAddonId,
                         contentType: builtIn.type,
@@ -9568,6 +9676,7 @@ private struct AddonsSettingsSection: View {
     /// upgrades each row with the real name/version/description from its
     /// manifest as the fetches come back.
     private func loadSyncedAddons() async {
+        let activeProfileID = ProfileSettings.activeProfileID
         let preferences = CinemetaCatalogRepository.configuredStreamAddonPreferences
         // Keep already-resolved names/descriptions (e.g. across a reorder) so
         // rows don't flash back to host-derived names.
@@ -9582,7 +9691,9 @@ private struct AddonsSettingsSection: View {
 
         for index in resolved.indices {
             guard !Task.isCancelled else { return }
-            guard let manifest = await StremioManifest.fetch(from: resolved[index].url) else {
+            let manifest = await StremioManifest.fetch(from: resolved[index].url)
+            guard !Task.isCancelled, ProfileSettings.activeProfileID == activeProfileID else { return }
+            guard let manifest else {
                 continue
             }
             resolved[index].apply(manifest)
@@ -9622,7 +9733,8 @@ private struct AddonsSettingsSection: View {
             snapshotRow(
                 for: catalog,
                 addonID: addonID,
-                addonName: addonName
+                addonName: addonName,
+                manifestURL: manifestURL.absoluteString
             )
         }
     }
@@ -9630,7 +9742,8 @@ private struct AddonsSettingsSection: View {
     private func snapshotRow(
         for catalog: StremioManifestCatalog,
         addonID: String,
-        addonName: String
+        addonName: String,
+        manifestURL: String
     ) -> TVHomeCatalogOrder.SnapshotRow? {
         guard let type = catalog.type,
               let catalogID = catalog.id else { return nil }
@@ -9653,6 +9766,8 @@ private struct AddonsSettingsSection: View {
             addonId: addonID,
             contentType: type,
             catalogId: catalogID,
+            manifestURL: manifestURL,
+            manifestShowInHome: catalog.showInHome,
             settingsKey: settingsKey
         )
     }
@@ -9845,12 +9960,13 @@ struct StremioManifestCatalog: Decodable {
     let type: String?
     let id: String?
     let name: String?
+    let showInHome: Bool?
     let extra: [StremioManifestCatalogExtra]?
     let extraRequired: [String]?
 
     var eligibleForHome: Bool {
         let required = requiredExtraNames
-        if required.contains("search") { return false }
+        if showInHome == false || required.contains("search") { return false }
         return required.allSatisfy { $0 == "genre" }
     }
 
@@ -10130,8 +10246,9 @@ private struct HomeCatalogOrderSection: View {
 
     private func reload() {
         rows = layoutVisibleHomeCatalogRows()
+        let visibility = TVHomeCatalogOrder.homeVisibilityContext()
         enabledByRowId = Dictionary(
-            uniqueKeysWithValues: rows.map { ($0.id, TVHomeCatalogOrder.isRowEnabled($0)) }
+            uniqueKeysWithValues: rows.map { ($0.id, TVHomeCatalogOrder.isRowEnabled($0, context: visibility)) }
         )
     }
 

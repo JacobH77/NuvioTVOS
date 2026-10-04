@@ -1978,7 +1978,11 @@ struct ContentView: View {
         let quality = store.string(forKey: SettingsKey.smartStreamQuality) ?? "Highest"
         let matchSubtitles = store.object(forKey: SettingsKey.smartSubtitleMatching) as? Bool ?? true
         let languages = SubtitleLanguagePreferences.orderedFromDefaults(defaults: store)
-        let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnlyPreference = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnly = SmartPlaybackSelector.effectiveCachedOnly(
+            cachedOnlyPreference,
+            contentType: type
+        )
         // Prefer the exact series meta id when resolving an episode stream.
         let resolvedSeriesId = seriesMetaId ?? StreamQualityTags.seriesId(fromContentId: contentId)
         let metaIdForTags = resolvedSeriesId.isEmpty ? contentId : resolvedSeriesId
@@ -2139,11 +2143,16 @@ struct ContentView: View {
     /// the first usable source without waiting for every add-on.
     private static func displayedPlaybackSources(
         profileId: String?,
+        type: String,
         streams: [NuvioStream]
     ) -> [NuvioStream] {
         let store = ProfileSettings.store(for: profileId)
         let debrid = DebridResolver(store: store)
-        let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnlyPreference = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let cachedOnly = SmartPlaybackSelector.effectiveCachedOnly(
+            cachedOnlyPreference,
+            contentType: type
+        )
         let preserveAddonOrder = (store.object(forKey: SettingsKey.preserveAddonStreamOrder) as? Bool) ?? false
         let sortRaw = store.string(forKey: SettingsKey.streamSortOption)
         let sortOption = sortRaw.flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
@@ -2179,6 +2188,7 @@ struct ContentView: View {
                     continuation.yield(
                         Self.displayedPlaybackSources(
                             profileId: profileId,
+                            type: type,
                             streams: streams
                         )
                     )
@@ -2197,6 +2207,7 @@ struct ContentView: View {
         seriesMetaId: String? = nil,
         profileId: String?
     ) async -> PreparedNextStream? {
+        guard stream.unavailabilityReason == nil else { return nil }
         let store = ProfileSettings.store(for: profileId)
         let debrid = DebridResolver(store: store)
         let (season, episode) = seasonEpisode(fromContentId: contentId)
@@ -3203,6 +3214,8 @@ private final class TVHomeFocusWork {
         let jellyfinCount: Int
         let storeRevision: UInt
         let hideUnreleased: Bool
+        let cwLandscape: Bool
+        let landscapePosters: Bool
     }
     struct CachedVisibleSections {
         let signature: VisibleSectionsSignature
@@ -3456,6 +3469,8 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
+    @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
+    @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
     @AppStorage(SettingsKey.tmdbEnabled) private var tmdbEnabled = false
     @AppStorage(SettingsKey.tmdbLanguage) private var tmdbLanguage = "en"
     @AppStorage(SettingsKey.tmdbUseArtwork) private var tmdbUseArtwork = true
@@ -4304,7 +4319,7 @@ struct TVHomeView: View {
                                 onScrollIndexChange: { rowScrollStore.setIndex($0, for: section.id) },
                                 initialFocusCardKey: initialFocusCardKey,
                                 landscapeFocusedId: nil,
-                                explicitTileShape: section.tileShape,
+                                explicitTileShape: effectiveTileShape(for: section),
                                 externalFocus: $focusedCardID,
                                 restrictFocusToCardKey: activeFocusRestrictionCardID,
                                 retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
@@ -4868,7 +4883,7 @@ struct TVHomeView: View {
         if section.isLoadingPlaceholder {
             TVLoadingCatalogRow(
                 title: section.title,
-                tileShape: section.tileShape,
+                tileShape: effectiveTileShape(for: section),
                 requestsFocus: false,
                 addonName: section.addonName,
                 showAddonName: catalogAddonNames,
@@ -5001,7 +5016,7 @@ struct TVHomeView: View {
                 },
                             initialFocusCardKey: initialFocusCardKey,
                             landscapeFocusedId: landscapeFocusedId(for: section.id),
-                            explicitTileShape: section.tileShape,
+                            explicitTileShape: effectiveTileShape(for: section),
                             externalFocus: $focusedCardID,
                             restrictFocusToCardKey: activeFocusRestrictionCardID,
                             retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
@@ -5347,6 +5362,26 @@ struct TVHomeView: View {
         onOpenCollectionFolder(folder, sectionTitle)
     }
 
+    private func effectiveTileShape(for section: TVHomeSection) -> CollectionTileShape {
+        if section.id == TVHomeSection.continueWatchingId || section.id == TVHomeSection.upcomingId {
+            return continueWatchingLandscape ? .landscape : .poster
+        }
+        if section.isCollectionRow {
+            return section.tileShape
+        }
+        if let posterShape = section.posterShape {
+            let shape = CollectionTileShape.fromStored(posterShape, fallback: .poster)
+            if shape == .poster && landscapePosters {
+                return .landscape
+            }
+            return shape
+        }
+        if landscapePosters {
+            return .landscape
+        }
+        return section.tileShape
+    }
+
     private var visibleSections: [TVHomeSection] {
         let signature = TVHomeFocusWork.VisibleSectionsSignature(
             cwVisible: continueWatchingVisible,
@@ -5357,7 +5392,9 @@ struct TVHomeView: View {
             localCount: localTitlesSection?.items.count ?? 0,
             jellyfinCount: jellyfinSection?.items.count ?? 0,
             storeRevision: store.sectionsRevision,
-            hideUnreleased: hideUnreleased
+            hideUnreleased: hideUnreleased,
+            cwLandscape: continueWatchingLandscape,
+            landscapePosters: landscapePosters
         )
 
         if let cached = focusWork.cachedVisibleSections, cached.signature == signature {
@@ -5367,12 +5404,14 @@ struct TVHomeView: View {
         let resumeSection = TVHomeSection(
             id: TVHomeSection.continueWatchingId,
             title: L10n.string("home_continue_watching", fallback: "Continue Watching"),
-            items: continueWatchingMetas
+            items: continueWatchingMetas,
+            posterShape: continueWatchingLandscape ? "landscape" : "poster"
         )
         let upcomingSection = TVHomeSection(
             id: TVHomeSection.upcomingId,
             title: L10n.string("tvos_home_upcoming", fallback: "Upcoming"),
-            items: upcomingMetas
+            items: upcomingMetas,
+            posterShape: continueWatchingLandscape ? "landscape" : "poster"
         )
         let pinnedSections = ((continueWatching.isEmpty || !continueWatchingVisible) ? [] : [resumeSection])
             + ((upcomingMetas.isEmpty || !continueWatchingVisible) ? [] : [upcomingSection])
@@ -5667,10 +5706,11 @@ struct TVHomeView: View {
         // host cannot hold the user's collections off Home.
         let collectionSections = await loadCollectionSections()
         guard store.isCurrentLoad(generation, for: identity) else { return }
+        let homeVisibility = TVHomeCatalogOrder.homeVisibilityContext()
         let previouslyLoadedCatalogSections = store.sections.filter {
             !$0.isCollectionRow
                 && !$0.isLoadingPlaceholder
-                && isHomeCatalogSectionFromEnabledSource($0)
+                && isHomeCatalogSectionFromEnabledSource($0, context: homeVisibility)
         }
         let isColdStart = previouslyLoadedCatalogSections.isEmpty
         // Seeded before the first publish so Home shows its rows'
@@ -5687,20 +5727,21 @@ struct TVHomeView: View {
         )
 
         var receivedCatalogUpdate = false
+        var receivedCatalogPublication = false
         do {
             var latestCatalogSections: [TVHomeSection] = []
             for try await catalogs in repository.homeCatalogsProgressively() {
                 try Task.checkCancellation()
                 guard store.isCurrentLoad(generation, for: identity) else { return }
+                receivedCatalogPublication = true
                 let catalogSections = await Self.makeHomeCatalogSections(from: catalogs, repository: repository)
                 try Task.checkCancellation()
                 guard store.isCurrentLoad(generation, for: identity) else { return }
                 latestCatalogSections = catalogSections
                 receivedCatalogUpdate = receivedCatalogUpdate || !catalogSections.isEmpty
+                guard !catalogSections.isEmpty else { continue }
                 let loadedIds = Set(catalogSections.map(\.id))
-                let retainedPrevious = previouslyLoadedCatalogSections.filter {
-                    !loadedIds.contains($0.id)
-                }
+                let retainedPrevious = previouslyLoadedCatalogSections.filter { !loadedIds.contains($0.id) }
                 while isFastScrolling {
                     try? await Task.sleep(nanoseconds: 80_000_000)
                     try Task.checkCancellation()
@@ -5715,7 +5756,7 @@ struct TVHomeView: View {
                     resetFocusIfEmpty: isColdStart
                 )
             }
-            guard receivedCatalogUpdate || !collectionSections.isEmpty else {
+            guard receivedCatalogPublication || !collectionSections.isEmpty else {
                 throw URLError(.cannotLoadFromNetwork)
             }
             guard store.isCurrentLoad(generation, for: identity) else { return }
@@ -5728,7 +5769,7 @@ struct TVHomeView: View {
             // still a skeleton is never coming.
             clearHomeLoadingPlaceholders(mutateStore: false)
             publishHomeSections(
-                catalogSections: receivedCatalogUpdate
+                catalogSections: receivedCatalogPublication
                     ? latestCatalogSections
                     : previouslyLoadedCatalogSections,
                 collectionSections: collectionSections,
@@ -5830,6 +5871,8 @@ struct TVHomeView: View {
                     addonId: catalog.addonId,
                     addonName: catalog.addonName,
                     catalogGenre: catalog.catalogGenre,
+                    manifestURL: catalog.manifestURL,
+                    manifestShowInHome: catalog.manifestShowInHome,
                     posterShape: catalog.posterShape,
                     pendingItems: pendingItems,
                     nextSkip: nextSkip,
@@ -5925,26 +5968,27 @@ struct TVHomeView: View {
     /// come from the local store and are already on screen before the first
     /// catalog request goes out.
     private func homeSkeletonSections(excluding published: Set<String>) -> [TVHomeSection] {
-        let hiddenCatalogs = TVHomeCatalogOrder.disabledCatalogKeys()
-        let hiddenCollections = TVHomeCatalogOrder.disabledCollectionIds()
+        let visibility = TVHomeCatalogOrder.homeVisibilityContext()
 
         return TVHomeCatalogOrder.snapshotRows().compactMap { row in
             guard !published.contains(row.id),
                   !row.id.hasPrefix(TVHomeSection.collectionIdPrefix),
                   row.id != TVHomeSection.continueWatchingId,
                   row.id != TVHomeSection.upcomingId,
-                  !hiddenCollections.contains(row.id),
-                  isHomeCatalogSnapshotRowFromEnabledSource(row) else {
-                return nil
-            }
-            if let settingsKey = row.settingsKey, hiddenCatalogs.contains(settingsKey) {
+                  isHomeCatalogSnapshotRowFromEnabledSource(row),
+                  TVHomeCatalogOrder.isRowEnabled(row, context: visibility) else {
                 return nil
             }
             return TVHomeSection(
                 id: row.id,
                 title: row.title,
                 items: [],
+                contentType: row.contentType,
+                catalogId: row.catalogId,
+                addonId: row.addonId,
                 addonName: row.addonName,
+                manifestURL: row.manifestURL,
+                manifestShowInHome: row.manifestShowInHome,
                 posterShape: row.posterShape,
                 isLoadingPlaceholder: true
             )
@@ -5955,10 +5999,26 @@ struct TVHomeView: View {
     /// placeholders visible while the replacement Home tree is being built.
     /// Built-in rows have no `addonId`, but their persisted settings key still
     /// carries Cinemeta's manifest id.
-    private func isHomeCatalogSectionFromEnabledSource(_ section: TVHomeSection) -> Bool {
-        guard section.contentType != nil, section.catalogId != nil else { return true }
-        guard section.addonId == nil else { return true }
-        return CinemetaCatalogRepository.isCinemetaEnabled
+    private func isHomeCatalogSectionFromEnabledSource(
+        _ section: TVHomeSection,
+        context: TVHomeCatalogOrder.HomeVisibilityContext
+    ) -> Bool {
+        TVHomeCatalogOrder.isRowEnabled(homeCatalogSnapshotRow(for: section), context: context)
+    }
+
+    private func homeCatalogSnapshotRow(for section: TVHomeSection) -> TVHomeCatalogOrder.SnapshotRow {
+        TVHomeCatalogOrder.SnapshotRow(
+            id: section.id,
+            title: section.title,
+            addonName: section.addonName,
+            addonId: section.addonId,
+            contentType: section.contentType,
+            catalogId: section.catalogId,
+            manifestURL: section.manifestURL,
+            manifestShowInHome: section.manifestShowInHome,
+            settingsKey: section.catalogSettingsKey,
+            posterShape: section.posterShape
+        )
     }
 
     private func isHomeCatalogSnapshotRowFromEnabledSource(
@@ -6033,7 +6093,7 @@ struct TVHomeView: View {
         }
         guard store.isLoaded(for: identity) else { return }
         let fresh = await loadCollectionSections()
-        guard store.isLoaded(for: identity) else { return }
+        guard !Task.isCancelled, identity == contentIdentity, store.isLoaded(for: identity) else { return }
         let catalogRows = store.sections.filter { !$0.isCollectionRow }
         let pinned = fresh.filter(\.isPinnedCollection)
         let unpinned = fresh.filter { !$0.isPinnedCollection }
@@ -6046,6 +6106,10 @@ struct TVHomeView: View {
         if currentSignature != nextSignature {
             store.sections = merged
         }
+        guard repository.homeCatalogInputSignature != lastLoadedInputSignature,
+              !store.isLoading(for: identity),
+              store.isLoaded(for: identity) else { return }
+        await load(for: identity, forceReload: true)
     }
 
     private func collectionSectionsSignature(_ sections: [TVHomeSection]) -> String {
@@ -6851,6 +6915,8 @@ struct TVHomeSection: Identifiable {
     /// Display name of the add-on this row came from, for the Settings list.
     var addonName: String? = nil
     var catalogGenre: String? = nil
+    var manifestURL: String? = nil
+    var manifestShowInHome: Bool? = nil
     var posterShape: String? = nil
     /// Items already returned by the first add-on response but not mounted yet.
     var pendingItems: [NuvioMeta] = []
@@ -6882,7 +6948,8 @@ struct TVHomeSection: Identifiable {
         id: String, title: String, items: [NuvioMeta],
         contentType: String? = nil, catalogId: String? = nil,
         addonId: String? = nil, addonName: String? = nil,
-        catalogGenre: String? = nil, posterShape: String? = nil,
+        catalogGenre: String? = nil, manifestURL: String? = nil,
+        manifestShowInHome: Bool? = nil, posterShape: String? = nil,
         pendingItems: [NuvioMeta] = [], nextSkip: Int? = nil,
         hasMore: Bool = false, isLoadingMore: Bool = false,
         isLoadingPlaceholder: Bool = false, isPinnedCollection: Bool = false,
@@ -6896,6 +6963,8 @@ struct TVHomeSection: Identifiable {
         self.addonId = addonId
         self.addonName = addonName
         self.catalogGenre = catalogGenre
+        self.manifestURL = manifestURL
+        self.manifestShowInHome = manifestShowInHome
         self.posterShape = posterShape
         self.pendingItems = pendingItems
         self.nextSkip = nextSkip
@@ -7067,6 +7136,7 @@ enum TVHomeCatalogOrder {
     static func clearOrder() {
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogOrder)
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogSyncedOrder)
+        HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogExplicitEnabled)
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogCustomTitles)
         ProfileSettings.current.removeObject(forKey: SettingsKey.homeCatalogTitles)
         let storageKey = snapshotStorageKey(for: ProfileSettings.current)
@@ -7114,6 +7184,40 @@ enum TVHomeCatalogOrder {
         guard let data = HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogDisabled),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(keys)
+    }
+
+    /// Keys explicitly enabled by a local toggle or by the account's Home
+    /// order. Local reorder and snapshot rows are intentionally not intent.
+    static func explicitHomeCatalogKeys() -> Set<String> {
+        explicitHomeCatalogKeys(disabled: disabledCatalogKeys())
+    }
+
+    private static func explicitHomeCatalogKeys(disabled: Set<String>) -> Set<String> {
+        let account = syncedOrder()
+        return localExplicitHomeCatalogKeys().union(account)
+            .filter { !$0.hasPrefix(TVHomeSection.collectionIdPrefix) }
+            .subtracting(disabled)
+    }
+
+    private static func localExplicitHomeCatalogKeys() -> Set<String> {
+        guard let data = HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogExplicitEnabled),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }
+
+    struct HomeVisibilityContext {
+        let collectionSources: [CatalogHomeVisibilityResolver.Source]
+        let explicitHomeKeys: Set<String>
+        let disabledCatalogKeys: Set<String>
+    }
+
+    static func homeVisibilityContext() -> HomeVisibilityContext {
+        let disabled = disabledCatalogKeys()
+        return HomeVisibilityContext(
+            collectionSources: CatalogHomeVisibilityResolver.collectionSources(),
+            explicitHomeKeys: explicitHomeCatalogKeys(disabled: disabled),
+            disabledCatalogKeys: disabled
+        )
     }
 
     static func disabledAddonIDs() -> Set<String> {
@@ -7210,6 +7314,8 @@ enum TVHomeCatalogOrder {
         var addonId: String? = nil
         var contentType: String? = nil
         var catalogId: String? = nil
+        var manifestURL: String? = nil
+        var manifestShowInHome: Bool? = nil
         /// Nil for a row that cannot be hidden (Continue Watching).
         var settingsKey: String? = nil
         var posterShape: String? = nil
@@ -7291,6 +7397,10 @@ enum TVHomeCatalogOrder {
                     if let addonId = row.addonId { entry["addonId"] = addonId }
                     if let contentType = row.contentType { entry["type"] = contentType }
                     if let catalogId = row.catalogId { entry["catalogId"] = catalogId }
+                    if let manifestURL = row.manifestURL { entry["manifestURL"] = manifestURL }
+                    if let manifestShowInHome = row.manifestShowInHome {
+                        entry["manifestShowInHome"] = manifestShowInHome ? "true" : "false"
+                    }
                     if let settingsKey = row.settingsKey { entry["key"] = settingsKey }
                     if let posterShape = row.posterShape { entry["posterShape"] = posterShape }
                     return entry
@@ -7395,6 +7505,8 @@ enum TVHomeCatalogOrder {
                 addonId: row["addonId"],
                 contentType: row["type"],
                 catalogId: row["catalogId"],
+                manifestURL: row["manifestURL"],
+                manifestShowInHome: row["manifestShowInHome"].flatMap(Bool.init),
                 settingsKey: settingsKey,
                 posterShape: row["posterShape"]
             )
@@ -7416,6 +7528,8 @@ enum TVHomeCatalogOrder {
                 addonId: $0.addonId,
                 contentType: $0.contentType,
                 catalogId: $0.catalogId,
+                manifestURL: $0.manifestURL,
+                manifestShowInHome: $0.manifestShowInHome,
                 settingsKey: $0.catalogSettingsKey,
                 posterShape: $0.posterShape ?? $0.items.first(where: { $0.posterShape != nil })?.posterShape
             )
@@ -7462,6 +7576,7 @@ enum TVHomeCatalogOrder {
     /// media type, catalog id, enabled state, and saved row order.
     static func syncItems() -> [[String: Any]] {
         var items: [[String: Any]] = []
+        let visibility = homeVisibilityContext()
         for row in snapshotRows() {
             guard let settingsKey = row.settingsKey else { continue }
 
@@ -7473,7 +7588,7 @@ enum TVHomeCatalogOrder {
                     "addon_id": "",
                     "type": "",
                     "catalog_id": "",
-                    "enabled": isRowEnabled(row),
+                    "enabled": isRowEnabled(row, context: visibility),
                     "order": items.count,
                     "custom_title": customTitle,
                     "is_collection": true,
@@ -7487,12 +7602,25 @@ enum TVHomeCatalogOrder {
                   !source.contentType.isEmpty,
                   !source.catalogId.isEmpty else { continue }
             let catalogKey = catalogSettingsKey(addonId: source.addonId, contentType: source.contentType, catalogId: source.catalogId)
+            if row.manifestShowInHome != true,
+               !visibility.disabledCatalogKeys.contains(catalogKey),
+               !visibility.explicitHomeKeys.contains(catalogKey),
+               CatalogHomeVisibilityResolver.isCollectionSource(
+                   addonID: source.addonId,
+                   contentType: source.contentType,
+                   catalogID: source.catalogId,
+                   collectionSources: visibility.collectionSources,
+                   manifestURL: row.manifestURL.flatMap(URL.init(string:))
+               ) {
+                // A folder's default-hidden state is derived, not a user choice.
+                continue
+            }
             let customTitle = customTitle(forCatalogKey: catalogKey) ?? ""
             items.append([
                 "addon_id": source.addonId,
                 "type": source.contentType,
                 "catalog_id": source.catalogId,
-                "enabled": isRowEnabled(row),
+                "enabled": isRowEnabled(row, context: visibility),
                 "order": items.count,
                 "custom_title": customTitle,
                 "is_collection": false,
@@ -7524,6 +7652,10 @@ enum TVHomeCatalogOrder {
 
     /// True when the row is currently shown on Home.
     static func isRowEnabled(_ row: SnapshotRow) -> Bool {
+        isRowEnabled(row, context: homeVisibilityContext())
+    }
+
+    static func isRowEnabled(_ row: SnapshotRow, context: HomeVisibilityContext) -> Bool {
         if row.addonId == CinemetaCatalogRepository.cinemetaAddonId
             || (row.settingsKey?.hasPrefix(CinemetaCatalogRepository.cinemetaAddonId + "_") ?? false)
             || ["movie_top", "series_top", "movie_rating", "series_rating"].contains(row.id) {
@@ -7545,12 +7677,34 @@ enum TVHomeCatalogOrder {
            disabledAddonNames().contains(normalizedAddonSourceName(addonName)) {
             return false
         }
-        guard let key = row.settingsKey else { return true }
-        if key.hasPrefix(TVHomeSection.collectionIdPrefix) {
+        if let key = row.settingsKey, key.hasPrefix(TVHomeSection.collectionIdPrefix) {
             let id = String(key.dropFirst(TVHomeSection.collectionIdPrefix.count))
             return !disabledCollectionIds().contains(id)
         }
-        return !disabledCatalogKeys().contains(key)
+        guard row.manifestShowInHome != false else { return false }
+        let source = catalogSyncSource(for: row)
+        guard !source.addonId.isEmpty,
+              !source.contentType.isEmpty,
+              !source.catalogId.isEmpty else {
+            guard let key = row.settingsKey else { return true }
+            return !context.disabledCatalogKeys.contains(key)
+        }
+        let key = row.settingsKey ?? catalogSettingsKey(
+            addonId: source.addonId,
+            contentType: source.contentType,
+            catalogId: source.catalogId
+        )
+        guard !context.disabledCatalogKeys.contains(key) else { return false }
+        return CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: source.addonId,
+            contentType: source.contentType,
+            catalogID: source.catalogId,
+            collectionSources: context.collectionSources,
+            manifestURL: row.manifestURL.flatMap(URL.init(string:)),
+            explicitHomeKeys: context.explicitHomeKeys,
+            manifestShowInHome: row.manifestShowInHome,
+            disabledHomeKeys: context.disabledCatalogKeys
+        )
     }
 
     /// Hides or restores one Home row. Writes the same profile settings the
@@ -7565,8 +7719,16 @@ enum TVHomeCatalogOrder {
             persist(ids, forKey: SettingsKey.homeCollectionDisabled)
         } else {
             var keys = disabledCatalogKeys()
-            if isEnabled { keys.remove(key) } else { keys.insert(key) }
+            var explicitlyEnabled = localExplicitHomeCatalogKeys()
+            if isEnabled {
+                keys.remove(key)
+                explicitlyEnabled.insert(key)
+            } else {
+                keys.insert(key)
+                explicitlyEnabled.remove(key)
+            }
             persist(keys, forKey: SettingsKey.homeCatalogDisabled)
+            persist(explicitlyEnabled, forKey: SettingsKey.homeCatalogExplicitEnabled)
         }
         NotificationCenter.default.post(name: changedNotification, object: nil)
     }
@@ -7578,7 +7740,8 @@ enum TVHomeCatalogOrder {
             SettingsKey.homeCatalogSyncedOrder,
             SettingsKey.homeCatalogDisabled,
             SettingsKey.homeCollectionDisabled,
-            SettingsKey.homeCatalogCustomTitles
+            SettingsKey.homeCatalogCustomTitles,
+            SettingsKey.homeCatalogExplicitEnabled
         ].contains(key)
         if usesFileStorage {
             _ = HomeCatalogPayloadStore.write(data, forKey: key)
@@ -7646,11 +7809,10 @@ enum CatalogHomeVisibilityResolver {
         }
     }
 
-    /// Resolves all active collection sources from CollectionsStore whose parent collections are enabled on Home.
-    static func activeCollectionSources() -> [Source] {
-        let disabledCollections = TVHomeCatalogOrder.disabledCollectionIds()
-        return CollectionsStore.collections()
-            .filter { !disabledCollections.contains($0.id) }
+    /// Resolves every stored folder source, including folders in collections
+    /// hidden from Home. Parent visibility must not change source membership.
+    static func collectionSources() -> [Source] {
+        CollectionsStore.collections()
             .flatMap { collection in
                 collection.folders.flatMap { $0.resolvedSources }
                     .filter { $0.normalizedProvider == "addon" }
@@ -7668,20 +7830,50 @@ enum CatalogHomeVisibilityResolver {
             }
     }
 
+    /// Compatibility name retained for existing callers.
+    static func activeCollectionSources() -> [Source] { collectionSources() }
+
     static func shouldInclude(
         addonID: String,
         contentType: String,
         catalogID: String,
         collectionSources: [Source],
-        manifestURL: URL,
-        explicitHomeKeys: Set<String>
+        manifestURL: URL?,
+        explicitHomeKeys: Set<String>,
+        manifestShowInHome: Bool? = nil,
+        disabledHomeKeys: Set<String> = []
     ) -> Bool {
-        // Matching Android TV: catalogs inside collection folders remain visible
-        // in layout and on Home unless explicitly disabled by user/account settings.
-        return true
+        let key = TVHomeCatalogOrder.catalogSettingsKey(
+            addonId: addonID,
+            contentType: contentType,
+            catalogId: catalogID
+        )
+        guard !disabledHomeKeys.contains(key), manifestShowInHome != false else { return false }
+        if manifestShowInHome == true || explicitHomeKeys.contains(key) { return true }
+        return !isCollectionSource(
+            addonID: addonID,
+            contentType: contentType,
+            catalogID: catalogID,
+            collectionSources: collectionSources,
+            manifestURL: manifestURL
+        )
     }
 
-    static func matches(_ raw: String, addonID: String, manifestURL: URL) -> Bool {
+    static func isCollectionSource(
+        addonID: String,
+        contentType: String,
+        catalogID: String,
+        collectionSources: [Source],
+        manifestURL: URL?
+    ) -> Bool {
+        collectionSources.contains { source in
+            source.contentType == contentType
+                && source.catalogID == catalogID
+                && matches(source.addonIdentifier, addonID: addonID, manifestURL: manifestURL)
+        }
+    }
+
+    static func matches(_ raw: String, addonID: String, manifestURL: URL?) -> Bool {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.caseInsensitiveCompare(addonID) == .orderedSame { return true }
         if (value.caseInsensitiveCompare(CinemetaCatalogRepository.cinemetaAddonId) == .orderedSame || value.caseInsensitiveCompare("cinemeta") == .orderedSame)
@@ -7695,7 +7887,7 @@ enum CatalogHomeVisibilityResolver {
             let embeddedID = String(value[value.index(value.startIndex, offsetBy: "addon:".count)..<separator])
             if embeddedID.caseInsensitiveCompare(addonID) == .orderedSame { return true }
         }
-        let canonical = canonicalURL(manifestURL)
+        guard let canonical = manifestURL.map(canonicalURL) else { return false }
         return candidates.compactMap(URL.init(string:)).contains {
             canonicalURL($0) == canonical
         }

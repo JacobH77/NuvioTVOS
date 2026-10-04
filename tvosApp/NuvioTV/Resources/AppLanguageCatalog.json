@@ -2049,7 +2049,9 @@
         "type_movies": "أفلام",
         "type_series": "مسلسل",
         "type_series_plural": "مسلسلات",
-        "type_unknown": "غير معروف"
+        "type_unknown": "غير معروف",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "bg": {
         "about_check_updates": "Провери за актуализации",
@@ -4101,7 +4103,9 @@
         "type_movies": "Филми",
         "type_series": "Сериал",
         "type_series_plural": "Сериали",
-        "type_unknown": "Неизвестно"
+        "type_unknown": "Неизвестно",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "bs": {
         "about_check_updates": "Provjeri ažuriranja",
@@ -6153,7 +6157,9 @@
         "type_movies": "Film",
         "type_series": "Serija",
         "type_series_plural": "Serija",
-        "type_unknown": "Nepoznato"
+        "type_unknown": "Nepoznato",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "cs": {
         "about_check_updates": "Zkontrolovat aktualizace",
@@ -8205,7 +8211,9 @@
         "type_movies": "Filmy",
         "type_series": "Seriál",
         "type_series_plural": "Seriály",
-        "type_unknown": "Neznámé"
+        "type_unknown": "Neznámé",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "da": {
         "about_check_updates": "Søg efter opdateringer",
@@ -10257,7 +10265,9 @@
         "type_movies": "Film",
         "type_series": "Serie",
         "type_series_plural": "Serier",
-        "type_unknown": "Ukendt"
+        "type_unknown": "Ukendt",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "de": {
         "about_check_updates": "Nach Updates suchen",
@@ -12309,7 +12319,9 @@
         "type_movies": "Movies",
         "type_series": "Serie",
         "type_series_plural": "Series",
-        "type_unknown": "Unbekannt"
+        "type_unknown": "Unbekannt",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "el": {
         "about_check_updates": "Έλεγχος ενημερώσεων",
@@ -14361,7 +14373,9 @@
         "type_movies": "Ταινίες",
         "type_series": "Σειρά",
         "type_series_plural": "Σειρές",
-        "type_unknown": "Άγνωστο"
+        "type_unknown": "Άγνωστο",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "en": {
         "about_check_updates": "Check for updates",
@@ -14923,6 +14937,8 @@
         "layout_cw_sort_separate_upcoming_desc": "Move unaired episodes to a separate Upcoming row",
         "layout_cw_sort_streaming": "Streaming Style",
         "layout_cw_sort_streaming_desc": "Released items first, upcoming at the end",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format",
         "layout_discover_location_action": "Discover Location",
         "layout_discover_location_dialog_title": "Discover Location",
         "layout_discover_location_in_search": "Show in Search",
@@ -18471,7 +18487,9 @@
         "type_movies": "Película",
         "type_series": "Serie",
         "type_series_plural": "Series",
-        "type_unknown": "Desconocido"
+        "type_unknown": "Desconocido",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "es-419": {
         "about_check_updates": "Buscar actualizaciones",
@@ -20523,7 +20541,9 @@
         "type_movies": "Películas",
         "type_series": "Serie",
         "type_series_plural": "Series",
-        "type_unknown": "Desconocido"
+        "type_unknown": "Desconocido",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "fr": {
         "about_check_updates": "Vérifier les mises à jour",
@@ -22579,7 +22599,9 @@
         "type_movies": "Films",
         "type_series": "Série",
         "type_series_plural": "Séries",
-        "type_unknown": "Inconnu"
+        "type_unknown": "Inconnu",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "he": {
         "about_check_updates": "בדוק עדכונים",
@@ -24631,7 +24653,9 @@
         "type_movies": "סרטים",
         "type_series": "סדרה",
         "type_series_plural": "סדרות",
-        "type_unknown": "לא ידוע"
+        "type_unknown": "לא ידוע",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "hi": {
         "about_check_updates": "अपडेट जांचें",
@@ -26683,7 +26707,9 @@
         "type_movies": "फ़िल्म",
         "type_series": "सीरीज़",
         "type_series_plural": "सीरीज़",
-        "type_unknown": "अज्ञात"
+        "type_unknown": "अज्ञात",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "hu": {
         "about_check_updates": "Frissítések keresése",
@@ -28735,7 +28761,9 @@
         "type_movies": "Filmek",
         "type_series": "Sorozat",
         "type_series_plural": "Sorozatok",
-        "type_unknown": "Ismeretlen"
+        "type_unknown": "Ismeretlen",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "in": {
         "about_check_updates": "Periksa pembaruan",
@@ -30787,7 +30815,9 @@
         "type_movies": "Film",
         "type_series": "Serial",
         "type_series_plural": "Serial",
-        "type_unknown": "Tidak Diketahui"
+        "type_unknown": "Tidak Diketahui",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "it": {
         "about_check_updates": "Controlla aggiornamenti",
@@ -32839,7 +32869,9 @@
         "type_movies": "Film",
         "type_series": "Serie TV",
         "type_series_plural": "Serie TV",
-        "type_unknown": "Sconosciuto"
+        "type_unknown": "Sconosciuto",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "ja": {
         "about_check_updates": "アップデートを確認",
@@ -34891,7 +34923,9 @@
         "type_movies": "映画",
         "type_series": "シリーズ",
         "type_series_plural": "シリーズ",
-        "type_unknown": "不明"
+        "type_unknown": "不明",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "lt": {
         "about_check_updates": "Tikrinti atnaujinimus",
@@ -36943,7 +36977,9 @@
         "type_movies": "Filmas",
         "type_series": "Serialas",
         "type_series_plural": "Serialas",
-        "type_unknown": "Nežinoma"
+        "type_unknown": "Nežinoma",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "nl": {
         "about_check_updates": "Controleren op updates",
@@ -38995,7 +39031,9 @@
         "type_movies": "Film",
         "type_series": "Serie",
         "type_series_plural": "Serie",
-        "type_unknown": "Onbekend"
+        "type_unknown": "Onbekend",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "no": {
         "about_check_updates": "Se etter oppdateringer",
@@ -41047,7 +41085,9 @@
         "type_movies": "Film",
         "type_series": "Serie",
         "type_series_plural": "Serie",
-        "type_unknown": "Ukjent"
+        "type_unknown": "Ukjent",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "pl": {
         "about_check_updates": "Sprawdź aktualizacje",
@@ -43099,7 +43139,9 @@
         "type_movies": "Filmy",
         "type_series": "Serial",
         "type_series_plural": "Seriale",
-        "type_unknown": "Nieznany"
+        "type_unknown": "Nieznany",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "pt-BR": {
         "about_check_updates": "Verificar atualizações",
@@ -45151,7 +45193,9 @@
         "type_movies": "Filmes",
         "type_series": "Série",
         "type_series_plural": "Séries",
-        "type_unknown": "Desconhecido"
+        "type_unknown": "Desconhecido",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "pt-PT": {
         "about_check_updates": "Procurar atualizações",
@@ -47203,7 +47247,9 @@
         "type_movies": "Filmes",
         "type_series": "Série",
         "type_series_plural": "Séries",
-        "type_unknown": "Desconhecido"
+        "type_unknown": "Desconhecido",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "ro": {
         "about_check_updates": "Verifică actualizările",
@@ -49255,7 +49301,9 @@
         "type_movies": "Film",
         "type_series": "Serial",
         "type_series_plural": "Serial",
-        "type_unknown": "Necunoscut"
+        "type_unknown": "Necunoscut",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "ru": {
         "about_check_updates": "Проверить обновления",
@@ -51307,7 +51355,9 @@
         "type_movies": "Фильмы",
         "type_series": "Сериал",
         "type_series_plural": "Сериалы",
-        "type_unknown": "Неизвестно"
+        "type_unknown": "Неизвестно",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "sk": {
         "about_check_updates": "Skontrolovať aktualizácie",
@@ -53359,7 +53409,9 @@
         "type_movies": "Filmy",
         "type_series": "Seriál",
         "type_series_plural": "Seriály",
-        "type_unknown": "Neznáme"
+        "type_unknown": "Neznáme",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "sl": {
         "about_check_updates": "Preveri za posodobitve",
@@ -55411,7 +55463,9 @@
         "type_movies": "Filmi",
         "type_series": "Serija",
         "type_series_plural": "Serije",
-        "type_unknown": "Neznano"
+        "type_unknown": "Neznano",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "sv": {
         "about_check_updates": "Sök efter uppdateringar",
@@ -57463,7 +57517,9 @@
         "type_movies": "Film",
         "type_series": "Serier",
         "type_series_plural": "Serier",
-        "type_unknown": "Okänd"
+        "type_unknown": "Okänd",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "ta": {
         "about_check_updates": "புதுப்பிப்புகளை சரிபார்",
@@ -59515,7 +59571,9 @@
         "type_movies": "திரைப்படங்கள்",
         "type_series": "தொடர்",
         "type_series_plural": "தொடர்கள்",
-        "type_unknown": "தெரியாதது"
+        "type_unknown": "தெரியாதது",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "tr": {
         "about_check_updates": "Güncellemeleri kontrol et",
@@ -61567,7 +61625,9 @@
         "type_movies": "Filmler",
         "type_series": "Dizi",
         "type_series_plural": "Diziler",
-        "type_unknown": "Bilinmiyor"
+        "type_unknown": "Bilinmiyor",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "uk": {
         "about_check_updates": "Перевірити оновлення",
@@ -63619,7 +63679,9 @@
         "type_movies": "Фільми",
         "type_series": "Серіал",
         "type_series_plural": "Серіали",
-        "type_unknown": "Невідомо"
+        "type_unknown": "Невідомо",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "vi": {
         "about_check_updates": "Kiểm tra cập nhật",
@@ -65671,7 +65733,9 @@
         "type_movies": "Phim",
         "type_series": "Chương trình TV",
         "type_series_plural": "Chương trình TV",
-        "type_unknown": "Không xác định"
+        "type_unknown": "Không xác định",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "zh-CN": {
         "about_check_updates": "检查更新",
@@ -67723,7 +67787,9 @@
         "type_movies": "电影",
         "type_series": "剧集",
         "type_series_plural": "剧集",
-        "type_unknown": "未知"
+        "type_unknown": "未知",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     },
     "zh-TW": {
         "about_check_updates": "檢查更新",
@@ -69775,6 +69841,8 @@
         "type_movies": "電影",
         "type_series": "影集",
         "type_series_plural": "影集",
-        "type_unknown": "未知"
+        "type_unknown": "未知",
+        "layout_cw_landscape": "Landscape Cards",
+        "layout_cw_landscape_sub": "Show Continue Watching cards in wide landscape format"
     }
 }
