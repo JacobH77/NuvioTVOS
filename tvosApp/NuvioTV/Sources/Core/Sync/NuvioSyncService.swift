@@ -327,6 +327,7 @@ final class NuvioSyncManager: ObservableObject {
             }
             observedAuthUserId = userId
             if !isSameAccount {
+                ContinueWatchingBuilder.cancelScheduledRebuild()
                 lastDeviceRegistrationAt = nil
             }
             Self.accountSyncDiagnostic = "scheduled"
@@ -339,6 +340,7 @@ final class NuvioSyncManager: ObservableObject {
             schedulePull(force: !isSameAccount)
         case .signedOut:
             Self.accountSyncDiagnostic = "signed out"
+            ContinueWatchingBuilder.cancelScheduledRebuild()
             pullGeneration &+= 1
             pullTask?.cancel()
             pullTask = nil
@@ -429,6 +431,7 @@ final class NuvioSyncManager: ObservableObject {
         guard profileId != observedActiveProfileId else { return }
         observedActiveProfileId = profileId
         guard profile != nil, !isApplyingRemoteProfiles else { return }
+        ContinueWatchingBuilder.cancelScheduledRebuild()
         // A delayed snapshot captured the previous profile and must not resume
         // by reading the newly-active profile's global stores.
         pushTask?.cancel()
@@ -1106,6 +1109,7 @@ final class NuvioSyncManager: ObservableObject {
             var profileSettingsReconciled = true
             var pullFailures = 0
             Self.accountSyncDiagnostic = "pulling account data"
+            let accountDataPullStartedAt = DispatchTime.now().uptimeNanoseconds
             do {
                 try ensureStillSyncing(profileId: activeProfile.id)
                 isApplyingRemote = true
@@ -1132,11 +1136,38 @@ final class NuvioSyncManager: ObservableObject {
                 print("Nuvio profile settings sync failed: \(error.localizedDescription)")
             }
 
+            // These reads are independent. Fetch them together, then apply their
+            // snapshots below in a stable order on the main actor.
+            // Capture before launch so rows written in flight are not treated as
+            // remote deletions when this authoritative snapshot is reconciled.
+            let progressPullStartedAt = Date()
+            async let remoteAddonsRequest = client.pullAddons(
+                session: session,
+                remoteProfileId: addonProfileId
+            )
+            async let collectionsRequest = client.pullCollections(
+                session: session,
+                remoteProfileId: remoteProfileId
+            )
+            async let catalogSettingsRequest = client.pullHomeCatalogSettings(
+                session: session,
+                remoteProfileId: remoteProfileId
+            )
+            async let libraryRequest = client.pullLibrary(
+                session: session,
+                remoteProfileId: remoteProfileId
+            )
+            async let watchedRequest = client.pullWatched(
+                session: session,
+                remoteProfileId: remoteProfileId
+            )
+            async let progressRequest = client.pullWatchProgress(
+                session: session,
+                remoteProfileId: remoteProfileId
+            )
+
             do {
-                let remoteAddons = try await client.pullAddons(
-                    session: session,
-                    remoteProfileId: addonProfileId
-                )
+                let remoteAddons = try await remoteAddonsRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
                 lastPulledAddonRows = remoteAddons
                 let (appliedCount, didChange) = client.applyAddons(remoteAddons, localProfileId: activeProfile.id)
@@ -1154,11 +1185,9 @@ final class NuvioSyncManager: ObservableObject {
             }
 
             do {
-                if let collectionsBlob = try await client.pullCollections(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                ) {
-                    try ensureStillSyncing(profileId: activeProfile.id)
+                let collectionsBlob = try await collectionsRequest
+                try ensureStillSyncing(profileId: activeProfile.id)
+                if let collectionsBlob {
                     CollectionsStore.applyRemote(collectionsBlob)
                     let count = CollectionsStore.collections().count
                     print("Nuvio sync pulled collections (\(collectionsBlob.count) bytes, \(count) collection(s)).")
@@ -1173,11 +1202,9 @@ final class NuvioSyncManager: ObservableObject {
             }
 
             do {
-                if let catalogSettings = try await client.pullHomeCatalogSettings(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                ) {
-                    try ensureStillSyncing(profileId: activeProfile.id)
+                let catalogSettings = try await catalogSettingsRequest
+                try ensureStillSyncing(profileId: activeProfile.id)
+                if let catalogSettings {
                     let didChange = client.applyHomeCatalogSettings(catalogSettings, localProfileId: activeProfile.id)
                     if didChange {
                         homeCatalogRevision &+= 1
@@ -1202,10 +1229,7 @@ final class NuvioSyncManager: ObservableObject {
             // TV from uploading edits, but it must not make an authenticated
             // account look empty after reinstalling the app.
             do {
-                let remoteLibrary = try await client.pullLibrary(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                )
+                let remoteLibrary = try await libraryRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
                 LibraryStore.mergeRemote(remoteLibrary)
             } catch is CancellationError {
@@ -1216,10 +1240,7 @@ final class NuvioSyncManager: ObservableObject {
             }
 
             do {
-                let remoteWatched = try await client.pullWatched(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                )
+                let remoteWatched = try await watchedRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
                 // These rows are what the Nuvio account itself holds, so they
                 // are attributed to Nuvio Sync — not to whichever tracker
@@ -1232,14 +1253,9 @@ final class NuvioSyncManager: ObservableObject {
                 print("Nuvio watched sync failed: \(error.localizedDescription)")
             }
 
+            var didSaveWatchProgress = false
             do {
-                // Captured before the request: rows written while it is in
-                // flight are not absent because someone deleted them.
-                let progressPullStartedAt = Date()
-                let remoteProgress = try await client.pullWatchProgress(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                )
+                let remoteProgress = try await progressRequest
                 print("[NuvioSync] pullWatchProgress: received \(remoteProgress.count) progress items from server for profile \(remoteProfileId)")
                 try ensureStillSyncing(profileId: activeProfile.id)
                 // Authoritative, deletions included. The account is this
@@ -1253,6 +1269,7 @@ final class NuvioSyncManager: ObservableObject {
                 guard progressReconcile.saved else {
                     throw AuthError(message: "Watch progress could not be saved on this Apple TV.")
                 }
+                didSaveWatchProgress = true
                 if !progressReconcile.removedKeys.isEmpty,
                    WatchProgressLedger.records().isEmpty {
                     // The rebuild below returns early on an empty ledger without
@@ -1262,12 +1279,11 @@ final class NuvioSyncManager: ObservableObject {
                     ContinueWatchingStore.replaceAll([])
                 }
                 // Watched marks, source visibility, and metadata may have changed
-                // even when the raw progress snapshot did not. Re-evaluate the
-                // derived row on every successful account refresh.
-                await ContinueWatchingBuilder.rebuild(reason: "account pull")
+                // even when the raw progress snapshot did not. Rebuild the
+                // derived row asynchronously after raw stores are persisted.
                 let uploadStatus = watchStateUploadsEnabled ? "uploads on" : "uploads off"
                 Self.progressSyncDiagnostic = "profile \(activeProfile.id), remote \(remoteProgress.count), "
-                    + "\(uploadStatus); \(ContinueWatchingBuilder.diagnostic); "
+                    + "\(uploadStatus); metadata rebuild scheduled; "
                     + ContinueWatchingStore.persistenceDiagnostic
             } catch is CancellationError {
                 throw CancellationError()
@@ -1277,6 +1293,12 @@ final class NuvioSyncManager: ObservableObject {
                 print("Nuvio watch progress sync failed: \(error.localizedDescription)")
             }
             isApplyingRemote = false
+
+            // Keep a successful progress snapshot's derived row rebuild even
+            // when a later retry fails; a subsequent success coalesces it.
+            if didSaveWatchProgress {
+                ContinueWatchingBuilder.scheduleRebuild(reason: "account pull")
+            }
 
             let pullWasIncomplete = pullFailures > 0 || !profileSettingsReconciled
             if pullWasIncomplete, automaticAccountPullRetryCount < 2 {
@@ -1308,6 +1330,10 @@ final class NuvioSyncManager: ObservableObject {
             // The post-login screen represents the complete initial sync. Do
             // not reveal the picker while progress/add-ons are still being
             // written under the newly imported profile.
+            let rawInputsElapsedMs = Double(
+                DispatchTime.now().uptimeNanoseconds - accountDataPullStartedAt
+            ) / 1_000_000
+            print("[NuvioSync] raw account inputs ready in \(String(format: "%.0f", rawInputsElapsedMs))ms")
             releasePostLoginGate(generation: generation)
 
             // Enable pushes only after a complete pull; pushing a snapshot built
@@ -2360,11 +2386,11 @@ fileprivate final class NuvioAPIClient {
     private static let themeSettingsFeature = "theme_settings"
 
     private let session: URLSession = .shared
-    private let decoder: JSONDecoder = {
+    private static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
-    }()
+    }
     private var lastPulledProfileSettingsJSON: [String: Any]?
     private var lastPulledMobileProfileSettingsJSON: [String: Any]?
     private var lastPulledHomeCatalogSettingsJSON: [String: Any]?
@@ -2552,15 +2578,19 @@ fileprivate final class NuvioAPIClient {
     /// in what order), mirroring Android's `HomeCatalogSettingsSyncService`.
     /// Returns the first platform that has any items, preferring the shared blob.
     func pullHomeCatalogSettings(session: AuthSession, remoteProfileId: Int) async throws -> HomeCatalogSyncPayload? {
+        try Task.checkCancellation()
         lastPulledHomeCatalogSettingsJSON = nil
         for platform in Self.homeCatalogSyncPlatforms {
+            try Task.checkCancellation()
             // Each platform is queried independently so one failing (or absent
             // on older backends) can't stop the others from being tried.
-            guard let settingsJSON = try? await pullHomeCatalogSettingsJSON(
+            let pulledSettings = try? await pullHomeCatalogSettingsJSON(
                 session: session,
                 remoteProfileId: remoteProfileId,
                 platform: platform
-            ) else { continue }
+            )
+            try Task.checkCancellation()
+            guard let settingsJSON = pulledSettings else { continue }
             lastPulledHomeCatalogSettingsJSON = settingsJSON
             let payload = HomeCatalogSyncPayload(dictionary: settingsJSON)
             if !payload.items.isEmpty { return payload }
@@ -3267,7 +3297,7 @@ fileprivate final class NuvioAPIClient {
         params: [String: Any]
     ) async throws -> LossyRows<T> {
         let data = try await rpcData(name, session: authSession, params: params)
-        return try decoder.decode(LossyRows<T>.self, from: data)
+        return try Self.makeDecoder().decode(LossyRows<T>.self, from: data)
     }
 
     private func rpcVoid(
@@ -3325,7 +3355,7 @@ fileprivate final class NuvioAPIClient {
                 statusCode: http.statusCode
             )
         }
-        return try decoder.decode(T.self, from: data)
+        return try Self.makeDecoder().decode(T.self, from: data)
     }
 
     private func rpcData(

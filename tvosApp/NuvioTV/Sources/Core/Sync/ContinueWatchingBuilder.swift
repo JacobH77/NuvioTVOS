@@ -90,7 +90,16 @@ enum ContinueWatchingBuilder {
         }
     }
 
+    /// Invalidates deferred and in-flight builds when their account or profile
+    /// context is no longer current.
+    static func cancelScheduledRebuild() {
+        rebuildTask?.cancel()
+        rebuildTask = nil
+        generation &+= 1
+    }
+
     static func rebuild(reason: String) async {
+        guard !Task.isCancelled else { return }
         let rebuildStarted = TVHomeDebugTrace.now()
         TVHomeDebugTrace.log("cw.builder.rebuild.begin reason=\(reason)")
         print("[ContinueWatchingBuilder] rebuild started: reason=\(reason)")
@@ -109,6 +118,7 @@ enum ContinueWatchingBuilder {
             generation &+= 1
             return generation
         }
+        guard !Task.isCancelled else { return }
         let profileId = WatchProgressLedger.activeProfileId
         // Metadata resolution below suspends. Keep the exact ledger input so a
         // playback save that lands while it is in flight cannot be overwritten
@@ -163,7 +173,7 @@ enum ContinueWatchingBuilder {
         // used to finish afterward, filter its stale resume row as watched, and
         // replace the freshly saved card with an empty page. Leave the newer
         // store untouched and derive it again from the completed ledger row.
-        guard rebuildInputIsCurrent(ledgerSnapshot) else {
+        guard rebuildInputIsCurrent(ledgerSnapshot, profileId: profileId) else {
             print("[ContinueWatchingBuilder] rebuild: ledger snapshot changed during materializeSlice! Retrying...")
             await MainActor.run {
                 diagnostic = "\(reason): ledger changed while building, retrying"
@@ -197,8 +207,12 @@ enum ContinueWatchingBuilder {
     }
 
     /// Visible for regression coverage of the stale-rebuild commit gate.
-    static func rebuildInputIsCurrent(_ snapshot: [WatchProgressRecord]) -> Bool {
-        WatchProgressLedger.records() == snapshot
+    static func rebuildInputIsCurrent(
+        _ snapshot: [WatchProgressRecord],
+        profileId: String?
+    ) -> Bool {
+        profileId == WatchProgressLedger.activeProfileId
+            && WatchProgressLedger.records() == snapshot
     }
 
     /// Renders the next page of titles. Returns every item built so far so the
@@ -604,6 +618,7 @@ enum ContinueWatchingBuilder {
         let newestByIdentity = WatchedStore.newestWatchedDatesByIdentity(watched)
 
         return items.filter { item in
+            guard item.isUpNextEntry else { return true }
             let keys = WatchedStore.watchedIdentityKeys(
                 metaId: item.meta.id,
                 imdbId: item.meta.imdbId,

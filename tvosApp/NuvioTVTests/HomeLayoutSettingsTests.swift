@@ -12,6 +12,81 @@ final class HomeLayoutSettingsTests: XCTestCase {
         return try JSONDecoder().decode(NuvioMeta.self, from: data)
     }
 
+    private func activateHomeVisibilityProfile() -> (id: String, suite: UserDefaults) {
+        let id = "home-visibility-\(UUID().uuidString)"
+        let suiteName = "nuvio.tv.profile.settings.\(id)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        ProfileSettings.setActiveProfile(id, isPrimary: false)
+        CollectionsStore.setActiveProfile(id)
+        HomeCatalogPayloadStore.removeAll(in: suite, profileID: id)
+        TVHomeCatalogOrder.invalidateSnapshotCache()
+        return (id, suite)
+    }
+
+    private func clearHomeVisibilityProfile(_ profile: (id: String, suite: UserDefaults)) {
+        TVHomeCatalogOrder.clearOrder()
+        HomeCatalogPayloadStore.removeAll(in: profile.suite, profileID: profile.id)
+        LargePayloadStore.remove(
+            key: "nuvio.tv.collections.json.\(profile.id)",
+            directory: "CollectionsStore"
+        )
+        LargePayloadStore.remove(
+            key: "nuvio.tv.collections.lastPulledIds.\(profile.id)",
+            directory: "CollectionsStore"
+        )
+        TVHomeCatalogOrder.invalidateSnapshotCache()
+        CollectionsStore.setActiveProfile(nil)
+        ProfileSettings.clearActiveProfile()
+        profile.suite.removePersistentDomain(forName: "nuvio.tv.profile.settings.\(profile.id)")
+    }
+
+    private func applyFolderSource(
+        parentID: String,
+        addonIdentifier: String,
+        contentType: String,
+        catalogID: String
+    ) throws {
+        let payload: [[String: Any]] = [[
+            "id": parentID,
+            "title": "Parent",
+            "folders": [[
+                "id": "folder",
+                "title": "Folder",
+                "sources": [[
+                    "provider": "addon",
+                    "addonId": addonIdentifier,
+                    "type": contentType,
+                    "catalogId": catalogID
+                ]]
+            ]]
+        ]]
+        CollectionsStore.applyRemote(try JSONSerialization.data(withJSONObject: payload))
+    }
+
+    private func snapshotRow(
+        addonID: String = "example.addon",
+        type: String = "movie",
+        catalogID: String = "popular",
+        manifestURL: String? = "https://example.com/manifest.json",
+        manifestShowInHome: Bool? = nil
+    ) -> TVHomeCatalogOrder.SnapshotRow {
+        TVHomeCatalogOrder.SnapshotRow(
+            id: "addon_\(addonID)_\(type)_\(catalogID)",
+            title: "Popular",
+            addonName: "Example Addon",
+            addonId: addonID,
+            contentType: type,
+            catalogId: catalogID,
+            manifestURL: manifestURL,
+            manifestShowInHome: manifestShowInHome,
+            settingsKey: TVHomeCatalogOrder.catalogSettingsKey(
+                addonId: addonID,
+                contentType: type,
+                catalogId: catalogID
+            )
+        )
+    }
+
     func testHomeTitleIdentitySurvivesWindowShiftInsertionAndReorder() throws {
         let a = try title("a")
         let b = try title("b")
@@ -134,6 +209,42 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertFalse(defaults.bool(forKey: SettingsKey.catalogAddonNames))
     }
 
+    func testLandscapePostersSetting() {
+        XCTAssertEqual(SettingsKey.landscapePosters, "nuvio.tv.settings.layout.landscapePosters")
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.landscapePosters))
+
+        let defaults = UserDefaults(suiteName: "LandscapePostersTestsDefaults")!
+        defaults.removePersistentDomain(forName: "LandscapePostersTestsDefaults")
+
+        // Default should be false
+        let isLandscapeDefault = defaults.object(forKey: SettingsKey.landscapePosters) as? Bool ?? false
+        XCTAssertFalse(isLandscapeDefault)
+
+        defaults.set(true, forKey: SettingsKey.landscapePosters)
+        XCTAssertTrue(defaults.bool(forKey: SettingsKey.landscapePosters))
+
+        defaults.set(false, forKey: SettingsKey.landscapePosters)
+        XCTAssertFalse(defaults.bool(forKey: SettingsKey.landscapePosters))
+    }
+
+    func testContinueWatchingLandscapeSetting() {
+        XCTAssertEqual(SettingsKey.continueWatchingLandscape, "nuvio.tv.settings.layout.continueWatchingLandscape")
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.continueWatchingLandscape))
+
+        let defaults = UserDefaults(suiteName: "ContinueWatchingLandscapeTestsDefaults")!
+        defaults.removePersistentDomain(forName: "ContinueWatchingLandscapeTestsDefaults")
+
+        // Default should be false
+        let isCWLandscapeDefault = defaults.object(forKey: SettingsKey.continueWatchingLandscape) as? Bool ?? false
+        XCTAssertFalse(isCWLandscapeDefault)
+
+        defaults.set(true, forKey: SettingsKey.continueWatchingLandscape)
+        XCTAssertTrue(defaults.bool(forKey: SettingsKey.continueWatchingLandscape))
+
+        defaults.set(false, forKey: SettingsKey.continueWatchingLandscape)
+        XCTAssertFalse(defaults.bool(forKey: SettingsKey.continueWatchingLandscape))
+    }
+
     func testTVCatalogRowEquatableChecksShowAddonName() {
         let rowWithAddonName = TVCatalogRow(
             id: "catalog-1",
@@ -187,6 +298,44 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertNotEqual(rowWithAddonName, rowWithoutAddonName)
         // Equatable must be true when all properties match
         XCTAssertEqual(rowWithAddonName, rowIdentical)
+    }
+
+    func testTVCatalogRowEquatableChecksExplicitTileShape() {
+        let rowPortrait = TVCatalogRow(
+            id: "catalog-1",
+            title: "Popular Movies",
+            addonName: "Cinemeta",
+            showAddonName: true,
+            horizontalEdgeInset: 40,
+            items: [],
+            initialFocusCardKey: nil,
+            landscapeFocusedId: nil,
+            explicitTileShape: .poster,
+            onInitialFocusRequested: {},
+            onFocus: { _ in },
+            onBlur: { _ in },
+            onApproachEnd: { _ in },
+            onSelect: { _ in }
+        )
+
+        let rowLandscape = TVCatalogRow(
+            id: "catalog-1",
+            title: "Popular Movies",
+            addonName: "Cinemeta",
+            showAddonName: true,
+            horizontalEdgeInset: 40,
+            items: [],
+            initialFocusCardKey: nil,
+            landscapeFocusedId: nil,
+            explicitTileShape: .landscape,
+            onInitialFocusRequested: {},
+            onFocus: { _ in },
+            onBlur: { _ in },
+            onApproachEnd: { _ in },
+            onSelect: { _ in }
+        )
+
+        XCTAssertNotEqual(rowPortrait, rowLandscape)
     }
 
     func testClearCatalogOrder() {
@@ -1078,7 +1227,7 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertNil(evicted)
     }
 
-    func testCatalogInCollectionFolderRemainsVisibleInLayoutMatchingAndroid() throws {
+    func testCatalogInCollectionFolderIsHiddenUnlessExplicitlyEnabled() throws {
         let manifestURL = try XCTUnwrap(URL(string: "https://example.com/manifest.json"))
         let source = CatalogHomeVisibilityResolver.Source(
             addonIdentifier: "sports.addon",
@@ -1086,8 +1235,8 @@ final class HomeLayoutSettingsTests: XCTestCase {
             catalogID: "live_streams",
             collectionID: "sports_collection"
         )
-        // Direct collection sources remain included in layout & Home matching Android TV
-        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+        let key = "sports.addon_sports_live_streams"
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
             addonID: "sports.addon",
             contentType: "sports",
             catalogID: "live_streams",
@@ -1095,5 +1244,302 @@ final class HomeLayoutSettingsTests: XCTestCase {
             manifestURL: manifestURL,
             explicitHomeKeys: []
         ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "sports",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: [key]
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "sports",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: [],
+            manifestShowInHome: true
+        ))
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "sports",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: [key],
+            manifestShowInHome: false
+        ))
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "sports",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: [key],
+            manifestShowInHome: true,
+            disabledHomeKeys: [key]
+        ))
+
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "other.addon",
+            contentType: "sports",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: []
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "series",
+            catalogID: "live_streams",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: []
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "sports.addon",
+            contentType: "sports",
+            catalogID: "other_catalog",
+            collectionSources: [source],
+            manifestURL: manifestURL,
+            explicitHomeKeys: []
+        ))
+
+        let cinemeta = CatalogHomeVisibilityResolver.Source(
+            addonIdentifier: "cinemeta",
+            contentType: "movie",
+            catalogID: "top"
+        )
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "com.linvo.cinemeta",
+            contentType: "movie",
+            catalogID: "top",
+            collectionSources: [cinemeta],
+            manifestURL: URL(string: "https://v3-cinemeta.strem.io/manifest.json"),
+            explicitHomeKeys: []
+        ))
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "com.linvo.cinemeta",
+            contentType: "series",
+            catalogID: "top",
+            collectionSources: [cinemeta],
+            manifestURL: URL(string: "https://v3-cinemeta.strem.io/manifest.json"),
+            explicitHomeKeys: []
+        ))
+
+        let urlSource = CatalogHomeVisibilityResolver.Source(
+            addonIdentifier: "https://example.com/Path/manifest.json?token=AbC",
+            contentType: "movie",
+            catalogID: "popular"
+        )
+        let lowerPathURL = URL(string: "https://example.com/path/manifest.json?token=AbC")
+        XCTAssertTrue(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon",
+            contentType: "movie",
+            catalogID: "popular",
+            collectionSources: [urlSource],
+            manifestURL: lowerPathURL,
+            explicitHomeKeys: []
+        ))
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon",
+            contentType: "movie",
+            catalogID: "popular",
+            collectionSources: [urlSource],
+            manifestURL: URL(string: "https://example.com/Path/manifest.json?token=AbC"),
+            explicitHomeKeys: []
+        ))
+    }
+
+    func testCollectionSourcesIncludeFoldersUnderHiddenParents() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        try applyFolderSource(
+            parentID: "hidden-parent",
+            addonIdentifier: "example.addon",
+            contentType: "movie",
+            catalogID: "popular"
+        )
+        let disabledParents = try JSONEncoder().encode(["hidden-parent"])
+        XCTAssertTrue(HomeCatalogPayloadStore.write(disabledParents, forKey: SettingsKey.homeCollectionDisabled))
+
+        let sources = CatalogHomeVisibilityResolver.collectionSources()
+        XCTAssertEqual(sources.count, 1)
+        XCTAssertEqual(sources.first?.collectionID, "hidden-parent")
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon",
+            contentType: "movie",
+            catalogID: "popular",
+            collectionSources: sources,
+            manifestURL: URL(string: "https://example.com/manifest.json"),
+            explicitHomeKeys: []
+        ))
+    }
+
+    func testLocalExplicitCatalogIntentAndSyncDoNotInheritAccountOrReorderState() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        try applyFolderSource(
+            parentID: "folder-parent",
+            addonIdentifier: "example.addon",
+            contentType: "movie",
+            catalogID: "popular"
+        )
+        let row = snapshotRow()
+        let key = try XCTUnwrap(row.settingsKey)
+        let unrelatedAccountKey = "other.addon_series_trending"
+        TVHomeCatalogOrder.writeSnapshotRows([row])
+        TVHomeCatalogOrder.save([row.id])
+
+        XCTAssertTrue(TVHomeCatalogOrder.explicitHomeCatalogKeys().isEmpty)
+        XCTAssertFalse(TVHomeCatalogOrder.isRowEnabled(row))
+        XCTAssertTrue(TVHomeCatalogOrder.syncItems().isEmpty)
+
+        let accountOrder = try JSONEncoder().encode([key, unrelatedAccountKey])
+        XCTAssertTrue(HomeCatalogPayloadStore.write(accountOrder, forKey: SettingsKey.homeCatalogSyncedOrder))
+        XCTAssertEqual(TVHomeCatalogOrder.explicitHomeCatalogKeys(), [key, unrelatedAccountKey])
+        XCTAssertTrue(TVHomeCatalogOrder.isRowEnabled(row))
+        XCTAssertEqual(TVHomeCatalogOrder.syncItems().first?["enabled"] as? Bool, true)
+
+        TVHomeCatalogOrder.setRowEnabled(row, isEnabled: true)
+        let localData = try XCTUnwrap(HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogExplicitEnabled))
+        let localKeys = try JSONDecoder().decode([String].self, from: localData)
+        XCTAssertEqual(Set(localKeys), [key])
+
+        XCTAssertTrue(HomeCatalogPayloadStore.write(try JSONEncoder().encode([String]()), forKey: SettingsKey.homeCatalogSyncedOrder))
+        XCTAssertEqual(TVHomeCatalogOrder.explicitHomeCatalogKeys(), [key])
+        XCTAssertTrue(TVHomeCatalogOrder.isRowEnabled(row))
+        XCTAssertEqual(TVHomeCatalogOrder.syncItems().first?["enabled"] as? Bool, true)
+
+        TVHomeCatalogOrder.setRowEnabled(row, isEnabled: false)
+        XCTAssertFalse(TVHomeCatalogOrder.explicitHomeCatalogKeys().contains(key))
+        XCTAssertTrue(TVHomeCatalogOrder.disabledCatalogKeys().contains(key))
+        XCTAssertFalse(TVHomeCatalogOrder.isRowEnabled(row))
+        XCTAssertEqual(TVHomeCatalogOrder.syncItems().first?["enabled"] as? Bool, false)
+
+        TVHomeCatalogOrder.setRowEnabled(row, isEnabled: true)
+        let disabledWins = try JSONEncoder().encode([key])
+        XCTAssertTrue(HomeCatalogPayloadStore.write(disabledWins, forKey: SettingsKey.homeCatalogDisabled))
+        XCTAssertFalse(TVHomeCatalogOrder.isRowEnabled(row))
+
+        TVHomeCatalogOrder.clearOrder()
+        XCTAssertTrue(TVHomeCatalogOrder.explicitHomeCatalogKeys().isEmpty)
+    }
+
+    func testManifestSnapshotMetadataRoundTripsAndLegacyRowsRemainReadable() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        let row = snapshotRow(manifestShowInHome: false)
+        TVHomeCatalogOrder.writeSnapshotRows([row])
+        let storageKey = "homeCatalogTitles_\(profile.id)"
+        let deadline = Date().addingTimeInterval(3)
+        while LargePayloadStore.read(key: storageKey, directory: "catalogSnapshots") == nil,
+              Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertNotNil(LargePayloadStore.read(key: storageKey, directory: "catalogSnapshots"))
+        TVHomeCatalogOrder.invalidateSnapshotCache()
+
+        let roundTripped = try XCTUnwrap(TVHomeCatalogOrder.snapshotRows().first)
+        XCTAssertEqual(roundTripped.manifestURL, row.manifestURL)
+        XCTAssertEqual(roundTripped.manifestShowInHome, false)
+
+        let legacyProfileID = "\(profile.id)-legacy"
+        let legacySuite = UserDefaults(suiteName: "nuvio.tv.profile.settings.\(legacyProfileID)")!
+        legacySuite.set(legacyProfileID, forKey: "nuvio.tv.profile.settings.profileID")
+        let legacyPayload = try JSONSerialization.data(withJSONObject: [[
+            "id": "legacy-row",
+            "title": "Legacy",
+            "addonId": "example.addon",
+            "type": "movie",
+            "catalogId": "popular",
+            "key": "example.addon_movie_popular"
+        ]])
+        legacySuite.set(legacyPayload, forKey: SettingsKey.homeCatalogTitles)
+        TVHomeCatalogOrder.invalidateSnapshotCache()
+        let legacyRow = try XCTUnwrap(TVHomeCatalogOrder.snapshotRows(in: legacySuite).first)
+        XCTAssertNil(legacyRow.manifestURL)
+        XCTAssertNil(legacyRow.manifestShowInHome)
+        LargePayloadStore.remove(key: "homeCatalogTitles_\(legacyProfileID)", directory: "catalogSnapshots")
+        legacySuite.removePersistentDomain(forName: "nuvio.tv.profile.settings.\(legacyProfileID)")
+    }
+
+    func testHomeCatalogSignatureTracksFolderSourcesAndExplicitIntentOnly() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        let repository = CinemetaCatalogRepository()
+        let baseSignature = repository.homeCatalogInputSignature
+        let row = snapshotRow()
+        TVHomeCatalogOrder.save([row.id])
+        TVHomeCatalogOrder.writeSnapshotRows([row])
+        XCTAssertEqual(repository.homeCatalogInputSignature, baseSignature)
+
+        try applyFolderSource(
+            parentID: "folder-parent",
+            addonIdentifier: "example.addon",
+            contentType: "movie",
+            catalogID: "popular"
+        )
+        let sourceSignature = repository.homeCatalogInputSignature
+        XCTAssertNotEqual(sourceSignature, baseSignature)
+
+        XCTAssertTrue(HomeCatalogPayloadStore.write(
+            try JSONEncoder().encode(["folder-parent"]),
+            forKey: SettingsKey.homeCollectionDisabled
+        ))
+        XCTAssertEqual(repository.homeCatalogInputSignature, sourceSignature)
+
+        let key = try XCTUnwrap(row.settingsKey)
+        XCTAssertTrue(HomeCatalogPayloadStore.write(
+            try JSONEncoder().encode([key]),
+            forKey: SettingsKey.homeCatalogExplicitEnabled
+        ))
+        let explicitSignature = repository.homeCatalogInputSignature
+        XCTAssertNotEqual(explicitSignature, sourceSignature)
+
+        TVHomeCatalogOrder.clearOrder()
+        XCTAssertEqual(repository.homeCatalogInputSignature, sourceSignature)
+
+        CollectionsStore.applyRemote(Data("[]".utf8))
+        XCTAssertNotEqual(repository.homeCatalogInputSignature, sourceSignature)
+    }
+
+    func testAllFolderBackedHomeSourcesYieldSuccessfulEmptyCatalogPublication() async throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        try applyFolderSource(
+            parentID: "folder-parent",
+            addonIdentifier: "example.addon",
+            contentType: "movie",
+            catalogID: "popular"
+        )
+        CinemetaCatalogRepository.setCinemetaDisabled(true)
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences([])
+
+        let context = TVHomeCatalogOrder.homeVisibilityContext()
+        XCTAssertFalse(CatalogHomeVisibilityResolver.shouldInclude(
+            addonID: "example.addon",
+            contentType: "movie",
+            catalogID: "popular",
+            collectionSources: context.collectionSources,
+            manifestURL: URL(string: "https://example.com/manifest.json"),
+            explicitHomeKeys: context.explicitHomeKeys,
+            disabledHomeKeys: context.disabledCatalogKeys
+        ))
+
+        let repository = CinemetaCatalogRepository()
+        var publishedCounts: [Int] = []
+        for try await catalogs in repository.homeCatalogsProgressively() {
+            publishedCounts.append(catalogs.count)
+        }
+        XCTAssertEqual(publishedCounts, [0])
+        XCTAssertFalse(repository.homeCatalogLoadWasPartial)
+        XCTAssertNil(repository.homeCatalogFailureSignature)
     }
 }
