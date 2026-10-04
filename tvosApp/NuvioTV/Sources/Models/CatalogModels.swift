@@ -27,6 +27,11 @@ struct NuvioCatalog: Identifiable, Codable {
     let addonName: String?
     /// Required genre extra used for the initial add-on request, if any.
     let catalogGenre: String?
+    /// Manifest source retained so Home can match folder references to the
+    /// exact add-on manifest even when a row came from an older snapshot.
+    let manifestURL: String?
+    /// Explicit manifest Home policy; nil preserves older manifest behavior.
+    let manifestShowInHome: Bool?
     /// Preferred poster shape for items in this catalog ("landscape", "square", "poster").
     let posterShape: String?
 
@@ -48,6 +53,8 @@ struct NuvioCatalog: Identifiable, Codable {
         addonId: String? = nil,
         addonName: String? = nil,
         catalogGenre: String? = nil,
+        manifestURL: String? = nil,
+        manifestShowInHome: Bool? = nil,
         posterShape: String? = nil
     ) {
         self.id = id
@@ -60,6 +67,8 @@ struct NuvioCatalog: Identifiable, Codable {
         self.addonId = addonId
         self.addonName = addonName
         self.catalogGenre = catalogGenre
+        self.manifestURL = manifestURL
+        self.manifestShowInHome = manifestShowInHome
         self.posterShape = posterShape
     }
 }
@@ -1114,6 +1123,95 @@ struct NuvioStream: Identifiable, Codable {
         self.isCached = isCached
         self.httpHeaders = httpHeaders
         self.trickplayURL = trickplayURL
+    }
+
+    /// Explicit availability notice from a source add-on. Ordinary titles, filenames, and add-on names
+    /// are deliberately not inspected.
+    var unavailabilityReason: String? {
+        for value in [name, description].compactMap({ $0 }) {
+            for rawLine in value.components(separatedBy: .newlines) {
+                let line = rawLine
+                    .replacingOccurrences(of: "\u{FE0F}", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty else { continue }
+
+                let hasLockPrefix = line.hasPrefix("🔒")
+                var notice = hasLockPrefix
+                    ? String(line.dropFirst("🔒".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    : line
+                let isNote = notice.lowercased().hasPrefix("note:")
+                if isNote {
+                    notice = String(notice.dropFirst("note:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if !hasLockPrefix && !Self.isExplicitAccessNotice(notice) {
+                    continue
+                }
+
+                let lowercased = notice.lowercased()
+                let startsInPrefix = "starts in "
+                if isNote, lowercased.hasPrefix(startsInPrefix) {
+                    let duration = String(notice.dropFirst(startsInPrefix.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if Self.isAvailabilityDuration(duration) {
+                        return "Starts in \(duration)."
+                    }
+                }
+
+                if Self.isLockedNotice(notice) {
+                    return "This source is locked."
+                }
+                if Self.isUpgradeNotice(notice) {
+                    return "This source requires an upgrade to watch."
+                }
+                if Self.isLoginOrAccessNotice(notice) {
+                    return "This source requires login or access."
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func isAvailabilityDuration(_ value: String) -> Bool {
+        let units = #"(?:seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"#
+        let unitSequence = #"(?i)^\d+(?:\.\d+)?\s*"# + units
+            + #"(?:\s*(?:,|and)?\s*\d+(?:\.\d+)?\s*"# + units + #")*$"#
+        return value.range(of: unitSequence, options: .regularExpression) != nil
+            || value.range(of: #"^\d{1,2}:\d{2}(?::\d{2})?$"#, options: .regularExpression) != nil
+    }
+
+    private static func isLockedNotice(_ value: String) -> Bool {
+        let lowercased = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return lowercased == "locked"
+            || lowercased.hasPrefix("locked:")
+            || lowercased.hasPrefix("locked -")
+            || lowercased.hasPrefix("locked —")
+    }
+
+    private static func isUpgradeNotice(_ value: String) -> Bool {
+        let lowercased = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return lowercased == "upgrade to watch"
+            || lowercased == "upgrade required to watch"
+            || lowercased == "subscription required"
+            || lowercased == "premium access required"
+    }
+
+    private static func isLoginOrAccessNotice(_ value: String) -> Bool {
+        let lowercased = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return lowercased == "login required"
+            || lowercased == "login required to watch"
+            || lowercased == "sign in required"
+            || lowercased == "sign-in required"
+            || lowercased == "sign in to watch"
+            || lowercased == "sign-in to watch"
+            || lowercased == "access required"
+            || lowercased == "access required to watch"
+            || lowercased == "requires login"
+            || lowercased == "requires sign-in"
+    }
+
+    private static func isExplicitAccessNotice(_ value: String) -> Bool {
+        isUpgradeNotice(value) || isLoginOrAccessNotice(value)
     }
 
     /// The direct HTTP URL, if this stream is not a magnet/torrent transport.
@@ -4737,7 +4835,8 @@ enum HomeCatalogPayloadStore {
         SettingsKey.homeCatalogSyncedOrder,
         SettingsKey.homeCatalogDisabled,
         SettingsKey.homeCollectionDisabled,
-        SettingsKey.homeCatalogCustomTitles
+        SettingsKey.homeCatalogCustomTitles,
+        SettingsKey.homeCatalogExplicitEnabled
     ]
     private struct Snapshot: Codable {
         var values: [String: Data] = [:]

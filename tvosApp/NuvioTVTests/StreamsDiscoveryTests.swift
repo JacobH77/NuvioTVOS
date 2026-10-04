@@ -692,6 +692,132 @@ final class StreamsDiscoveryTests: XCTestCase {
         XCTAssertEqual(best?.name, "Movie 4K UHD Remux")
     }
 
+    func testUnavailableNoticesAreNarrowAndExcludeSmartCandidates() {
+        let scheduled = NuvioStream(
+            url: "https://example.com/scheduled-4k.mkv",
+            name: "Movie 4K UHD",
+            description: "Note: Starts in 19 min",
+            addonName: "Addon"
+        )
+        let locked = NuvioStream(
+            url: "https://example.com/locked-4k.mkv",
+            name: "Movie 2160p",
+            description: "🔒\u{FE0F} Locked",
+            addonName: "Addon"
+        )
+        let available = makeStream(
+            url: "https://example.com/movie-720p.mkv",
+            name: "Movie 720p",
+            addon: "Addon"
+        )
+        let lockedNote = NuvioStream(
+            url: "https://example.com/locked-note.mkv",
+            name: "Movie",
+            description: "Note: Locked",
+            addonName: "Addon"
+        )
+        let upgradeNotice = NuvioStream(
+            url: "https://example.com/upgrade.mkv",
+            name: "CDN (Premium)",
+            description: "🔒 Upgrade to watch",
+            addonName: "Premium"
+        )
+        let signInNotice = NuvioStream(
+            url: "https://example.com/login.mkv",
+            name: "Stream",
+            description: "Sign in required",
+            addonName: "Addon"
+        )
+
+        XCTAssertEqual(scheduled.unavailabilityReason, "Starts in 19 min.")
+        XCTAssertEqual(locked.unavailabilityReason, "This source is locked.")
+        XCTAssertEqual(lockedNote.unavailabilityReason, "This source is locked.")
+        XCTAssertEqual(upgradeNotice.unavailabilityReason, "This source requires an upgrade to watch.")
+        XCTAssertNotNil(signInNotice.unavailabilityReason)
+
+        let lockedTitle = makeStream(url: "https://example.com/locked-title.mkv", name: "Locked", addon: "Addon")
+        let lockedInTitle = makeStream(url: "https://example.com/locked-in.mkv", name: "Locked In", addon: "Addon")
+        let futureProse = NuvioStream(
+            url: "https://example.com/prose.mkv",
+            name: "Movie",
+            description: "The movie starts in 19 minutes after the recap.",
+            addonName: "Addon",
+            filename: "Note: Starts in 19 min"
+        )
+        let premiumNameOnly = makeStream(
+            url: "https://example.com/premium.mkv",
+            name: "CDN (Premium)",
+            addon: "Premium"
+        )
+        XCTAssertNil(lockedTitle.unavailabilityReason)
+        XCTAssertNil(lockedInTitle.unavailabilityReason)
+        XCTAssertNil(futureProse.unavailabilityReason)
+        XCTAssertNil(premiumNameOnly.unavailabilityReason)
+
+        let best = SmartPlaybackSelector.bestStream(
+            from: [scheduled, locked, available],
+            qualityPreference: "Highest",
+            subtitleLanguages: [],
+            shouldMatchSubtitles: false
+        )
+        XCTAssertEqual(best?.id, available.id, "Smart playback should skip notices and use the next available source")
+        XCTAssertNil(SmartPlaybackSelector.bestStream(
+            from: [scheduled, locked],
+            qualityPreference: "Highest",
+            subtitleLanguages: [],
+            shouldMatchSubtitles: false
+        ), "An all-unavailable pool has no smart candidate")
+    }
+
+    func testUnavailableCardsStayManualAndDoNotDisplaceLowQualityFallback() {
+        let scheduled = NuvioStream(
+            url: "https://example.com/scheduled.mkv",
+            name: "Movie 4K",
+            description: "Note: Starts in 19 min",
+            addonName: "Addon"
+        )
+        let preview = NuvioStream(
+            url: "https://example.com/preview-480p.mkv",
+            name: "Movie 480p",
+            description: nil,
+            addonName: "Preview Addon"
+        )
+
+        let automatic = SmartPlaybackSelector.playableStreams(
+            from: [scheduled, preview],
+            preserveAddonStreams: true
+        )
+        XCTAssertEqual(automatic.map(\.id), [preview.id], "Top-result pools must exclude the notice and retain the real 480p fallback")
+
+        for preserveAddonStreams in [false, true] {
+            let manual = StreamPickerListBuilder.displayedStreams(
+                streams: [scheduled, preview],
+                groups: [],
+                selectedAddonId: nil,
+                sortOption: .default,
+                includeDebrid: false,
+                preserveAddonStreams: preserveAddonStreams
+            )
+            XCTAssertEqual(Set(manual.map(\.id)), Set([scheduled.id, preview.id]))
+        }
+
+        let upgradeShell = NuvioStream(
+            url: nil,
+            name: "CDN (Premium)",
+            description: "🔒 Upgrade to watch",
+            addonName: "Premium"
+        )
+        let manualShells = StreamPickerListBuilder.displayedStreams(
+            streams: [upgradeShell],
+            groups: [],
+            selectedAddonId: nil,
+            sortOption: .default,
+            includeDebrid: false
+        )
+        XCTAssertEqual(manualShells.map(\.id), [upgradeShell.id], "URL-less notice shells remain selectable in the manual list")
+        XCTAssertTrue(SmartPlaybackSelector.playableStreams(from: [upgradeShell]).isEmpty)
+    }
+
     // MARK: - AIOStreams Heterogeneous Decoding Resilience (#105)
 
     func testAIOStreamsHeterogeneousResponseDecodesResiliently() throws {
@@ -895,5 +1021,4 @@ final class StreamsDiscoveryTests: XCTestCase {
         XCTAssertNil(OpenSubtitlesHasher.computeHash(for: smallFileURL))
     }
 }
-
 
