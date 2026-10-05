@@ -48,24 +48,23 @@ Download the latest Apple TV `.ipa` from [Releases](https://github.com/bobsupra/
 ## Latest tvOS Beta
 
 <!-- BEGIN LATEST_BETA -->
-**Beta 3.4.0** is the latest tvOS release.
+**Beta 3.4.1** is the latest tvOS release.
 
-[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.0/NuvioTV-3.4.0-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.0) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
+[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.1/NuvioTV-3.4.1-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.1) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
 <!-- END LATEST_BETA -->
 
 > 🎉 **Thank you for 200+ GitHub Stars!** A huge thank you to everyone in the community for supporting NuvioTVOS and helping us reach 200+ stars!
 
 The IPA requires a compatible tvOS development or sideloading signing workflow before installation.
 
-### New in Beta 3.4.0
+### New in Beta 3.4.1
 
-- **High-Throughput Stream Disk Caching & Stability:** Multi-tier disk caching architecture with dedicated session isolation, rate-limit cooldown bypass for on-demand chunks, and unified rock-solid stability for both AetherEngine and MPVKit.
-- **Local Stream Scrub Thumbnails:** Instantaneous video frame thumbnail extraction directly from locally cached stream segments.
-- **Modernized Simkl OAuth 2.0 (v2 Client ID):** Upgraded Simkl authentication to the new v2 client credentials and modern OAuth 2.0 Device Flow, automated background token refresh, and bi-directional watch status synchronization.
-- **Continue Watching Row Visibility & Sync Fixes:** Added a dedicated toggle in Layout Settings to show or hide the Continue Watching row, resolved item truncation, and fixed series re-watching progress updates.
-- **Player Engine Routing & Live/Sports Optimization:** Fine-tuned backend engine selection for HLS manifests, live sports streams, custom HTTP headers, and Aether HDR10+ scanning.
-- **Details Screen & Cast Row Polish:** Dynamic active cast member display, trailer playback handoff, and customizable addon priority ordering in settings.
-- **MDBList & Jellyfin Enhancements:** Enhanced MDBList scrobble tracking, server-level API keys for Jellyfin, and accelerated concurrent subtitle addon resolution.
+- **Fullscreen Trailer Playback & Details Screen Enhancements:** Added dedicated fullscreen trailer playback mode directly from the Details screen with native audio and subtitle track selectors.
+- **Batch Episode Watch Action:** Added `markWatchedUpTo` to mark all previous episodes in a season or series as watched in one action.
+- **Landscape Layout Options:** Sleek landscape card layout options for Home catalogs and the Continue Watching row.
+- **Stream Discovery & Live/Sports Optimization:** Provider unavailability notice detection with manual selection preservation, plus automatic live and sports debrid caching exemptions.
+- **Player Stability & AetherEngine Refinements:** Optimized smart subtitle matching, instant loaded track updating, and enhanced surface rebind stability.
+- **Cloud Sync & Profile Isolation:** Streamlined catalog snapshot metadata persistence to prevent sync collisions across profiles.
 
 ### Built-in Player
 
