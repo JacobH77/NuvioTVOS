@@ -11,7 +11,6 @@ import Foundation
 /// One catalog strip inside Rows view mode (Android `RowsContent`).
 struct CollectionFolderCatalogRow: Identifiable {
     let id: String
-    let title: String
     let source: NuvioCollectionSource
     var items: [NuvioMeta]
     var nextSkip: Int
@@ -44,6 +43,7 @@ struct CollectionFolderBrowseView: View {
 
     @State private var items: [NuvioMeta] = []
     @State private var catalogRows: [CollectionFolderCatalogRow] = []
+    @State private var installedAddonCatalogs: [AddonCatalogOption] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedTabIndex = 0
@@ -93,7 +93,7 @@ struct CollectionFolderBrowseView: View {
             labels.append("All")
         }
         for source in folder.sources {
-            labels.append(Self.sourceLabel(source))
+            labels.append(sourceLabel(source))
         }
         return labels
     }
@@ -144,7 +144,9 @@ struct CollectionFolderBrowseView: View {
         }
         .task {
             refreshWatchedTitles()
+            async let addonCatalogNames: Void = loadAddonCatalogNames()
             await load()
+            await addonCatalogNames
         }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
             refreshWatchedTitles()
@@ -250,7 +252,7 @@ struct CollectionFolderBrowseView: View {
                         ForEach(catalogRows) { row in
                             CollectionFolderHomeStyleRow(
                                 id: row.id,
-                                title: row.title,
+                                title: sourceLabel(row.source),
                                 items: row.items,
                                 isLoadingMore: row.isLoadingMore,
                                 layoutMode: collectionRowLayoutMode,
@@ -459,7 +461,7 @@ struct CollectionFolderBrowseView: View {
                         ForEach(catalogRows) { row in
                             CollectionFolderHomeStyleRow(
                                 id: row.id,
-                                title: row.title,
+                                title: sourceLabel(row.source),
                                 items: row.items,
                                 isLoadingMore: row.isLoadingMore,
                                 layoutMode: collectionRowLayoutMode,
@@ -620,7 +622,6 @@ struct CollectionFolderBrowseView: View {
             rows.append(
                 CollectionFolderCatalogRow(
                     id: Self.sourceKey(source),
-                    title: Self.sourceLabel(source),
                     source: source,
                     items: resolved,
                     nextSkip: nextCursor(
@@ -650,6 +651,23 @@ struct CollectionFolderBrowseView: View {
         // the catalog has been inserted into the view hierarchy.
         await Task.yield()
         focusedItemID = firstFocusID
+    }
+
+    @MainActor
+    private func loadAddonCatalogNames() async {
+        guard !Task.isCancelled else { return }
+        let needsAddonCatalogNames = folder.sources.contains {
+            $0.normalizedProvider == "addon"
+                && ($0.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard needsAddonCatalogNames else {
+            installedAddonCatalogs = []
+            return
+        }
+
+        let catalogs = await CinemetaCatalogRepository().availableAddonCatalogs()
+        guard !Task.isCancelled else { return }
+        installedAddonCatalogs = catalogs
     }
 
     private var isGridLoadingMore: Bool {
@@ -792,8 +810,8 @@ struct CollectionFolderBrowseView: View {
         source.routeKey
     }
 
-    private static func sourceLabel(_ source: NuvioCollectionSource) -> String {
-        CollectionSourceResolver.label(for: source)
+    private func sourceLabel(_ source: NuvioCollectionSource) -> String {
+        CollectionSourceResolver.label(for: source, installedCatalogs: installedAddonCatalogs)
     }
 }
 

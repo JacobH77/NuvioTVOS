@@ -126,7 +126,7 @@ enum TVHomeBackNavigation {
         isGridHeroFocused: Bool,
         hasGridHero: Bool,
         continueWatchingOrTopSectionID: String?,
-        continueWatchingOrTopFirstCardKey: String?
+        continueWatchingOrTopTargetCardKey: String?
     ) -> TVHomeBackAction {
         if hasGridHero && isGridHeroFocused {
             return .exitToSidebar
@@ -135,7 +135,7 @@ enum TVHomeBackNavigation {
         // Determine if focus is at the beginning (index 0) of the currently active row
         let isAtBeginningOfCurrentRow: Bool
         if let focusedCardID, let currentRowFirstCardKey {
-            isAtBeginningOfCurrentRow = (focusedCardID == currentRowFirstCardKey && currentRowScrollIndex == 0)
+            isAtBeginningOfCurrentRow = (focusedCardID == currentRowFirstCardKey)
         } else if isGridHeroFocused {
             isAtBeginningOfCurrentRow = true
         } else {
@@ -150,22 +150,23 @@ enum TVHomeBackNavigation {
         }
 
         // Step 2: User is already at the beginning of the current row.
-        // If Grid Hero is present, moving up reaches the Grid Hero.
-        if hasGridHero {
-            return .focusGridHero
-        }
-
         guard let topSectionID = continueWatchingOrTopSectionID,
-              let topFirstCardKey = continueWatchingOrTopFirstCardKey else {
+              let topTargetCardKey = continueWatchingOrTopTargetCardKey else {
+            if hasGridHero {
+                return .focusGridHero
+            }
             return .exitToSidebar
         }
 
         // If the current row is already Continue Watching / Top AND we are at the beginning:
-        if currentSectionID == topSectionID && isAtBeginningOfCurrentRow {
+        if currentSectionID == topSectionID {
+            if hasGridHero {
+                return .focusGridHero
+            }
             return .exitToSidebar
         }
 
-        return .moveToContinueWatchingOrTop(sectionID: topSectionID, cardKey: topFirstCardKey)
+        return .moveToContinueWatchingOrTop(sectionID: topSectionID, cardKey: topTargetCardKey)
     }
 }
 
@@ -528,8 +529,12 @@ struct TVCatalogRow: View {
                 let progressItem = progressByItemId[item.id]
                 let handleFocus: (NuvioMeta) -> Void = { focused in
                     let focusStarted = TVHomeDebugTrace.now()
+                    let targetIndex = items.firstIndex(where: {
+                        TVHomeCardIdentity.key(rowID: id, item: $0) == cardKey
+                    }) ?? items.firstIndex(where: { $0.id == focused.id }) ?? itemIndex
+
                     TVHomeDebugTrace.log(
-                        "focus.begin row=\(id) index=\(itemIndex) items=\(items.count) "
+                        "focus.begin row=\(id) index=\(targetIndex) items=\(items.count) "
                             + "mounted=\(materializedCards.count) meta=\(focused.id)"
                     )
                     if let restrictFocusToCardKey {
@@ -537,14 +542,14 @@ struct TVCatalogRow: View {
                         // Keep the persisted row position current before Home
                         // releases the restore lock in response to this focus.
                         alignScrollIndexToRestrictedFocus()
-                    } else if effectiveScrollIndex != itemIndex {
+                    } else if effectiveScrollIndex != targetIndex {
                         let updateScrollPosition = {
-                            scrollIndex = itemIndex
-                            onScrollIndexChange(itemIndex)
+                            scrollIndex = targetIndex
+                            onScrollIndexChange(targetIndex)
                         }
                         if rowSmoothFocus && !suppressFocusAnimations && !rowFastNavigation {
                             TVHomeDebugTrace.log(
-                                "row.scroll.animated row=\(id) from=\(effectiveScrollIndex) to=\(itemIndex)"
+                                "row.scroll.animated row=\(id) from=\(effectiveScrollIndex) to=\(targetIndex)"
                             )
                             withAnimation(TVHomeLayout.scrollAnimation) {
                                 updateScrollPosition()
@@ -552,6 +557,9 @@ struct TVCatalogRow: View {
                         } else {
                             updateScrollPosition()
                         }
+                    } else if scrollIndex != targetIndex {
+                        scrollIndex = targetIndex
+                        onScrollIndexChange(targetIndex)
                     }
                     onFocus(focused)
                     if !suppressFocusAnimations {
@@ -559,11 +567,11 @@ struct TVCatalogRow: View {
                     }
                     let approachStarted = TVHomeDebugTrace.now()
                     TVHomeDebugTrace.log(
-                        "focus.approach row=\(id) index=\(itemIndex) "
+                        "focus.approach row=\(id) index=\(targetIndex) "
                             + "elapsedMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: approachStarted))"
                     )
                     TVHomeDebugTrace.log(
-                        "focus.end row=\(id) index=\(itemIndex) "
+                        "focus.end row=\(id) index=\(targetIndex) "
                             + "parentMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted)) "
                             + "totalMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted))"
                     )
@@ -599,6 +607,7 @@ struct TVCatalogRow: View {
                     onRemoveFromContinueWatching: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
                         if let p = progressItem { onRemoveFromContinueWatching?(p) }
                     } : nil,
+                    cardIndex: itemIndex,
                     layoutMode: rowHomeLayout,
                     showPosterLabels: rowPosterLabels,
                     smoothFocusAnimations: rowCardFocusAnimations,
@@ -1154,9 +1163,29 @@ struct TVCollectionFolderRow: View {
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
 
     private var effectiveScrollIndex: Int {
+        if let restrictedFocusIndex {
+            return restrictedFocusIndex
+        }
         let raw = scrollIndex ?? initialScrollIndex
         guard !folders.isEmpty else { return 0 }
         return min(max(raw, 0), folders.count - 1)
+    }
+
+    private var restrictedFocusIndex: Int? {
+        guard let restrictFocusToCardKey,
+              restrictFocusToCardKey.hasPrefix("\(id)\u{1}")
+        else { return nil }
+        return folders.firstIndex {
+            TVHomeCardIdentity.folderKey(rowID: id, folder: $0) == restrictFocusToCardKey
+        }
+    }
+
+    private func alignScrollIndexToRestrictedFocus() {
+        guard let restrictedFocusIndex else { return }
+        withTransaction(Transaction(animation: nil)) {
+            scrollIndex = restrictedFocusIndex
+            onScrollIndexChange(restrictedFocusIndex)
+        }
     }
 
     private var rowSpacing: CGFloat {
@@ -1280,14 +1309,25 @@ struct TVCollectionFolderRow: View {
                 let shouldRequestInitialFocus = cardKey == initialFocusCardKey
                 TVCollectionFolderCard(
                     folder: folder,
+                    cardIndex: index,
                     shouldRequestInitialFocus: shouldRequestInitialFocus,
                     onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
                     externalFocus: externalFocus,
                     externalFocusValue: cardKey,
                     onFocus: {
-                        if effectiveScrollIndex != index {
-                            scrollIndex = index
-                            onScrollIndexChange(index)
+                        let targetIndex = folders.firstIndex(where: {
+                            TVHomeCardIdentity.folderKey(rowID: id, folder: $0) == cardKey
+                        }) ?? folders.firstIndex(where: { $0.id == folder.id }) ?? index
+
+                        if let restrictFocusToCardKey {
+                            guard restrictFocusToCardKey == cardKey else { return }
+                            alignScrollIndexToRestrictedFocus()
+                        } else if effectiveScrollIndex != targetIndex {
+                            scrollIndex = targetIndex
+                            onScrollIndexChange(targetIndex)
+                        } else if scrollIndex != targetIndex {
+                            scrollIndex = targetIndex
+                            onScrollIndexChange(targetIndex)
                         }
                         onFocus(folder)
                     },
@@ -1327,6 +1367,12 @@ struct TVCollectionFolderRow: View {
             rowSmoothFocus && !suppressFocusAnimations && !fastNavigation ? TVHomeLayout.scrollAnimation : nil,
             value: effectiveScrollIndex
         )
+        .onAppear {
+            alignScrollIndexToRestrictedFocus()
+        }
+        .onChange(of: restrictedFocusIndex) { _, _ in
+            alignScrollIndexToRestrictedFocus()
+        }
         .frame(height: stripHeight)
     }
 }
@@ -1367,6 +1413,7 @@ extension TVCollectionFolderRow: Equatable {
 
 struct TVCollectionFolderCard: View {
     let folder: TVCollectionFolderItem
+    var cardIndex: Int? = nil
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
@@ -1626,6 +1673,7 @@ struct TVCollectionFolderCard: View {
 extension TVCollectionFolderCard: Equatable {
     static func == (lhs: TVCollectionFolderCard, rhs: TVCollectionFolderCard) -> Bool {
         lhs.folder == rhs.folder &&
+        lhs.cardIndex == rhs.cardIndex &&
         lhs.shouldRequestInitialFocus == rhs.shouldRequestInitialFocus &&
         lhs.externalFocusValue == rhs.externalFocusValue &&
         lhs.layoutMode == rhs.layoutMode &&

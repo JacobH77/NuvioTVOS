@@ -202,6 +202,7 @@ struct PosterCard: View {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var cardIndex: Int? = nil
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
     var smoothFocusAnimations: Bool = true
@@ -911,6 +912,7 @@ extension PosterCard: Equatable {
             && lhs.showsWatchedBadge == rhs.showsWatchedBadge
             && lhs.shouldRequestInitialFocus == rhs.shouldRequestInitialFocus
             && lhs.externalFocusValue == rhs.externalFocusValue
+            && lhs.cardIndex == rhs.cardIndex
             && (lhs.onLongPress != nil) == (rhs.onLongPress != nil)
             && (lhs.onOpenDetails != nil) == (rhs.onOpenDetails != nil)
             && (lhs.onPlayManually != nil) == (rhs.onPlayManually != nil)
@@ -951,6 +953,8 @@ final class TrailerPlayerLayerView: UIView {
 
 struct TrailerPlayerSurface: UIViewRepresentable {
     let player: AVPlayer
+    var videoGravity: AVLayerVideoGravity = .resizeAspectFill
+    var onLayerAvailable: ((AVPlayerLayer) -> Void)? = nil
     let onReadyForDisplay: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -959,15 +963,21 @@ struct TrailerPlayerSurface: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TrailerPlayerLayerView {
         let view = TrailerPlayerLayerView()
+        view.playerLayer.videoGravity = videoGravity
         view.playerLayer.player = player
         context.coordinator.observe(layer: view.playerLayer, player: player)
+        onLayerAvailable?(view.playerLayer)
         return view
     }
 
     func updateUIView(_ uiView: TrailerPlayerLayerView, context: Context) {
+        if uiView.playerLayer.videoGravity != videoGravity {
+            uiView.playerLayer.videoGravity = videoGravity
+        }
         if uiView.playerLayer.player !== player {
             uiView.playerLayer.player = player
             context.coordinator.observe(layer: uiView.playerLayer, player: player)
+            onLayerAvailable?(uiView.playerLayer)
         } else {
             context.coordinator.checkReadiness(layer: uiView.playerLayer, player: player)
         }
@@ -2417,7 +2427,7 @@ struct PosterCardButtonStyle: ButtonStyle {
 }
 
 #if os(tvOS)
-private extension View {
+extension View {
     @ViewBuilder
     func nuvioFocusEffectDisabledIfAvailable() -> some View {
         if #available(tvOS 17.0, *) {
