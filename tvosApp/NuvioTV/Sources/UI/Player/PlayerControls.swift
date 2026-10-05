@@ -1390,7 +1390,7 @@ struct SkipSegmentOverlay: View {
     }
 }
 
-private struct PlayerGlassCircleButtonBackground: ViewModifier {
+struct PlayerGlassCircleButtonBackground: ViewModifier {
     let filled: Bool
 
     @ViewBuilder

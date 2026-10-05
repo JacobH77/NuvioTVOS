@@ -2563,9 +2563,11 @@ struct TvDetailsContent: View {
     @AppStorage(SettingsKey.backgroundTrailersEnabled) private var backgroundTrailersEnabled = true
     @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
+    @AppStorage(SettingsKey.detailsActionsBelowInfo) private var detailsActionsBelowInfo = false
     @State private var trailerPlayer = AVPlayer()
     @State private var isTrailerPlaying = false
     @State private var isTrailerRenderReady = false
+    @State private var isFullscreenTrailerPresented = false
     @State private var didStopTrailerManually = false
     @State private var trailerTask: Task<Void, Never>? = nil
     /// Bumped whenever a watched mark or a progress write lands. Resume progress
@@ -2640,6 +2642,82 @@ struct TvDetailsContent: View {
         }
     }
 
+    private func presentFullscreenTrailer() {
+        if isTrailerPlaying && trailerPlayer.currentItem != nil {
+            applySoundPreference(true)
+            trailerPlayer.play()
+            withAnimation(.easeInOut(duration: 0.22)) {
+                isFullscreenTrailerPresented = true
+            }
+        } else if let meta = uiState.meta {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                isFullscreenTrailerPresented = true
+            }
+            startFullscreenTrailer(for: meta)
+        }
+    }
+
+    private func dismissFullscreenTrailer() {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isFullscreenTrailerPresented = false
+        }
+        applySoundPreference(trailerPreviewSound)
+        if !backgroundTrailersEnabled && !trailersEnabled {
+            stopBackgroundTrailer(manual: false)
+        }
+        DispatchQueue.main.async {
+            actionFocus = .trailer
+        }
+    }
+
+    private func startFullscreenTrailer(for meta: NuvioMeta) {
+        trailerTask?.cancel()
+        let handoff = TrailerPlaybackHandoff.shared.takeHandoff(for: meta.id)
+        trailerTask = Task { @MainActor in
+            let playbackSource: TrailerPlaybackSource?
+            if let source = handoff?.playbackSource {
+                playbackSource = source
+            } else if let source = await YouTubeTrailerResolver.shared.resolvePreview(for: meta) {
+                playbackSource = source
+            } else {
+                playbackSource = await YouTubeTrailerResolver.shared.resolve(for: meta)
+            }
+
+            guard let playbackSource,
+                  let url = URL(string: playbackSource.videoUrl),
+                  !Task.isCancelled else {
+                return
+            }
+
+            let asset: AVURLAsset
+            if let userAgent = playbackSource.requestHeaders["User-Agent"], !userAgent.isEmpty {
+                asset = AVURLAsset(
+                    url: url,
+                    options: [AVURLAssetHTTPUserAgentKey: userAgent]
+                )
+            } else {
+                asset = AVURLAsset(url: url)
+            }
+
+            let item = AVPlayerItem(asset: asset)
+            item.preferredForwardBufferDuration = 2.0
+            item.preferredPeakBitRate = 0
+            item.preferredMaximumResolution = .zero
+            trailerPlayer.replaceCurrentItem(with: item)
+
+            if let handoffTime = handoff?.time, handoffTime > 0.1 {
+                await trailerPlayer.seek(
+                    to: CMTime(seconds: handoffTime, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+            }
+            applySoundPreference(true)
+            isTrailerPlaying = true
+            trailerPlayer.play()
+        }
+    }
+
     private func stopBackgroundTrailer(manual: Bool) {
         trailerTask?.cancel()
         trailerTask = nil
@@ -2660,6 +2738,10 @@ struct TvDetailsContent: View {
     }
 
     private func handleDetailsBack() {
+        if isFullscreenTrailerPresented {
+            dismissFullscreenTrailer()
+            return
+        }
         if isTrailerPlaying {
             if let metaId = uiState.meta?.id {
                 let seconds = trailerPlayer.currentTime().seconds
@@ -2687,8 +2769,8 @@ struct TvDetailsContent: View {
         TvDetailsBackdrop(
             meta: meta,
             blurRadius: backdropBlurRadius,
-            player: trailerPlayer,
-            isTrailerVisible: isTrailerPlaying && isTrailerRenderReady,
+            player: isFullscreenTrailerPresented ? nil : trailerPlayer,
+            isTrailerVisible: isTrailerPlaying && isTrailerRenderReady && !isFullscreenTrailerPresented,
             onTrailerReadyForDisplay: handleTrailerReady
         )
     }
@@ -2724,30 +2806,28 @@ struct TvDetailsContent: View {
                 onRateClick?()
             } : nil,
             onTrailerClick: {
-                let currentTrailerTime: Double? = {
-                    if isTrailerPlaying {
-                        let seconds = trailerPlayer.currentTime().seconds
-                        if seconds > 0.1 && !seconds.isNaN && !seconds.isInfinite {
-                            return seconds
-                        }
-                    }
-                    return nil
-                }()
-                stopBackgroundTrailer(manual: false)
-                onTrailerClick(currentTrailerTime)
+                presentFullscreenTrailer()
             },
             focus: $actionFocus,
             entryLocked: focusedDetailsSection != .actions,
             onFocus: {
-                guard focusedDetailsSection != .actions else { return }
-                focusedDetailsSection = .actions
-                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                    scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
+                if focusedDetailsSection != .actions {
+                    focusedDetailsSection = .actions
+                    withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                        scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
+                    }
+                } else {
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
+                    }
                 }
             }
         )
         .disabled(
             restoreEpisodeKey != nil
+                || isFullscreenTrailerPresented
                 || !isDetailsFocusReachable(.actions)
         )
     }
@@ -2821,14 +2901,25 @@ struct TvDetailsContent: View {
 
                                     TvDetailsLogo(meta: meta)
 
-                                    actionRowView(meta: meta, playTarget: playTarget, scrollProxy: scrollProxy)
+                                    if detailsActionsBelowInfo {
+                                        TvDetailsSummary(
+                                            meta: meta,
+                                            simkl: uiState.simklRatings,
+                                            isBackgroundTrailerPlaying: isTrailerPlaying && isTrailerRenderReady,
+                                            isSynopsisFocused: false
+                                        )
 
-                                    TvDetailsSummary(
-                                        meta: meta,
-                                        simkl: uiState.simklRatings,
-                                        isBackgroundTrailerPlaying: isTrailerPlaying && isTrailerRenderReady,
-                                        isSynopsisFocused: false
-                                    )
+                                        actionRowView(meta: meta, playTarget: playTarget, scrollProxy: scrollProxy)
+                                    } else {
+                                        actionRowView(meta: meta, playTarget: playTarget, scrollProxy: scrollProxy)
+
+                                        TvDetailsSummary(
+                                            meta: meta,
+                                            simkl: uiState.simklRatings,
+                                            isBackgroundTrailerPlaying: isTrailerPlaying && isTrailerRenderReady,
+                                            isSynopsisFocused: false
+                                        )
+                                    }
                                 }
                             .padding(.bottom, 52)
                             .frame(height: max(proxy.size.height, 800), alignment: .bottomLeading)
@@ -2843,10 +2934,17 @@ struct TvDetailsContent: View {
                                     continueItem: continueItem,
                                     onFocus: {
                                         cancelPendingFocusHandoff()
-                                        guard focusedDetailsSection != .episodes else { return }
-                                        focusedDetailsSection = .episodes
-                                        withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                            scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
+                                        if focusedDetailsSection != .episodes {
+                                            focusedDetailsSection = .episodes
+                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
+                                            }
+                                        } else {
+                                            var transaction = Transaction(animation: nil)
+                                            transaction.disablesAnimations = true
+                                            withTransaction(transaction) {
+                                                scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
+                                            }
                                         }
                                     },
                                     onSelect: { video in
@@ -2882,29 +2980,27 @@ struct TvDetailsContent: View {
                                         onOpenPerson?(person)
                                     },
                                     onTrailerClick: {
-                                        let currentTrailerTime: Double? = {
-                                            if isTrailerPlaying {
-                                                let seconds = trailerPlayer.currentTime().seconds
-                                                if seconds > 0.1 && !seconds.isNaN && !seconds.isInfinite {
-                                                    return seconds
-                                                }
-                                            }
-                                            return nil
-                                        }()
-                                        stopBackgroundTrailer(manual: false)
-                                        onTrailerClick(currentTrailerTime)
+                                        presentFullscreenTrailer()
                                     },
                                     headerFocus: $castHeaderFocus,
                                     entryLocked: focusedDetailsSection != .cast,
                                     onFocus: {
-                                        guard focusedDetailsSection != .cast else { return }
-                                        focusedDetailsSection = .cast
-                                        withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                            scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
+                                        if focusedDetailsSection != .cast {
+                                            focusedDetailsSection = .cast
+                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
+                                            }
+                                        } else {
+                                            var transaction = Transaction(animation: nil)
+                                            transaction.disablesAnimations = true
+                                            withTransaction(transaction) {
+                                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
+                                            }
                                         }
                                     }
                                 )
                                 .padding(.top, 34)
+                                .padding(.bottom, 52)
                                 .id(TvDetailsScrollID.castSection)
                                 .disabled(
                                     restoreEpisodeKey != nil
@@ -2922,14 +3018,21 @@ struct TvDetailsContent: View {
                                             onOpenTitle?(item.id, item.type)
                                         },
                                         onFocus: {
-                                            guard focusedDetailsSection != .related else { return }
-                                            focusedDetailsSection = .related
-                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                                scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
+                                            if focusedDetailsSection != .related {
+                                                focusedDetailsSection = .related
+                                                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
+                                                }
+                                            } else {
+                                                var transaction = Transaction(animation: nil)
+                                                transaction.disablesAnimations = true
+                                                withTransaction(transaction) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
+                                                }
                                             }
                                         }
                                     )
-                                    .padding(.top, 40)
+                                    .padding(.top, 34)
                                     .id(TvDetailsScrollID.moreLikeThisSection)
                                     .disabled(
                                         restoreEpisodeKey != nil
@@ -2937,8 +3040,8 @@ struct TvDetailsContent: View {
                                     )
                                 }
 
-                                let productionCompanies = uiState.companies.filter { $0.kind == .production }
-                                let networks = uiState.companies.filter { $0.kind == .network }
+                                let productionCompanies = uiState.companies.filter { $0.kind == .production && $0.tmdbId != nil }
+                                let networks = uiState.companies.filter { $0.kind == .network && $0.tmdbId != nil }
 
                                 if !networks.isEmpty {
                                     TvDetailsProductionRow(
@@ -2949,10 +3052,17 @@ struct TvDetailsContent: View {
                                             onOpenProduction?(company)
                                         },
                                         onFocus: {
-                                            guard focusedDetailsSection != .network else { return }
-                                            focusedDetailsSection = .network
-                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                                scrollProxy.scrollTo(TvDetailsScrollID.networkSection, anchor: .top)
+                                            if focusedDetailsSection != .network {
+                                                focusedDetailsSection = .network
+                                                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.networkSection, anchor: .top)
+                                                }
+                                            } else {
+                                                var transaction = Transaction(animation: nil)
+                                                transaction.disablesAnimations = true
+                                                withTransaction(transaction) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.networkSection, anchor: .top)
+                                                }
                                             }
                                         }
                                     )
@@ -2973,10 +3083,17 @@ struct TvDetailsContent: View {
                                             onOpenProduction?(company)
                                         },
                                         onFocus: {
-                                            guard focusedDetailsSection != .production else { return }
-                                            focusedDetailsSection = .production
-                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                                scrollProxy.scrollTo(TvDetailsScrollID.productionSection, anchor: .top)
+                                            if focusedDetailsSection != .production {
+                                                focusedDetailsSection = .production
+                                                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.productionSection, anchor: .top)
+                                                }
+                                            } else {
+                                                var transaction = Transaction(animation: nil)
+                                                transaction.disablesAnimations = true
+                                                withTransaction(transaction) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.productionSection, anchor: .top)
+                                                }
                                             }
                                         }
                                     )
@@ -2996,10 +3113,17 @@ struct TvDetailsContent: View {
                                             onCommentSelect?(comment)
                                         },
                                         onFocus: {
-                                            guard focusedDetailsSection != .comments else { return }
-                                            focusedDetailsSection = .comments
-                                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                                scrollProxy.scrollTo(TvDetailsScrollID.commentsSection, anchor: .top)
+                                            if focusedDetailsSection != .comments {
+                                                focusedDetailsSection = .comments
+                                                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.commentsSection, anchor: .top)
+                                                }
+                                            } else {
+                                                var transaction = Transaction(animation: nil)
+                                                transaction.disablesAnimations = true
+                                                withTransaction(transaction) {
+                                                    scrollProxy.scrollTo(TvDetailsScrollID.commentsSection, anchor: .top)
+                                                }
                                             }
                                         }
                                     )
@@ -3019,6 +3143,44 @@ struct TvDetailsContent: View {
                         }
                         .scrollClipDisabledIfAvailable()
                         .coordinateSpace(name: "tv-details-scroll")
+                        .onChange(of: actionFocus) { _, newFocus in
+                            guard newFocus != nil else { return }
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
+                            }
+                        }
+                        .onChange(of: castHeaderFocus) { _, newFocus in
+                            guard newFocus != nil else { return }
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
+                            }
+                        }
+                        .onChange(of: episodeFocus) { _, newFocus in
+                            guard newFocus != nil, focusedDetailsSection == .episodes else { return }
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
+                            }
+                        }
+                    }
+
+                    if isFullscreenTrailerPresented {
+                        TvDetailsFullscreenTrailerOverlay(
+                            player: trailerPlayer,
+                            meta: meta,
+                            isReady: isTrailerRenderReady,
+                            onTrailerReady: {
+                                isTrailerRenderReady = true
+                            },
+                            onDismiss: dismissFullscreenTrailer
+                        )
+                        .transition(.opacity)
+                        .zIndex(100)
                     }
                 }
                 .onPreferenceChange(TvDetailsScrollOffsetKey.self) { minY in
@@ -3228,10 +3390,10 @@ struct TvDetailsContent: View {
             order.append(.cast)
         }
         if !uiState.moreLikeThis.isEmpty { order.append(.related) }
-        if uiState.companies.contains(where: { $0.kind == .network }) {
+        if uiState.companies.contains(where: { $0.kind == .network && $0.tmdbId != nil }) {
             order.append(.network)
         }
-        if uiState.companies.contains(where: { $0.kind == .production }) {
+        if uiState.companies.contains(where: { $0.kind == .production && $0.tmdbId != nil }) {
             order.append(.production)
         }
         if !uiState.comments.isEmpty { order.append(.comments) }
@@ -3618,6 +3780,7 @@ private struct TvDetailsActionRow: View {
             )
             .disabled(entryLocked)
         }
+        .focusSection()
     }
 }
 
@@ -4080,6 +4243,7 @@ private struct TvDetailsCastAndTrailer: View {
                 }
                 .scrollClipDisabledIfAvailable()
             }
+            .focusSection()
         }
     }
 
@@ -4210,12 +4374,21 @@ private struct TvDetailsProductionRow: View {
     let onSelect: (MetaCompany) -> Void
     let onFocus: () -> Void
 
-    @State private var focusedCompanyIndex = 0
+    @State private var scrollIndex = 0
+    @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
+
+    private let cardWidth: CGFloat = 200
+    private let cardHeight: CGFloat = 166
+    private let spacing: CGFloat = 22
+    private var step: CGFloat { cardWidth + spacing }
+    private var stripHeight: CGFloat {
+        cardHeight + TvDetailsHorizontalStrip.verticalPadding * 2
+    }
 
     private var entryCompanyIndex: Int {
-        if companies.indices.contains(focusedCompanyIndex),
-           companies[focusedCompanyIndex].tmdbId != nil {
-            return focusedCompanyIndex
+        if companies.indices.contains(scrollIndex),
+           companies[scrollIndex].tmdbId != nil {
+            return scrollIndex
         }
         return companies.firstIndex { $0.tmdbId != nil } ?? 0
     }
@@ -4226,25 +4399,28 @@ private struct TvDetailsProductionRow: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundColor(.white.opacity(0.9))
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 22) {
-                    ForEach(Array(companies.enumerated()), id: \.element.id) { index, company in
-                        TvDetailsCompanyCard(
-                            company: company,
-                            onSelect: { onSelect(company) },
-                            onFocus: {
-                                focusedCompanyIndex = index
-                                onFocus()
-                            }
-                        )
-                        .disabled(entryLocked && index != entryCompanyIndex)
-                    }
+            HStack(alignment: .top, spacing: spacing) {
+                ForEach(Array(companies.enumerated()), id: \.element.id) { index, company in
+                    TvDetailsCompanyCard(
+                        company: company,
+                        onSelect: { onSelect(company) },
+                        onFocus: {
+                            if scrollIndex != index { scrollIndex = index }
+                            onFocus()
+                        }
+                    )
+                    .disabled(entryLocked && index != entryCompanyIndex)
                 }
-                .padding(.trailing, 80)
-                .padding(.vertical, 8)
             }
-            .scrollClipDisabledIfAvailable()
+            .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
+            .offset(x: -CGFloat(scrollIndex) * step)
+            .frame(height: stripHeight, alignment: .leading)
+            .animation(
+                smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
+                value: scrollIndex
+            )
         }
+        .focusSection()
     }
 }
 
@@ -4512,6 +4688,797 @@ private struct CommentDetailOverlay: View {
         }
         .onAppear { closeFocused = true }
         .onExitCommand(perform: onDismiss)
+    }
+}
+
+private enum TvDetailsTrailerControlFocus: Hashable {
+    case timeline
+    case pip
+    case subtitles
+    case audio
+}
+
+private struct TrailerMediaOption: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let isSelected: Bool
+    let option: AVMediaSelectionOption?
+}
+
+private struct TrailerSubtitleMenuButton: View, Equatable {
+    let noneOption: TrailerMediaOption
+    let options: [TrailerMediaOption]
+    let isFocused: Bool
+    let onSelect: (TrailerMediaOption) -> Void
+
+    static func == (lhs: TrailerSubtitleMenuButton, rhs: TrailerSubtitleMenuButton) -> Bool {
+        lhs.isFocused == rhs.isFocused
+            && lhs.noneOption == rhs.noneOption
+            && lhs.options == rhs.options
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                onSelect(noneOption)
+            } label: {
+                HStack {
+                    Text(noneOption.title)
+                    Spacer()
+                    if noneOption.isSelected {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            ForEach(options) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    HStack {
+                        Text(option.title)
+                        Spacer()
+                        if option.isSelected {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "captions.bubble")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundColor(isFocused ? .black : .white)
+                .frame(width: 70, height: 70)
+                .modifier(PlayerGlassCircleButtonBackground(filled: isFocused))
+                .shadow(color: .black.opacity(0.82), radius: 14, x: 0, y: 7)
+                .frame(width: 70, height: 70)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .menuStyle(.borderlessButton)
+        .nuvioFocusEffectDisabledIfAvailable()
+        .scaleEffect(isFocused ? 1.06 : 1.0)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
+        .id("trailer_subtitles_button")
+    }
+}
+
+private struct TrailerAudioMenuButton: View, Equatable {
+    let options: [TrailerMediaOption]
+    let isFocused: Bool
+    let onSelect: (TrailerMediaOption) -> Void
+
+    static func == (lhs: TrailerAudioMenuButton, rhs: TrailerAudioMenuButton) -> Bool {
+        lhs.isFocused == rhs.isFocused
+            && lhs.options == rhs.options
+    }
+
+    var body: some View {
+        Menu {
+            if options.isEmpty {
+                Button {} label: {
+                    HStack {
+                        Text(L10n.string("player_default_audio", fallback: "Default Audio"))
+                        Spacer()
+                        Image(systemName: "checkmark")
+                    }
+                }
+            } else {
+                ForEach(options) { option in
+                    Button {
+                        onSelect(option)
+                    } label: {
+                        HStack {
+                            Text(option.title)
+                            Spacer()
+                            if option.isSelected {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "waveform")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundColor(isFocused ? .black : .white)
+                .frame(width: 70, height: 70)
+                .modifier(PlayerGlassCircleButtonBackground(filled: isFocused))
+                .shadow(color: .black.opacity(0.82), radius: 14, x: 0, y: 7)
+                .frame(width: 70, height: 70)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .menuStyle(.borderlessButton)
+        .nuvioFocusEffectDisabledIfAvailable()
+        .scaleEffect(isFocused ? 1.06 : 1.0)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
+        .id("trailer_audio_button")
+    }
+}
+
+private struct TvDetailsFullscreenTrailerOverlay: View {
+    let player: AVPlayer
+    let meta: NuvioMeta
+    let isReady: Bool
+    let onTrailerReady: () -> Void
+    let onDismiss: () -> Void
+
+    @FocusState private var focusedControl: TvDetailsTrailerControlFocus?
+    @State private var isPlaying = true
+    @State private var isSurfaceReady = false
+    @State private var currentTime: Double = 0
+    @State private var duration: Double = 0
+    @State private var buffered: Double = 0
+    @State private var pendingSeekDelta: Double = 0
+    @State private var showControls = true
+    @State private var controlsAutoHideSuspended = false
+    @State private var pipController: AVPictureInPictureController? = nil
+    @State private var audibleGroup: AVMediaSelectionGroup? = nil
+    @State private var legibleGroup: AVMediaSelectionGroup? = nil
+    @State private var selectedAudioId: String? = nil
+    @State private var selectedSubtitleId: String? = nil
+    @State private var controlsHideTask: Task<Void, Never>? = nil
+    @State private var seekDebounceTask: Task<Void, Never>? = nil
+    @State private var timeObserverToken: Any? = nil
+
+    private var transportFocusOrder: [TvDetailsTrailerControlFocus] {
+        var order: [TvDetailsTrailerControlFocus] = []
+        if AVPictureInPictureController.isPictureInPictureSupported() {
+            order.append(.pip)
+        }
+        order.append(.subtitles)
+        order.append(.audio)
+        return order
+    }
+
+    private func isTransportButtonFocusable(_ key: TvDetailsTrailerControlFocus) -> Bool {
+        if focusedControl == .timeline {
+            return key == (transportFocusOrder.first ?? .subtitles)
+        }
+        return true
+    }
+
+    private var targetPosition: Double {
+        let position = currentTime + pendingSeekDelta
+        return min(max(position, 0), max(duration, 0))
+    }
+
+    private var progress: CGFloat {
+        let d = max(duration, 0.001)
+        return CGFloat(min(max(targetPosition / d, 0), 1))
+    }
+
+    private var isTimelineFocused: Bool {
+        focusedControl == .timeline || isSeekingOrScrubbing
+    }
+
+    private var isSeekingOrScrubbing: Bool {
+        pendingSeekDelta != 0
+    }
+
+    var body: some View {
+        ZStack {
+            // 1. Black background
+            Color.black.ignoresSafeArea()
+
+            // 2. Video surface - Aspect Fit with zero cropping
+            TrailerPlayerSurface(
+                player: player,
+                videoGravity: .resizeAspect,
+                onLayerAvailable: { layer in
+                    if AVPictureInPictureController.isPictureInPictureSupported() {
+                        pipController = AVPictureInPictureController(playerLayer: layer)
+                    }
+                }
+            ) {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    isSurfaceReady = true
+                }
+                onTrailerReady()
+            }
+            .ignoresSafeArea()
+
+            // 3. Loading Indicator if preparing
+            if !isReady && !isSurfaceReady {
+                VStack(spacing: 18) {
+                    ProgressView()
+                        .scaleEffect(1.4)
+                        .tint(.white)
+                    Text(L10n.string("trailer_loading", fallback: "Loading trailer..."))
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(32)
+                .modifier(TvDetailsGlassBackground(filled: false, shape: RoundedRectangle(cornerRadius: 24, style: .continuous)))
+                .transition(.opacity)
+            }
+
+            // 4. Remote wake surface when chrome is hidden
+            if !showControls {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls = true
+                    }
+                    focusedControl = .timeline
+                    scheduleControlsHide()
+                } label: {
+                    Color.clear
+                }
+                .buttonStyle(PosterCardButtonStyle())
+                .nuvioFocusEffectDisabledIfAvailable()
+                .onExitCommand(perform: onDismiss)
+                .onPlayPauseCommand(perform: togglePlayPause)
+                .onMoveCommand { _ in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls = true
+                    }
+                    focusedControl = .timeline
+                    scheduleControlsHide()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            // 5. Aether-style Player Controls Overlay
+            if showControls {
+                GlassControlsContainer {
+                    VStack {
+                        topBar
+                        Spacer()
+                        bottomControls
+                    }
+                    .onExitCommand(perform: onDismiss)
+                }
+                .background(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.black.opacity(0.72), location: 0),
+                            .init(color: Color.clear, location: 0.22),
+                            .init(color: Color.clear, location: 0.78),
+                            .init(color: Color.black.opacity(0.85), location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                )
+                .transition(.opacity)
+            }
+        }
+        .onAppear {
+            setupTimeObserver()
+            loadMediaSelectionGroups()
+            isPlaying = player.timeControlStatus == .playing || player.rate > 0
+            if isReady || isPlaying || (player.currentTime().seconds > 0.05 && !player.currentTime().seconds.isNaN) {
+                isSurfaceReady = true
+                onTrailerReady()
+            }
+            showControls = true
+            scheduleControlsHide()
+            DispatchQueue.main.async {
+                focusedControl = .timeline
+            }
+        }
+        .onChange(of: focusedControl) { oldControl, newControl in
+            let onTimeline = (newControl == .timeline)
+            if onTimeline {
+                controlsAutoHideSuspended = false
+                scheduleControlsHide(after: 5.0)
+            } else if newControl == .subtitles || newControl == .audio {
+                controlsAutoHideSuspended = true
+                controlsHideTask?.cancel()
+            } else if newControl != nil {
+                controlsAutoHideSuspended = false
+                scheduleControlsHide(after: 10.0)
+            } else if let old = oldControl, old == .subtitles || old == .audio {
+                controlsAutoHideSuspended = true
+                controlsHideTask?.cancel()
+            }
+        }
+        .onDisappear {
+            teardownTimeObserver()
+        }
+        .onExitCommand(perform: onDismiss)
+        .onPlayPauseCommand(perform: togglePlayPause)
+        .onReceive(
+            NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime).receive(on: RunLoop.main)
+        ) { notification in
+            guard let item = notification.object as? AVPlayerItem,
+                  item == player.currentItem else {
+                return
+            }
+            onDismiss()
+        }
+    }
+
+    // MARK: - Top bar
+
+    private var topBar: some View {
+        Group {
+            if !isSeekingOrScrubbing {
+                VStack(spacing: 12) {
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(meta.name)
+                                .font(.system(size: 38, weight: .bold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+
+                            HStack(spacing: 8) {
+                                Text(L10n.string("details_trailer", fallback: "Trailer"))
+                                    .font(.system(size: 21, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.68))
+                                    .lineLimit(1)
+
+                                if let year = meta.year {
+                                    Text("•")
+                                        .font(.system(size: 21, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.4))
+                                    Text(String(year))
+                                        .font(.system(size: 21, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.68))
+                                }
+                            }
+                        }
+
+                        Spacer()
+                    }
+                }
+                .padding(.horizontal, 60)
+                .padding(.top, 34)
+                .shadow(color: .black.opacity(0.82), radius: 18, x: 0, y: 6)
+                .transition(.opacity)
+            }
+        }
+        .animation(.playerControls, value: isSeekingOrScrubbing)
+    }
+
+    // MARK: - Bottom controls
+
+    private var bottomControls: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if !isSeekingOrScrubbing {
+                transportRow
+                    .transition(.opacity)
+            }
+            timelineBar
+        }
+        .padding(.horizontal, 60)
+        .padding(.bottom, 54)
+        .animation(.playerControls, value: isSeekingOrScrubbing)
+    }
+
+    private var transportRow: some View {
+        HStack(spacing: 18) {
+            Spacer()
+
+            if AVPictureInPictureController.isPictureInPictureSupported() {
+                glassIconButton(
+                    size: 70,
+                    iconSize: 28,
+                    focusKey: .pip,
+                    isFocused: focusedControl == .pip
+                ) {
+                    togglePictureInPicture()
+                } icon: {
+                    Image(systemName: "pip.enter")
+                }
+                .id("trailer_pip_button")
+            }
+
+            TrailerSubtitleMenuButton(
+                noneOption: subtitleNoneOption,
+                options: subtitleOptions,
+                isFocused: focusedControl == .subtitles,
+                onSelect: { opt in
+                    selectSubtitleOption(opt)
+                }
+            )
+            .equatable()
+            .focused($focusedControl, equals: .subtitles)
+            .disabled(!isTransportButtonFocusable(.subtitles))
+            .onMoveCommand { direction in
+                handleMove(direction, from: .subtitles)
+            }
+
+            TrailerAudioMenuButton(
+                options: audioOptions,
+                isFocused: focusedControl == .audio,
+                onSelect: { opt in
+                    selectAudioOption(opt)
+                }
+            )
+            .equatable()
+            .focused($focusedControl, equals: .audio)
+            .disabled(!isTransportButtonFocusable(.audio))
+            .onMoveCommand { direction in
+                handleMove(direction, from: .audio)
+            }
+        }
+        .shadow(color: .black.opacity(0.74), radius: 20, x: 0, y: 8)
+    }
+
+    private func glassIconButton<Icon: View>(
+        size: CGFloat,
+        iconSize: CGFloat,
+        focusKey: TvDetailsTrailerControlFocus,
+        isFocused: Bool,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: () -> Icon
+    ) -> some View {
+        Button {
+            focusedControl = focusKey
+            scheduleControlsHide()
+            action()
+        } label: {
+            icon()
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundColor(isFocused ? .black : .white)
+                .frame(width: size, height: size)
+                .modifier(PlayerGlassCircleButtonBackground(filled: isFocused))
+                .shadow(color: .black.opacity(0.82), radius: 14, x: 0, y: 7)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focusedControl, equals: focusKey)
+        .disabled(!isTransportButtonFocusable(focusKey))
+        .nuvioFocusEffectDisabledIfAvailable()
+        .onExitCommand(perform: onDismiss)
+        .onMoveCommand { direction in
+            handleMove(direction, from: focusKey)
+        }
+        .scaleEffect(isFocused ? 1.06 : 1.0)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
+    }
+
+    // MARK: - Timeline bar
+
+    private var timelineBar: some View {
+        VStack(spacing: 10) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let targetX = min(max(w * progress, 0), w)
+                let trackHeight: CGFloat = (isTimelineFocused || isSeekingOrScrubbing) ? 10 : 7
+                let h: CGFloat = (isTimelineFocused || isSeekingOrScrubbing) ? trackHeight + 2 : trackHeight
+                let needleHeight: CGFloat = 22
+                let originalProgress = CGFloat(min(max(currentTime / max(duration, 0.001), 0), 1))
+                let originalX = min(max(w * originalProgress, 0), w)
+                let bottomOfTrack = geo.size.height / 2 + h / 2
+
+                ZStack(alignment: .leading) {
+                    PlayerProgressTrack(
+                        played: Double(progress),
+                        buffered: duration > 0 ? (buffered / duration) : 0,
+                        height: trackHeight,
+                        showThumb: false,
+                        emphasized: isTimelineFocused || isSeekingOrScrubbing,
+                        glassTrack: true
+                    )
+
+                    if isSeekingOrScrubbing {
+                        // Ghost tick: original paused playback position flush within track
+                        if abs(targetX - originalX) > 3 {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.4))
+                                .frame(width: 1.5, height: h)
+                                .position(x: originalX, y: geo.size.height / 2)
+                        }
+
+                        // Active scrub needle
+                        Rectangle()
+                            .fill(Color.white)
+                            .frame(width: 2, height: needleHeight)
+                            .shadow(color: .black.opacity(0.45), radius: 1.5)
+                            .position(x: targetX, y: bottomOfTrack - needleHeight / 2)
+                    }
+                }
+            }
+            .frame(height: (isTimelineFocused || isSeekingOrScrubbing) ? 16 : 11)
+
+            if isSeekingOrScrubbing {
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let targetX = min(max(w * progress, 60), w - 60)
+                    HStack(spacing: 8) {
+                        Text(PlayerTime.formatted(time: targetPosition))
+                            .font(.system(size: 26, weight: .bold).monospacedDigit())
+                            .foregroundColor(.white)
+
+                        let isForward = pendingSeekDelta >= 0
+                        Image(systemName: isForward ? "goforward.10" : "gobackward.10")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                    .shadow(color: .black.opacity(0.85), radius: 6, x: 0, y: 2)
+                    .position(x: targetX, y: 14)
+                }
+                .frame(height: 28)
+            } else {
+                HStack(spacing: 10) {
+                    Text(PlayerTime.formatted(time: targetPosition))
+                    Spacer()
+                    Text("-" + PlayerTime.formatted(time: max(0, duration - targetPosition)))
+                }
+                .font(.system(size: 22, weight: .bold))
+                .foregroundColor(.white.opacity(isTimelineFocused ? 0.82 : 0.54))
+            }
+        }
+        .focusable(showControls)
+        .focused($focusedControl, equals: .timeline)
+        .nuvioFocusEffectDisabledIfAvailable()
+        .onExitCommand(perform: onDismiss)
+        .onTapGesture {
+            if pendingSeekDelta != 0 {
+                commitPendingSeek()
+            } else {
+                togglePlayPause()
+            }
+        }
+        .onMoveCommand { direction in
+            handleMove(direction, from: .timeline)
+        }
+        .shadow(color: .black.opacity(0.82), radius: 16, x: 0, y: 7)
+        .animation(.easeOut(duration: 0.14), value: focusedControl)
+        .animation(.easeOut(duration: 0.12), value: pendingSeekDelta)
+    }
+
+    // MARK: - Actions & Focus Navigation
+
+    private func handleMove(_ direction: MoveCommandDirection, from origin: TvDetailsTrailerControlFocus) {
+        scheduleControlsHide()
+        switch direction {
+        case .up:
+            if origin == .timeline {
+                focusedControl = transportFocusOrder.first ?? .subtitles
+            }
+        case .down:
+            if origin != .timeline {
+                focusedControl = .timeline
+            }
+        case .left:
+            if origin == .timeline {
+                handleSeekStep(delta: -10)
+            } else if let index = transportFocusOrder.firstIndex(of: origin), index > 0 {
+                focusedControl = transportFocusOrder[index - 1]
+            }
+        case .right:
+            if origin == .timeline {
+                handleSeekStep(delta: 10)
+            } else if let index = transportFocusOrder.firstIndex(of: origin), index < transportFocusOrder.count - 1 {
+                focusedControl = transportFocusOrder[index + 1]
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleSeekStep(delta: Double) {
+        scheduleControlsHide()
+        let current = player.currentTime().seconds
+        guard !current.isNaN, !current.isInfinite else { return }
+        let baseTime = current + pendingSeekDelta
+        let newTarget = min(max(baseTime + delta, 0), max(duration, 0))
+        pendingSeekDelta = newTarget - current
+
+        seekDebounceTask?.cancel()
+        seekDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if !Task.isCancelled {
+                commitPendingSeek()
+            }
+        }
+    }
+
+    private func commitPendingSeek() {
+        seekDebounceTask?.cancel()
+        seekDebounceTask = nil
+        guard pendingSeekDelta != 0 else { return }
+        let current = player.currentTime().seconds
+        guard !current.isNaN, !current.isInfinite else { return }
+        let target = min(max(current + pendingSeekDelta, 0), max(duration, 0))
+        pendingSeekDelta = 0
+        currentTime = target
+        player.seek(
+            to: CMTime(seconds: target, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    private func togglePlayPause() {
+        commitPendingSeek()
+        if player.timeControlStatus == .playing || player.rate > 0 {
+            player.pause()
+            isPlaying = false
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showControls = true
+            }
+            controlsHideTask?.cancel()
+        } else {
+            player.play()
+            isPlaying = true
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showControls = true
+            }
+            scheduleControlsHide()
+        }
+    }
+
+    private func togglePictureInPicture() {
+        scheduleControlsHide()
+        guard let pipController else { return }
+        if pipController.isPictureInPictureActive {
+            pipController.stopPictureInPicture()
+        } else {
+            pipController.startPictureInPicture()
+        }
+    }
+
+    private func loadMediaSelectionGroups() {
+        guard let item = player.currentItem else { return }
+        let asset = item.asset
+        Task { @MainActor in
+            let audible = try? await asset.loadMediaSelectionGroup(for: .audible)
+            let legible = try? await asset.loadMediaSelectionGroup(for: .legible)
+            self.audibleGroup = audible
+            self.legibleGroup = legible
+        }
+    }
+
+    private var audioOptions: [TrailerMediaOption] {
+        guard let group = audibleGroup, let item = player.currentItem else {
+            return []
+        }
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        return group.options.map { opt in
+            let name = opt.displayName.isEmpty ? (opt.locale?.localizedString(forIdentifier: opt.locale?.identifier ?? "") ?? "Audio") : opt.displayName
+            let id = opt.displayName + (opt.locale?.identifier ?? "")
+            let isSel = (selectedAudioId != nil) ? (selectedAudioId == id) : ((selected == opt) || (selected == nil && opt == group.defaultOption))
+            return TrailerMediaOption(
+                id: id,
+                title: name,
+                isSelected: isSel,
+                option: opt
+            )
+        }
+    }
+
+    private var subtitleNoneOption: TrailerMediaOption {
+        guard let group = legibleGroup, let item = player.currentItem else {
+            return TrailerMediaOption(id: "off", title: L10n.string("action_none", fallback: "None"), isSelected: true, option: nil)
+        }
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        let isSel = (selectedSubtitleId != nil) ? (selectedSubtitleId == "off") : (selected == nil)
+        return TrailerMediaOption(id: "off", title: L10n.string("action_none", fallback: "None"), isSelected: isSel, option: nil)
+    }
+
+    private var subtitleOptions: [TrailerMediaOption] {
+        guard let group = legibleGroup, let item = player.currentItem else {
+            return []
+        }
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        return group.options.map { opt in
+            let name = opt.displayName.isEmpty ? (opt.locale?.localizedString(forIdentifier: opt.locale?.identifier ?? "") ?? "Subtitles") : opt.displayName
+            let id = opt.displayName + (opt.locale?.identifier ?? "")
+            let isSel = (selectedSubtitleId != nil) ? (selectedSubtitleId == id) : (selected == opt)
+            return TrailerMediaOption(
+                id: id,
+                title: name,
+                isSelected: isSel,
+                option: opt
+            )
+        }
+    }
+
+    private func selectAudioOption(_ option: TrailerMediaOption) {
+        guard let item = player.currentItem,
+              let group = audibleGroup,
+              let opt = option.option else { return }
+        item.select(opt, in: group)
+        selectedAudioId = option.id
+        controlsAutoHideSuspended = false
+        scheduleControlsHide(after: 10.0)
+    }
+
+    private func selectSubtitleOption(_ option: TrailerMediaOption) {
+        guard let item = player.currentItem,
+              let group = legibleGroup else { return }
+        if let opt = option.option {
+            item.select(opt, in: group)
+            selectedSubtitleId = option.id
+        } else {
+            item.select(nil, in: group)
+            selectedSubtitleId = "off"
+        }
+        controlsAutoHideSuspended = false
+        scheduleControlsHide(after: 10.0)
+    }
+
+    private func scheduleControlsHide(after seconds: Double = 5.0) {
+        controlsHideTask?.cancel()
+        guard isPlaying, !controlsAutoHideSuspended else { return }
+        controlsHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            if !Task.isCancelled && isPlaying && pendingSeekDelta == 0 && !controlsAutoHideSuspended {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showControls = false
+                }
+            }
+        }
+    }
+
+    private func setupTimeObserver() {
+        let interval = CMTime(value: 1, timescale: 4)
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
+            guard let player else { return }
+            let sec = time.seconds
+            if !sec.isNaN && !sec.isInfinite {
+                currentTime = sec
+                if sec > 0.05 {
+                    if !isSurfaceReady {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            isSurfaceReady = true
+                        }
+                    }
+                    onTrailerReady()
+                }
+            }
+            if let itemDuration = player.currentItem?.duration.seconds,
+               !itemDuration.isNaN && !itemDuration.isInfinite && itemDuration > 0 {
+                duration = itemDuration
+            }
+            if let timeRange = player.currentItem?.loadedTimeRanges.first?.timeRangeValue {
+                let buf = timeRange.start.seconds + timeRange.duration.seconds
+                if !buf.isNaN && !buf.isInfinite && buf >= 0 {
+                    buffered = buf
+                }
+            }
+            let playing = player.timeControlStatus == .playing || player.rate > 0
+            isPlaying = playing
+            if playing && !isSurfaceReady {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    isSurfaceReady = true
+                }
+                onTrailerReady()
+            }
+            if audibleGroup == nil || legibleGroup == nil {
+                loadMediaSelectionGroups()
+            }
+        }
+    }
+
+    private func teardownTimeObserver() {
+        controlsHideTask?.cancel()
+        controlsHideTask = nil
+        seekDebounceTask?.cancel()
+        seekDebounceTask = nil
+        if let timeObserverToken {
+            player.removeTimeObserver(timeObserverToken)
+            self.timeObserverToken = nil
+        }
     }
 }
 
@@ -4947,6 +5914,7 @@ private struct TvDetailsEpisodes: View {
             seasonSelector
             episodeCardStrip
         }
+        .focusSection()
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
             refreshWatchedState()
         }
@@ -5099,6 +6067,13 @@ private struct TvDetailsEpisodes: View {
                         },
                         onToggleWatched: {
                             _ = WatchedStore.toggleEpisode(
+                                meta: meta,
+                                season: video.season,
+                                episode: video.episode
+                            )
+                        },
+                        onMarkWatchedUpTo: {
+                            WatchedStore.markWatchedUpTo(
                                 meta: meta,
                                 season: video.season,
                                 episode: video.episode
@@ -5263,6 +6238,7 @@ private struct TvEpisodeCard: View {
     let isSeasonWatched: Bool
     let onFocus: () -> Void
     let onToggleWatched: () -> Void
+    let onMarkWatchedUpTo: () -> Void
     let onToggleSeasonWatched: () -> Void
     /// Called when a long press raises the context menu, and again when one of
     /// its items closes it — see the `.contextMenu` below.
@@ -5441,6 +6417,15 @@ private struct TvEpisodeCard: View {
                             ? L10n.string("details_mark_as_unwatched", fallback: "Mark as unwatched")
                             : L10n.string("details_mark_as_watched", fallback: "Mark as watched"),
                         systemImage: isWatched ? "eye.slash.fill" : "eye.fill"
+                    )
+                }
+
+                Button {
+                    performAfterMenuDismissal(onMarkWatchedUpTo)
+                } label: {
+                    Label(
+                        L10n.string("details_mark_up_to_this_point_as_watched", fallback: "Mark up to this point as watched"),
+                        systemImage: "checklist.checked"
                     )
                 }
 
