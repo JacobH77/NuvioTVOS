@@ -3552,6 +3552,7 @@ struct TVHomeView: View {
     /// suppresses intermediate card focus oscillations during continuous remote holding or rapid swiping.
     @State private var isFastScrolling = false
     @State private var scrollToTopGeneration = 0
+    @State private var targetScrollToTopSectionId: String?
 
     private var activeFocusRestrictionCardID: String? {
         overlayRestoreCardID
@@ -3808,8 +3809,9 @@ struct TVHomeView: View {
                                             ? TVHomeLayout.fastVerticalScrollAnimation
                                             : TVHomeLayout.verticalScrollAnimation
                                         withAnimation(animation) {
-                                            if let firstId = firstFocusableSectionId {
-                                                verticalScrollProxy.scrollTo(firstId, anchor: .top)
+                                            let targetId = targetScrollToTopSectionId ?? firstFocusableSectionId
+                                            if let targetId {
+                                                verticalScrollProxy.scrollTo(targetId, anchor: .top)
                                             }
                                         }
                                     }
@@ -4224,7 +4226,7 @@ struct TVHomeView: View {
                 onLongPress: onLongPressCard
             )
         }
-        .onExitCommand(perform: canHandleExitCommand ? scrollHomeToTop : nil)
+        .onExitCommand(perform: canHandleExitCommand ? handleBackCommand : nil)
     }
 
     /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
@@ -4327,9 +4329,12 @@ struct TVHomeView: View {
                                 onInitialFocusRequested: { didRequestInitialCardFocus = true },
                                 onFocus: { meta in
                                     recordFocusTransition()
+                                    let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                                    if focusWork.restoringOverlayCardID == cardKey {
+                                        completeOverlayFocusRestore(for: cardKey)
+                                    }
                                     focusedRowIndex = index
                                     focusedSectionId = section.id
-                                    let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
                                     focusedCardID = cardKey
                                     settleCatalogFocus(on: meta, in: section.id)
                                 },
@@ -4389,6 +4394,9 @@ struct TVHomeView: View {
                                 onInitialFocusRequested: { didRequestInitialCardFocus = true },
                                 onFocus: { meta in
                                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                                    if focusWork.restoringOverlayCardID == cardKey {
+                                        completeOverlayFocusRestore(for: cardKey)
+                                    }
                                     focusedRowIndex = index
                                     focusedSectionId = section.id
                                     focusedCardID = cardKey
@@ -4448,10 +4456,10 @@ struct TVHomeView: View {
                         ? TVHomeLayout.fastVerticalScrollAnimation
                         : TVHomeLayout.verticalScrollAnimation
                     withAnimation(animation) {
-                        if heroEnabled && !heroItems.isEmpty {
+                        if heroEnabled && !heroItems.isEmpty && isGridHeroFocused {
                             verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
-                        } else if let firstId = firstFocusableSectionId {
-                            verticalScrollProxy.scrollTo(firstId, anchor: .top)
+                        } else if let targetId = targetScrollToTopSectionId ?? firstFocusableSectionId {
+                            verticalScrollProxy.scrollTo(targetId, anchor: .top)
                         }
                     }
                 }
@@ -4680,22 +4688,76 @@ struct TVHomeView: View {
         return isLoading && store.sections.isEmpty && continueWatching.isEmpty
     }
 
-    // MARK: - Back Navigation (Exit Command)
+    // MARK: - Back Navigation (Two-Step Exit Command)
 
-    private var firstFocusableCardKey: String? {
-        guard let section = visibleSections.first(where: {
+    private var currentBackAction: TVHomeBackAction {
+        let hasHero = (homeLayout == "Grid View" && heroEnabled && !gridHeroItems.isEmpty)
+
+        let currentSection: TVHomeSection? = {
+            if let focusedCardID,
+               let matched = visibleSections.first(where: { focusedCardID.hasPrefix("\($0.id)\u{1}") }) {
+                return matched
+            }
+            if let focusedSectionId {
+                return visibleSections.first(where: { $0.id == focusedSectionId })
+            }
+            return nil
+        }()
+
+        let currentRowFirstCardKey: String? = {
+            guard let currentSection else { return nil }
+            if let folder = currentSection.collectionFolders.first {
+                return TVHomeCardIdentity.folderKey(rowID: currentSection.id, folder: folder)
+            }
+            if let item = currentSection.items.first {
+                return TVHomeCardIdentity.key(rowID: currentSection.id, item: item)
+            }
+            return nil
+        }()
+
+        let currentRowScrollIndex: Int = {
+            guard let currentSection else { return 0 }
+            return rowScrollStore.index(for: currentSection.id)
+        }()
+
+        let continueWatchingSection = visibleSections.first(where: {
+            $0.id == TVHomeSection.continueWatchingId && $0.hasContent && !$0.isLoadingPlaceholder
+        })
+        let topSection = continueWatchingSection ?? visibleSections.first(where: {
             $0.hasContent && !$0.isLoadingPlaceholder
-        }) else { return nil }
-        if let folder = section.collectionFolders.first {
-            return TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
-        }
-        guard let first = section.items.first else { return nil }
-        return TVHomeCardIdentity.key(rowID: section.id, item: first)
+        })
+
+        let topTargetCardKey: String? = {
+            guard let topSection else { return nil }
+            let savedIndex = rowScrollStore.index(for: topSection.id)
+            if !topSection.collectionFolders.isEmpty {
+                let clamped = min(max(savedIndex, 0), topSection.collectionFolders.count - 1)
+                return TVHomeCardIdentity.folderKey(rowID: topSection.id, folder: topSection.collectionFolders[clamped])
+            }
+            if !topSection.items.isEmpty {
+                let clamped = min(max(savedIndex, 0), topSection.items.count - 1)
+                return TVHomeCardIdentity.key(rowID: topSection.id, item: topSection.items[clamped])
+            }
+            return nil
+        }()
+
+        return TVHomeBackNavigation.determineAction(
+            focusedCardID: focusedCardID,
+            currentSectionID: currentSection?.id,
+            currentRowFirstCardKey: currentRowFirstCardKey,
+            currentRowScrollIndex: currentRowScrollIndex,
+            isGridHeroFocused: isGridHeroFocused,
+            hasGridHero: hasHero,
+            continueWatchingOrTopSectionID: topSection?.id,
+            continueWatchingOrTopTargetCardKey: topTargetCardKey
+        )
     }
 
-    /// Consume Menu / Back button while Home has scrolled down or is not at the top item.
-    /// Once the top item is focused at the top edge of Home, leaving the handler nil lets the
-    /// enclosing TabView reveal its sidebar on the next Back / Menu press (matching Search & Discover).
+    /// Two-step Back toggle:
+    /// 1. First press returns to the beginning (index 0) of the current catalog row without affecting vertical scroll.
+    /// 2. Second press moves to Continue Watching (or top row) preserving its horizontal scroll position.
+    /// 3. Once at the beginning of Continue Watching / Top (or on Grid Hero), Back is not consumed, allowing
+    ///    the enclosing TabView to reveal the sidebar.
     private var canHandleExitCommand: Bool {
         guard isActive,
               isEnabled,
@@ -4706,61 +4768,108 @@ struct TVHomeView: View {
               browsingSection == nil
         else { return false }
 
-        if homeLayout == "Grid View" {
-            if heroEnabled && !gridHeroItems.isEmpty {
-                return !isGridHeroFocused
-            }
-            guard let firstKey = firstFocusableCardKey else { return false }
-            return focusedCardID != firstKey || focusedRowIndex != 0
-        } else {
-            guard let firstKey = firstFocusableCardKey else { return false }
-            return focusedCardID != firstKey || focusedRowIndex != 0
+        return currentBackAction != .exitToSidebar
+    }
+
+    private func handleBackCommand() {
+        let action = currentBackAction
+        TVHomeDebugTrace.log("home.handleBackCommand action=\(action)")
+        switch action {
+        case .returnToRowBeginning(let sectionID, let cardKey):
+            returnFocusToRowBeginning(sectionID: sectionID, cardKey: cardKey)
+        case .moveToContinueWatchingOrTop(let sectionID, let cardKey):
+            moveFocusToContinueWatchingOrTop(sectionID: sectionID, cardKey: cardKey)
+        case .focusGridHero:
+            focusGridHeroSlideshow()
+        case .exitToSidebar:
+            break
         }
     }
 
-    /// Back on Home smoothly returns the vertical scroll position and card focus to the top.
     private func scrollHomeToTop() {
-        TVHomeDebugTrace.log("home.scrollHomeToTop triggered; resetting focus and scroll to top")
+        handleBackCommand()
+    }
+
+    private func returnFocusToRowBeginning(sectionID: String, cardKey: String) {
+        TVHomeDebugTrace.log("home.returnFocusToRowBeginning section=\(sectionID) cardKey=\(cardKey)")
         focusWork.upwardFocusTask?.cancel()
         focusWork.landscapeFocusTask?.cancel()
         focusWork.pendingLandscapeFocusedId = nil
         landscapeFocusedId = nil
         pendingInitialFocusCardKey = nil
 
-        scrollToTopGeneration &+= 1
+        armReturnFocusAnimationSuppression()
+        store.lastFocusedCardID = cardKey
+        rowScrollStore.setIndex(0, for: sectionID)
 
-        if homeLayout == "Grid View" {
-            if heroEnabled && !gridHeroItems.isEmpty {
-                focusedRowIndex = 0
-                focusedSectionId = nil
-                focusedCardID = nil
-                store.lastFocusedCardID = nil
-                gridHeroIndex = 0
-                isGridHeroFocused = true
-                return
-            }
-        }
+        overlayRestoreGeneration &+= 1
+        overlayRestoreCardID = cardKey
+        restoreOverlayFocus(to: cardKey, generation: overlayRestoreGeneration)
 
-        guard let firstSection = visibleSections.first(where: {
-            $0.hasContent && !$0.isLoadingPlaceholder
-        }) else { return }
-
-        focusedRowIndex = 0
-        focusedSectionId = firstSection.id
-        rowScrollStore.setIndex(0, for: firstSection.id)
-
-        if let folder = firstSection.collectionFolders.first {
-            let cardKey = TVHomeCardIdentity.folderKey(rowID: firstSection.id, folder: folder)
-            focusedCardID = cardKey
-            store.lastFocusedCardID = cardKey
-            settleFolderFocus(folder, in: firstSection.id)
-        } else if let meta = firstSection.items.first {
-            let cardKey = TVHomeCardIdentity.key(rowID: firstSection.id, item: meta)
-            focusedCardID = cardKey
-            store.lastFocusedCardID = cardKey
-            settleCatalogFocus(on: meta, in: firstSection.id)
+        guard let section = visibleSections.first(where: { $0.id == sectionID }) else { return }
+        if let folder = section.collectionFolders.first {
+            settleFolderFocus(folder, in: sectionID)
+        } else if let meta = section.items.first {
+            settleCatalogFocus(on: meta, in: sectionID)
             scheduleLandscapeFocus(cardKey: cardKey)
         }
+    }
+
+    private func moveFocusToContinueWatchingOrTop(sectionID: String, cardKey: String) {
+        TVHomeDebugTrace.log("home.moveFocusToContinueWatchingOrTop section=\(sectionID) cardKey=\(cardKey)")
+        focusWork.upwardFocusTask?.cancel()
+        focusWork.landscapeFocusTask?.cancel()
+        focusWork.pendingLandscapeFocusedId = nil
+        landscapeFocusedId = nil
+        pendingInitialFocusCardKey = nil
+
+        armReturnFocusAnimationSuppression()
+        targetScrollToTopSectionId = sectionID
+        scrollToTopGeneration &+= 1
+
+        if let rowIndex = visibleSections.firstIndex(where: { $0.id == sectionID }) {
+            focusedRowIndex = rowIndex
+        } else {
+            focusedRowIndex = 0
+        }
+        focusedSectionId = sectionID
+
+        store.lastFocusedCardID = cardKey
+        overlayRestoreGeneration &+= 1
+        overlayRestoreCardID = cardKey
+        restoreOverlayFocus(to: cardKey, generation: overlayRestoreGeneration)
+
+        // Preserve horizontal scroll: do NOT reset rowScrollStore index to 0
+        guard let section = visibleSections.first(where: { $0.id == sectionID }) else { return }
+        let savedIndex = rowScrollStore.index(for: sectionID)
+        if !section.collectionFolders.isEmpty {
+            let folderIndex = min(max(savedIndex, 0), section.collectionFolders.count - 1)
+            let folder = section.collectionFolders[folderIndex]
+            settleFolderFocus(folder, in: sectionID)
+        } else if !section.items.isEmpty {
+            let itemIndex = min(max(savedIndex, 0), section.items.count - 1)
+            let item = section.items[itemIndex]
+            settleCatalogFocus(on: item, in: sectionID)
+            scheduleLandscapeFocus(cardKey: cardKey)
+        }
+    }
+
+    private func focusGridHeroSlideshow() {
+        TVHomeDebugTrace.log("home.focusGridHeroSlideshow")
+        focusWork.upwardFocusTask?.cancel()
+        focusWork.landscapeFocusTask?.cancel()
+        focusWork.pendingLandscapeFocusedId = nil
+        landscapeFocusedId = nil
+        pendingInitialFocusCardKey = nil
+
+        targetScrollToTopSectionId = nil
+        focusedRowIndex = 0
+        focusedSectionId = nil
+        focusedCardID = nil
+        store.lastFocusedCardID = nil
+        gridHeroIndex = 0
+        isGridHeroFocused = true
+        scrollToTopGeneration &+= 1
     }
 
     private var firstFocusableSectionId: String? {

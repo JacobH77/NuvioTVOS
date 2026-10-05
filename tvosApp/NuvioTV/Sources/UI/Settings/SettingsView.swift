@@ -174,6 +174,7 @@ enum SettingsKey {
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
     static let hideUnreleased = "nuvio.tv.settings.layout.hideUnreleased"
     static let showFullDates = "nuvio.tv.settings.layout.showFullDates"
+    static let detailsActionsBelowInfo = "nuvio.tv.settings.layout.detailsActionsBelowInfo"
 
     static let traktConnected = "nuvio.tv.settings.integrations.traktConnected"
     static let traktClientID = "nuvio.tv.settings.integrations.traktClientID"
@@ -324,7 +325,7 @@ enum SettingsKey {
         searchStyle,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards,
-        hideUnreleased, showFullDates,
+        hideUnreleased, showFullDates, detailsActionsBelowInfo,
         traktConnected, traktClientID, traktClientSecret,
         traktContinueWatchingDaysCap, traktShowMetaComments,
         traktWatchProgressSource, watchProgressSourceChosenByUser,
@@ -2970,6 +2971,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.showFullDates) private var showFullDates = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
+    @AppStorage(SettingsKey.detailsActionsBelowInfo) private var detailsActionsBelowInfo = false
 
     /// Classic was never a distinct layout (behaved like Modern).
     private let layouts = ["Modern", "Compact", "Grid View"]
@@ -3272,6 +3274,27 @@ private struct LayoutDiscoverySettingsView: View {
                         fallback: "Prefer exact dates when metadata provides them"
                     ),
                     isOn: $showFullDates,
+                    accentColor: accentColor
+                )
+            }
+
+            SettingsGroup(
+                title: L10n.string("tvos_settings_details_page", fallback: "Details Page"),
+                subtitle: L10n.string(
+                    "tvos_settings_details_page_subtitle",
+                    fallback: "Layout and action button placement on title detail screens"
+                )
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string(
+                        "tvos_settings_details_actions_below_info",
+                        fallback: "Action Buttons Below Info"
+                    ),
+                    subtitle: L10n.string(
+                        "tvos_settings_details_actions_below_info_subtitle",
+                        fallback: "Place the Play and action button row below the movie information and synopsis"
+                    ),
+                    isOn: $detailsActionsBelowInfo,
                     accentColor: accentColor
                 )
             }
@@ -8039,7 +8062,7 @@ private struct AdvancedSettingsView: View {
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(SettingsKey.playbackDiagnostics) private var playbackDiagnostics = false
     @AppStorage(SettingsKey.playbackDebug) private var playbackDebug = false
-    @State private var isSeedingTestHistory = false
+    @State private var isClearingTestHistory = false
     @State private var testHistoryStatus = ContinueWatchingTestData.status
     @State private var isClearingCache = false
     @State private var clearedCacheStatus: String?
@@ -8126,39 +8149,20 @@ private struct AdvancedSettingsView: View {
                 )
 
                 SettingsActionRow(
-                    title: L10n.string("tvos_settings_seed_watch_history", fallback: "Seed Test Watch History"),
-                    subtitle: L10n.string(
-                        "tvos_settings_seed_watch_history_subtitle",
-                        fallback: "Fills Continue Watching from your catalogs to test paging — movies, resuming, Next Up, New Episode, New Season and upcoming cards — and uploads it to your account so other devices see it too."
-                    ),
-                    value: isSeedingTestHistory ? "Working…" : "Seed",
-                    accentColor: accentColor,
-                    action: {
-                        guard !isSeedingTestHistory else { return }
-                        isSeedingTestHistory = true
-                        Task { @MainActor in
-                            await ContinueWatchingTestData.seed()
-                            testHistoryStatus = ContinueWatchingTestData.status
-                            isSeedingTestHistory = false
-                        }
-                    }
-                )
-
-                SettingsActionRow(
                     title: L10n.string("tvos_settings_clear_test_watch_history", fallback: "Remove Test Watch History"),
                     subtitle: L10n.string(
                         "tvos_settings_clear_test_watch_history_subtitle",
                         fallback: "Deletes the seeded entries from this Apple TV and your account, leaving real history untouched"
                     ),
-                    value: "Remove",
+                    value: isClearingTestHistory ? "Working…" : "Remove",
                     accentColor: accentColor,
                     action: {
-                        guard !isSeedingTestHistory else { return }
-                        isSeedingTestHistory = true
+                        guard !isClearingTestHistory else { return }
+                        isClearingTestHistory = true
                         Task { @MainActor in
                             await ContinueWatchingTestData.clear()
                             testHistoryStatus = ContinueWatchingTestData.status
-                            isSeedingTestHistory = false
+                            isClearingTestHistory = false
                         }
                     }
                 )
@@ -12194,7 +12198,8 @@ private struct CollectionEditorSheet: View {
                 "provider": "addon",
                 "addonId": option.addonId,
                 "type": option.type,
-                "catalogId": option.catalogId
+                "catalogId": option.catalogId,
+                "title": option.catalogName
             ])
         }
         folders[index]["sources"] = sources
