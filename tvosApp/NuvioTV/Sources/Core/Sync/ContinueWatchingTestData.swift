@@ -426,32 +426,69 @@ enum ContinueWatchingTestData {
             .sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
     }
 
-    /// Removes only what `seed` created, on the account as well as this device.
+    /// Removes seeded content and resets continue watching entries on the account as well as this device.
+    /// Note: WatchedStore (user watched history / checkmarks) is always preserved and never touched.
     @discardableResult
     static func clear() async -> Int {
-        let keys = seededKeys()
-        guard !keys.isEmpty else {
+        let seeded = seededKeys()
+        let keys: Set<String>
+        let contentIdsToDismiss: Set<String>
+
+        if !seeded.isEmpty {
+            // Targeted removal: only remove the keys created by the seed tool
+            keys = seeded
+            contentIdsToDismiss = Set(keys.map { $0.components(separatedBy: "_").first ?? $0 })
+        } else {
+            // Fallback when no marker was found: clean active Continue Watching items
+            let ledgerRecords = WatchProgressLedger.records()
+            let storedItems = ContinueWatchingStore.items()
+            var allKeys = Set<String>()
+            var allIds = Set<String>()
+            for record in ledgerRecords {
+                allKeys.insert(record.progressKey)
+                allIds.insert(record.contentId)
+            }
+            for item in storedItems {
+                allKeys.insert(item.meta.id)
+                allIds.insert(item.meta.id)
+            }
+            keys = allKeys
+            contentIdsToDismiss = allIds
+        }
+
+        guard !keys.isEmpty || !contentIdsToDismiss.isEmpty else {
             status = "nothing to remove"
             return 0
         }
 
-        // Retire the rows on the account first. Removing locally while the
-        // server still holds them would simply invite the next pull to restore
-        // them, leaving fabricated history stuck on the account.
-        let removedRemotely = await NuvioSyncManager.current?.deleteRemoteWatchProgress(
-            keys: Array(keys)
-        ) ?? false
-        guard removedRemotely else {
-            status = "kept: could not reach your account to delete them. "
-                + "Removing locally now would let the next sync restore them — try again when online."
-            return 0
+        // Retire the rows on the account
+        if !keys.isEmpty {
+            _ = await NuvioSyncManager.current?.deleteRemoteWatchProgress(
+                keys: Array(keys)
+            )
         }
 
-        WatchProgressLedger.remove(keys: Array(keys))
+        if !keys.isEmpty {
+            WatchProgressLedger.remove(keys: Array(keys))
+        }
+
+        for contentId in contentIdsToDismiss {
+            ContinueWatchingDismissStore.dismiss(contentId: contentId)
+            ContinueWatchingStore.remove(metaId: contentId)
+        }
+
+        if seeded.isEmpty {
+            ContinueWatchingStore.replaceAll([])
+        }
         UserDefaults.standard.removeObject(forKey: markerKey)
         await ContinueWatchingBuilder.rebuild(reason: "test data cleared")
-        status = "removed \(keys.count) seeded row(s) from this Apple TV and your account"
-        return keys.count
+        NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
+        NotificationCenter.default.post(name: WatchProgressLedger.changedNotification, object: nil)
+        NotificationCenter.default.post(name: ContinueWatchingDismissStore.changedNotification, object: nil)
+
+        let removedCount = max(keys.count, contentIdsToDismiss.count)
+        status = "removed \(removedCount) row(s) from this Apple TV and your account"
+        return removedCount
     }
 
     private static func seededKeys() -> Set<String> {

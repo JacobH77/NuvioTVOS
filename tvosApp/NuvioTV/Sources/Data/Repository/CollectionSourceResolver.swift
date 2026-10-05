@@ -68,7 +68,10 @@ struct CollectionSourceResolver {
         return page
     }
 
-    static func label(for source: NuvioCollectionSource) -> String {
+    static func label(
+        for source: NuvioCollectionSource,
+        installedCatalogs: [AddonCatalogOption] = []
+    ) -> String {
         if let title = nonEmpty(source.title) { return title }
         switch source.normalizedProvider {
         case "tmdb":
@@ -76,6 +79,15 @@ struct CollectionSourceResolver {
         case "trakt":
             return "Trakt List"
         default:
+            if source.normalizedProvider == "addon",
+               let addonId = nonEmpty(source.addonId),
+               let type = nonEmpty(source.type),
+               let catalogId = nonEmpty(source.catalogId),
+               let catalogName = installedCatalogs.first(where: {
+                   $0.addonId == addonId && $0.type == type && $0.catalogId == catalogId
+               }).flatMap({ nonEmpty($0.catalogName) }) {
+                return catalogName
+            }
             let name = (nonEmpty(source.catalogId) ?? "Catalog")
                 .replacingOccurrences(of: "_", with: " ")
                 .replacingOccurrences(of: "-", with: " ")

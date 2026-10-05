@@ -129,6 +129,180 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertEqual(TVHomeFocusRestoration.target(saved: "row\u{1}nested\u{1}removed", rows: [other, row], preferredIndex: 0), row.keys[0])
     }
 
+    func testTwoStepBackToggleReturnsToRowBeginningThenMovesToContinueWatchingWithoutAffectingHorizontalScroll() {
+        let cwSectionID = TVHomeSection.continueWatchingId
+        let cwFirstCardKey = "\(cwSectionID)\u{1}title:movie:cw0"
+        let cwTargetCardKey = "\(cwSectionID)\u{1}title:movie:cw3"
+
+        let catalogSectionID = "popular-movies"
+        let catalogFirstCardKey = "\(catalogSectionID)\u{1}title:movie:m0"
+        let catalogFocusedCardKey = "\(catalogSectionID)\u{1}title:movie:m5"
+
+        // First press: user is at index 5 of popular-movies (not at the beginning).
+        // Must return to the beginning of the current row (catalogFirstCardKey).
+        let step1 = TVHomeBackNavigation.determineAction(
+            focusedCardID: catalogFocusedCardKey,
+            currentSectionID: catalogSectionID,
+            currentRowFirstCardKey: catalogFirstCardKey,
+            currentRowScrollIndex: 5,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            step1,
+            .returnToRowBeginning(sectionID: catalogSectionID, cardKey: catalogFirstCardKey)
+        )
+
+        // Second press: user is now at the beginning of popular-movies (index 0).
+        // Must move to Continue Watching without resetting its horizontal scroll (targeting cwTargetCardKey at index 3).
+        let step2 = TVHomeBackNavigation.determineAction(
+            focusedCardID: catalogFirstCardKey,
+            currentSectionID: catalogSectionID,
+            currentRowFirstCardKey: catalogFirstCardKey,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            step2,
+            .moveToContinueWatchingOrTop(sectionID: cwSectionID, cardKey: cwTargetCardKey)
+        )
+
+        // Once at Continue Watching at index 3 (scrolled):
+        // Press 3 returns to the beginning of Continue Watching (index 0).
+        let step3 = TVHomeBackNavigation.determineAction(
+            focusedCardID: cwTargetCardKey,
+            currentSectionID: cwSectionID,
+            currentRowFirstCardKey: cwFirstCardKey,
+            currentRowScrollIndex: 3,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            step3,
+            .returnToRowBeginning(sectionID: cwSectionID, cardKey: cwFirstCardKey)
+        )
+
+        // Press 4: user is at the beginning of Continue Watching (index 0).
+        // Must exit to sidebar.
+        let step4 = TVHomeBackNavigation.determineAction(
+            focusedCardID: cwFirstCardKey,
+            currentSectionID: cwSectionID,
+            currentRowFirstCardKey: cwFirstCardKey,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwFirstCardKey
+        )
+        XCTAssertEqual(step4, .exitToSidebar)
+    }
+
+    func testTwoStepBackToggleWhenAlreadyAtBeginningOfCatalogRowMovesDirectlyToContinueWatching() {
+        let cwSectionID = TVHomeSection.continueWatchingId
+        let cwTargetCardKey = "\(cwSectionID)\u{1}title:movie:cw2"
+
+        let catalogSectionID = "trending"
+        let catalogFirstCardKey = "\(catalogSectionID)\u{1}title:movie:t0"
+
+        // User is already at index 0 of trending. Press immediately moves to Continue Watching.
+        let action = TVHomeBackNavigation.determineAction(
+            focusedCardID: catalogFirstCardKey,
+            currentSectionID: catalogSectionID,
+            currentRowFirstCardKey: catalogFirstCardKey,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            action,
+            .moveToContinueWatchingOrTop(sectionID: cwSectionID, cardKey: cwTargetCardKey)
+        )
+    }
+
+    func testBackToggleWithGridHeroMovesToHeroThenExitsToSidebar() {
+        let topSectionID = "trending"
+        let topFirstCardKey = "\(topSectionID)\u{1}title:movie:t0"
+
+        // User is at beginning of top section, with Grid Hero active.
+        let step1 = TVHomeBackNavigation.determineAction(
+            focusedCardID: topFirstCardKey,
+            currentSectionID: topSectionID,
+            currentRowFirstCardKey: topFirstCardKey,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: false,
+            hasGridHero: true,
+            continueWatchingOrTopSectionID: topSectionID,
+            continueWatchingOrTopTargetCardKey: topFirstCardKey
+        )
+        XCTAssertEqual(step1, .focusGridHero)
+
+        // User is on Grid Hero. Next Back exits to sidebar.
+        let step2 = TVHomeBackNavigation.determineAction(
+            focusedCardID: nil,
+            currentSectionID: nil,
+            currentRowFirstCardKey: nil,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: true,
+            hasGridHero: true,
+            continueWatchingOrTopSectionID: topSectionID,
+            continueWatchingOrTopTargetCardKey: topFirstCardKey
+        )
+        XCTAssertEqual(step2, .exitToSidebar)
+    }
+
+    func testBackToggleWhenScrolledFarHorizontallyReturnsToFirstCardInRow() {
+        let cwSectionID = TVHomeSection.continueWatchingId
+        let cwTargetCardKey = "\(cwSectionID)\u{1}title:movie:cw0"
+
+        let catalogSectionID = "popular-movies"
+        let catalogFirstCardKey = "\(catalogSectionID)\u{1}title:movie:m0"
+        let farScrolledCardKey = "\(catalogSectionID)\u{1}title:movie:m18"
+
+        // User is scrolled far horizontally (e.g. index 18) in the catalog row.
+        // First back press MUST return to the first card in the row (index 0).
+        let step1 = TVHomeBackNavigation.determineAction(
+            focusedCardID: farScrolledCardKey,
+            currentSectionID: catalogSectionID,
+            currentRowFirstCardKey: catalogFirstCardKey,
+            currentRowScrollIndex: 18,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            step1,
+            .returnToRowBeginning(sectionID: catalogSectionID, cardKey: catalogFirstCardKey)
+        )
+
+        // Focus restoration targets catalogFirstCardKey via focus restriction,
+        // which forces row materialization and scrollIndex alignment to 0.
+        // Second press: user is now at index 0 of the row. Back moves to Continue Watching.
+        let step2 = TVHomeBackNavigation.determineAction(
+            focusedCardID: catalogFirstCardKey,
+            currentSectionID: catalogSectionID,
+            currentRowFirstCardKey: catalogFirstCardKey,
+            currentRowScrollIndex: 0,
+            isGridHeroFocused: false,
+            hasGridHero: false,
+            continueWatchingOrTopSectionID: cwSectionID,
+            continueWatchingOrTopTargetCardKey: cwTargetCardKey
+        )
+        XCTAssertEqual(
+            step2,
+            .moveToContinueWatchingOrTop(sectionID: cwSectionID, cardKey: cwTargetCardKey)
+        )
+    }
+
     func testFolderDuplicatesCollapseBeforeLayoutAndRetainIdentityAfterReordering() throws {
         let decoded = try JSONDecoder().decode(NuvioCollectionFolder.self, from: Data(#"{"id":"folder","title":"Folder"}"#.utf8))
         let first = TVCollectionFolderItem(collectionId: "one", folder: decoded, sources: [])
@@ -336,6 +510,27 @@ final class HomeLayoutSettingsTests: XCTestCase {
         )
 
         XCTAssertNotEqual(rowPortrait, rowLandscape)
+    }
+
+    func testPosterCardEquatableChecksCardIndex() throws {
+        let meta = try title("item1")
+        let cardAt0 = PosterCard(meta: meta, cardIndex: 0) {}
+        let cardAt1 = PosterCard(meta: meta, cardIndex: 1) {}
+        let cardAt0Again = PosterCard(meta: meta, cardIndex: 0) {}
+
+        XCTAssertNotEqual(cardAt0, cardAt1)
+        XCTAssertEqual(cardAt0, cardAt0Again)
+    }
+
+    func testTVCollectionFolderCardEquatableChecksCardIndex() throws {
+        let decoded = try JSONDecoder().decode(NuvioCollectionFolder.self, from: Data(#"{"id":"folder","title":"Folder"}"#.utf8))
+        let folder = TVCollectionFolderItem(collectionId: "one", folder: decoded, sources: [])
+        let cardAt0 = TVCollectionFolderCard(folder: folder, cardIndex: 0) {}
+        let cardAt1 = TVCollectionFolderCard(folder: folder, cardIndex: 1) {}
+        let cardAt0Again = TVCollectionFolderCard(folder: folder, cardIndex: 0) {}
+
+        XCTAssertNotEqual(cardAt0, cardAt1)
+        XCTAssertEqual(cardAt0, cardAt0Again)
     }
 
     func testClearCatalogOrder() {

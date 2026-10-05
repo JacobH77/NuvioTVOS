@@ -2116,6 +2116,159 @@ final class WholeSeriesWatchedTests: XCTestCase {
         XCTAssertFalse(WatchedStore.containsCatalogTitle(meta: meta))
     }
 
+    func testMarkWatchedUpToSingleSeason() {
+        let meta = NuvioMeta(
+            id: "tt-single-season-upto",
+            name: "Single Season Show",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt-single-season-upto",
+            tmdbId: nil,
+            type: "series",
+            year: 2020,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            language: nil,
+            released: nil,
+            status: nil,
+            videos: (1...10).map { ep in
+                episode(season: 1, episode: ep, released: "2020-01-01")
+            },
+            trailerYtIds: nil,
+            externalRatings: nil,
+            posterShape: nil
+        )
+
+        XCTAssertTrue(WatchedStore.markWatchedUpTo(meta: meta, season: 1, episode: 8))
+
+        for ep in 1...8 {
+            XCTAssertTrue(
+                WatchedStore.containsEpisode(meta: meta, season: 1, episode: ep),
+                "Episode \(ep) should be marked as watched"
+            )
+        }
+        for ep in 9...10 {
+            XCTAssertFalse(
+                WatchedStore.containsEpisode(meta: meta, season: 1, episode: ep),
+                "Episode \(ep) should not be marked as watched"
+            )
+        }
+        XCTAssertFalse(WatchedStore.containsCatalogTitle(meta: meta))
+    }
+
+    func testMarkWatchedUpToMultipleSeasons() {
+        let meta = NuvioMeta(
+            id: "tt-multi-season-upto",
+            name: "Multi Season Show",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt-multi-season-upto",
+            tmdbId: nil,
+            type: "series",
+            year: 2020,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            language: nil,
+            released: nil,
+            status: nil,
+            videos: [
+                (1...5).map { episode(season: 1, episode: $0, released: "2020-01-01") },
+                (1...5).map { episode(season: 2, episode: $0, released: "2021-01-01") },
+                (1...5).map { episode(season: 3, episode: $0, released: "2022-01-01") }
+            ].flatMap { $0 },
+            trailerYtIds: nil,
+            externalRatings: nil,
+            posterShape: nil
+        )
+
+        XCTAssertTrue(WatchedStore.markWatchedUpTo(meta: meta, season: 2, episode: 3))
+
+        // Season 1: all 5 episodes should be watched
+        for ep in 1...5 {
+            XCTAssertTrue(
+                WatchedStore.containsEpisode(meta: meta, season: 1, episode: ep),
+                "S1E\(ep) should be marked as watched"
+            )
+        }
+        // Season 2: 1...3 watched, 4...5 unwatched
+        for ep in 1...3 {
+            XCTAssertTrue(
+                WatchedStore.containsEpisode(meta: meta, season: 2, episode: ep),
+                "S2E\(ep) should be marked as watched"
+            )
+        }
+        for ep in 4...5 {
+            XCTAssertFalse(
+                WatchedStore.containsEpisode(meta: meta, season: 2, episode: ep),
+                "S2E\(ep) should not be marked as watched"
+            )
+        }
+        // Season 3: all unwatched
+        for ep in 1...5 {
+            XCTAssertFalse(
+                WatchedStore.containsEpisode(meta: meta, season: 3, episode: ep),
+                "S3E\(ep) should not be marked as watched"
+            )
+        }
+    }
+
+    func testMarkWatchedUpToFinaleMarksWholeSeries() {
+        let meta = NuvioMeta(
+            id: "tt-finale-upto",
+            name: "Finale Show",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt-finale-upto",
+            tmdbId: nil,
+            type: "series",
+            year: 2020,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            language: nil,
+            released: nil,
+            status: nil,
+            videos: [
+                episode(season: 1, episode: 1, released: "2020-01-01"),
+                episode(season: 1, episode: 2, released: "2020-01-02"),
+                episode(season: 2, episode: 1, released: "2021-01-01"),
+                episode(season: 2, episode: 2, released: "2021-01-02")
+            ],
+            trailerYtIds: nil,
+            externalRatings: nil,
+            posterShape: nil
+        )
+
+        XCTAssertTrue(WatchedStore.markWatchedUpTo(meta: meta, season: 2, episode: 2))
+        XCTAssertTrue(WatchedStore.containsCatalogTitle(meta: meta))
+    }
+
     private func episode(season: Int, episode: Int, released: String) -> NuvioVideo {
         NuvioVideo(
             id: "test:\(season):\(episode)",

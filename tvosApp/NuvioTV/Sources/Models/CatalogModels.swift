@@ -6063,6 +6063,110 @@ enum WatchedStore {
         return true
     }
 
+    /// Marks all episodes up to and including the specified episode as watched in a single write.
+    ///
+    /// For regular series (season > 0), this marks all aired regular episodes in preceding seasons
+    /// and all aired episodes in the current season up to `episode` (including the target episode).
+    /// For specials (season <= 0), this marks all specials in season 0 up to `episode`.
+    @discardableResult
+    static func markWatchedUpTo(
+        meta: NuvioMeta,
+        season: Int,
+        episode: Int
+    ) -> Bool {
+        var episodesBySeason: [Int: Set<Int>] = [:]
+
+        if let videos = meta.videos, !videos.isEmpty {
+            if season > 0 {
+                let eligible = videos.filter { v in
+                    guard v.season > 0, v.episode > 0 else { return false }
+                    if v.season < season {
+                        return EpisodeReleasePolicy.hasAired(v.released)
+                    } else if v.season == season {
+                        return v.episode <= episode && (EpisodeReleasePolicy.hasAired(v.released) || v.episode == episode)
+                    } else {
+                        return false
+                    }
+                }
+                episodesBySeason = Dictionary(grouping: eligible, by: \.season)
+                    .mapValues { Set($0.map(\.episode)) }
+            } else {
+                let eligible = videos.filter { v in
+                    v.season == season && v.episode <= episode
+                }
+                episodesBySeason = Dictionary(grouping: eligible, by: \.season)
+                    .mapValues { Set($0.map(\.episode)) }
+            }
+        }
+
+        // Always ensure at least the targeted episode is included
+        episodesBySeason[season, default: []].insert(episode)
+        if season > 0 && (episodesBySeason[season]?.count ?? 0) <= 1 && episode > 1 && (meta.videos == nil || meta.videos?.isEmpty == true) {
+            // Fallback when meta.videos is not populated: mark 1...episode for this season
+            episodesBySeason[season] = Set(1...episode)
+        }
+
+        let snapshot = meta.persistenceSnapshot
+        let watchedAt = Date()
+        let source = TraktSettingsStore.watchProgressSource(in: ProfileSettings.current)
+
+        let written = episodesBySeason.keys.sorted().flatMap { s in
+            (episodesBySeason[s] ?? []).sorted().map { ep in
+                WatchedStoreItem(
+                    meta: snapshot,
+                    watchedAt: watchedAt,
+                    season: s,
+                    episode: ep,
+                    sources: [source.rawValue]
+                )
+            }
+        }
+
+        guard !written.isEmpty else { return false }
+
+        let writtenKeys = Set(written.compactMap { item -> String? in
+            guard let s = item.season, let ep = item.episode else { return nil }
+            return "\(s):\(ep)"
+        })
+
+        let untouched = items().filter { item in
+            guard sameContent(item.meta, meta),
+                  let s = item.season,
+                  let ep = item.episode else { return true }
+            return !writtenKeys.contains("\(s):\(ep)")
+        }
+
+        guard persist(written + untouched) else { return false }
+
+        for item in written {
+            guard let s = item.season, let ep = item.episode else { continue }
+            clearTombstone(meta: meta, season: s, episode: ep)
+            ContinueWatchingStore.markLedgerWatched(meta: meta, season: s, episode: ep)
+        }
+
+        ContinueWatchingStore.removeWatched(written)
+        if meta.isSeries {
+            ContinueWatchingDismissStore.clear(contentId: meta.id)
+        }
+
+        let markedAt = watchedAt
+        for item in written {
+            Task { @MainActor in
+                TraktProgressService.forgetLocalPlayback(
+                    meta: meta,
+                    season: item.season,
+                    episode: item.episode,
+                    recordedNoLaterThan: markedAt,
+                    notify: false
+                )
+            }
+        }
+
+        syncSeriesWatchedEpisodes(meta, episodesBySeason: episodesBySeason, isWatched: true)
+        reconcileWholeSeriesMarker(for: meta)
+        return true
+    }
+
     /// Keeps the local title marker in sync with episode-level season actions.
     /// The marker is only a local UI/indexing aid; remote history remains
     /// episode-based so specials and unaired episodes are never implied.
