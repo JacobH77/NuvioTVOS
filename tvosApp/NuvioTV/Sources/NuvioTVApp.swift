@@ -47,7 +47,7 @@ struct NuvioTVApp: App {
 /// Temporary Home performance tracing. Enabled by default in DEBUG so console
 /// output shows main-thread stalls, or via `-TVHomeDebugTrace` argument.
 enum TVHomeDebugTrace {
-    static var enabled = false
+    static var enabled = true
     private static let logger = Logger(
         subsystem: "com.pyksel.nuviotvos",
         category: "TVTrace"
@@ -319,15 +319,19 @@ struct ContentView: View {
     /// which is both calmer and easier to reason about.
     @State private var isPreparingProfile = false
     @State private var profileGateTask: Task<Void, Never>?
+    @State private var profileGateLiftTask: Task<Void, Never>?
     @State private var profileGateStartedAt: Date?
+    @State private var profileGateGeneration: UInt = 0
+    @State private var profileGateReadinessIdentity: TVHomeContentIdentity?
+    @State private var profileGateReadiness: TVProfileGateReadiness = .waiting(hasFocusableContent: false, targetSignature: nil)
     /// Every switch shows the cover for at least this long, even when the new
     /// profile's rows are already cached and come back instantly. A cover that
     /// appears only sometimes reads as a stutter; a switch that always takes the
     /// same short beat reads as the app doing something deliberate — which is
     /// how the Android client behaves, and why its switches feel settled.
-    private static let profileGateMinimumDuration: TimeInterval = 1.8
-    /// Ceiling on the profile-switch cover, whatever Home ends up publishing.
-    private static let profileGateTimeout: TimeInterval = 5
+    private static let profileGateMinimumDuration: TimeInterval = 1.2
+    /// Watchdog for maximum profile loading time (capped at 3.0 seconds).
+    private static let profileGateTimeout: TimeInterval = 3.0
     @State private var selectedTab: TVTab = .home
     /// Series context for the current playback, captured at play time so the
     /// player can offer/auto-play the next episode. Empty for movies/trailers.
@@ -450,7 +454,7 @@ struct ContentView: View {
                         // Navigate only on an explicit pick. Listening to
                         // $activeProfile here would auto-enter a profile the
                         // moment the sync refreshes it mid-selection.
-                        .onReceive(profileViewModel.profileChosen.receive(on: RunLoop.main)) { _ in
+                        .onReceive(profileViewModel.profileChosen) { _ in
                             selectedTab = .home
                             beginProfileGate()
                             withAnimation(.easeInOut(duration: 0.28)) {
@@ -470,6 +474,28 @@ struct ContentView: View {
                 appContainer
                     .transition(.opacity)
             }
+
+            // The adaptive tab sidebar is briefly expanded while its first
+            // focus pass runs. Keep the full container covered while Home
+            // loads so its loading/card default focus and native scroll state
+            // can settle before the user sees it. This applies equally to an
+            // automatic cold launch and a newly selected profile.
+            if isPreparingProfile {
+                ZStack {
+                    ProfileScopedRootBackground()
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(1.8)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                // Cover Home immediately, even inside the animated profile
+                // transition; fade only when its focus handoff is complete.
+                .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                .zIndex(999)
+            }
         }
         // Resolve every @AppStorage in the app against the active profile's
         // settings suite, so each profile keeps its own theme, layout, playback
@@ -480,20 +506,15 @@ struct ContentView: View {
         .onChange(of: profileViewModel.activeProfile?.id) { _, _ in
             AppLocaleManager.shared.reloadFromProfileStore()
         }
-        // Keep the profile cover up until the progressive catalog stream has
-        // finished. Revealing Home when its first row arrived let the user page
-        // that row while later catalog updates were still replacing it; if a
-        // focused, paged-in card disappeared during the replacement, tvOS moved
-        // focus to the row above. `hasLoaded` flips only after the final tree is
-        // published, so the first interactive frame is stable.
-        .onChange(of: homeStore.hasLoaded) { _, loaded in
-            guard isPreparingProfile, loaded else { return }
-            profileGateContentReady()
-        }
         // Backing out of the switch must not leave the cover behind.
         .onChange(of: isOnProfileSelection) { _, isSelecting in
             if isSelecting, isPreparingProfile {
                 liftProfileGate()
+            }
+        }
+        .onChange(of: selectedTab) { _, tab in
+            if isPreparingProfile, tab != .home {
+                liftProfileGate(generation: profileGateGeneration)
             }
         }
         .onChange(of: activeScreen) { oldScreen, newScreen in
@@ -1005,45 +1026,102 @@ struct ContentView: View {
         return false
     }
 
+    private var currentHomeContentIdentity: TVHomeContentIdentity {
+        TVHomeContentIdentity(
+            profileId: profileViewModel.activeProfile?.id ?? "none",
+            catalogRevision: syncManager.homeCatalogRevision
+        )
+    }
+
     /// Covers Home while the picked profile's stores are re-pointed and its rows
     /// rebuilt, so the user waits once instead of watching Home assemble itself.
     ///
-    /// The deadline is the important part: the gate lifts on Home's first
-    /// sections, but a profile with no catalogs never publishes any, and a cover
-    /// that outlives its own condition is worse than no cover at all.
+    /// Empty or failed loads get a bounded escape. Populated content waits for
+    /// Home's native focus acknowledgement, even after the deadline.
     private func beginProfileGate() {
         profileGateTask?.cancel()
+        profileGateLiftTask?.cancel()
+        profileGateGeneration &+= 1
+        profileGateReadinessIdentity = nil
+        profileGateReadiness = .waiting(hasFocusableContent: false, targetSignature: nil)
         isPreparingProfile = true
         profileGateStartedAt = Date()
+        let generation = profileGateGeneration
+        TVHomeDebugTrace.log("profileGate.begin gen=\(generation) timeout=\(Self.profileGateTimeout)s minDuration=\(Self.profileGateMinimumDuration)s")
         profileGateTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.profileGateTimeout * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            liftProfileGate()
+            guard !Task.isCancelled,
+                  isPreparingProfile,
+                  generation == profileGateGeneration else {
+                TVHomeDebugTrace.log("profileGate.watchdog cancelled or superseded gen=\(generation) currentGen=\(profileGateGeneration)")
+                return
+            }
+            TVHomeDebugTrace.log("⚠️ profileGate.watchdog FIRED after \(Self.profileGateTimeout)s timeout! Force lifting gate for gen=\(generation)")
+            liftProfileGate(generation: generation)
         }
     }
 
-    /// Home has rows for the new profile. Hold the cover for the remainder of the
-    /// minimum anyway: a cached profile publishes within a frame, and lifting
-    /// then would flash the cover rather than show it.
-    private func profileGateContentReady() {
+    private func profileGateReadinessChanged(
+        _ identity: TVHomeContentIdentity,
+        _ generation: UInt,
+        _ readiness: TVProfileGateReadiness
+    ) {
+        TVHomeDebugTrace.log("profileGate.readinessChanged identity=\(identity.profileId):\(identity.catalogRevision) gen=\(generation) curGen=\(profileGateGeneration) readiness=\(readiness)")
+        guard isPreparingProfile,
+              generation == profileGateGeneration,
+              identity == currentHomeContentIdentity else { return }
+        profileGateReadinessIdentity = identity
+        profileGateReadiness = readiness
+        switch readiness {
+        case .ready, .empty, .overlay:
+            scheduleProfileGateLift(for: identity, generation: generation)
+        case .waiting:
+            profileGateLiftTask?.cancel()
+            profileGateLiftTask = nil
+        }
+    }
+
+    private func scheduleProfileGateLift(for identity: TVHomeContentIdentity, generation: UInt) {
         guard isPreparingProfile else { return }
         let elapsed = Date().timeIntervalSince(profileGateStartedAt ?? Date())
         let remaining = max(0, Self.profileGateMinimumDuration - elapsed)
-        profileGateTask?.cancel()
-        profileGateTask = Task { @MainActor in
+        TVHomeDebugTrace.log("profileGate.scheduleLift gen=\(generation) elapsed=\(String(format: "%.2f", elapsed))s remaining=\(String(format: "%.2f", remaining))s readiness=\(profileGateReadiness)")
+        profileGateLiftTask?.cancel()
+        profileGateLiftTask = Task { @MainActor in
             if remaining > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
             }
-            guard !Task.isCancelled else { return }
-            liftProfileGate()
+            guard !Task.isCancelled,
+                  isPreparingProfile,
+                  generation == profileGateGeneration,
+                  identity == currentHomeContentIdentity,
+                  profileGateReadinessIdentity == identity else {
+                TVHomeDebugTrace.log("profileGate.liftTask cancelled or mismatched gen=\(generation)")
+                return
+            }
+            switch profileGateReadiness {
+            case .ready, .empty, .overlay:
+                break
+            case .waiting:
+                TVHomeDebugTrace.log("profileGate.liftTask aborted: readiness still waiting gen=\(generation)")
+                return
+            }
+            TVHomeDebugTrace.log("profileGate.liftTask executing normal lift for gen=\(generation)")
+            liftProfileGate(generation: generation)
         }
     }
 
-    /// Unconditional: used by the deadline and by backing out, where the minimum
-    /// no longer means anything.
-    private func liftProfileGate() {
+    /// Used when the user backs out or the scoped deadline reaches an empty load.
+    private func liftProfileGate(generation: UInt? = nil) {
+        if let generation, generation != profileGateGeneration {
+            TVHomeDebugTrace.log("profileGate.lift ignored mismatched gen=\(generation) currentGen=\(profileGateGeneration)")
+            return
+        }
+        TVHomeDebugTrace.log("profileGate.lift executing (isPreparingProfile was \(isPreparingProfile), gen=\(generation.map { String($0) } ?? "nil"))")
         profileGateTask?.cancel()
         profileGateTask = nil
+        profileGateLiftTask?.cancel()
+        profileGateLiftTask = nil
         profileGateStartedAt = nil
         guard isPreparingProfile else { return }
         withAnimation(.easeInOut(duration: 0.22)) {
@@ -1361,7 +1439,7 @@ struct ContentView: View {
         let externalSession: ExternalPlaybackSession?
         let successCallback: URL?
         let errorCallback: URL?
-        if player == .infuse {
+        if player == .infuse || player == .senplayer {
             let id = UUID().uuidString
             let profileID = profileViewModel.activeProfile?.id ?? WatchedStore.activeProfileId
             externalSession = ExternalPlaybackSession(
@@ -1677,33 +1755,16 @@ struct ContentView: View {
                     backdropUrl: item.meta.backgroundUrl ?? item.meta.posterUrl,
                     logoUrl: item.meta.logoUrl,
                     title: item.meta.name,
-                    message: continueWatchingLoadingMessage
+                    message: continueWatchingLoadingMessage,
+                    onDismiss: {
+                        dismissOverlay()
+                    }
                 )
                 .transition(.opacity)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
                 .zIndex(3)
-            }
-
-            // The adaptive tab sidebar is briefly expanded while its first
-            // focus pass runs. Keep the full tab container covered while Home
-            // loads so its loading/card default focus and native scroll state
-            // can settle before the user sees it. This applies equally to an
-            // automatic cold launch and a newly selected profile.
-            if isPreparingProfile {
-                ZStack {
-                    ProfileScopedRootBackground()
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(1.8)
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .transition(.opacity)
-                .zIndex(4)
             }
         }
     }
@@ -1723,7 +1784,9 @@ struct ContentView: View {
             accountEmail: authManager.currentEmail,
             isAuthenticated: authManager.isAuthenticated,
             sessionNeedsReauthentication: authManager.sessionNeedsReauthentication,
-            isProfileSwitching: isPreparingProfile,
+            isProfileFocusPending: isPreparingProfile,
+            profileGateGeneration: profileGateGeneration,
+            onProfileGateReadinessChange: profileGateReadinessChanged,
             authManager: authManager,
             syncManager: syncManager,
             onSwitchProfile: {
@@ -2885,7 +2948,9 @@ private struct TVMainTabView: View {
     let accountEmail: String?
     let isAuthenticated: Bool
     let sessionNeedsReauthentication: Bool
-    let isProfileSwitching: Bool
+    let isProfileFocusPending: Bool
+    let profileGateGeneration: UInt
+    let onProfileGateReadinessChange: (TVHomeContentIdentity, UInt, TVProfileGateReadiness) -> Void
     let authManager: AuthManager
     let syncManager: NuvioSyncManager
     let onSwitchProfile: () -> Void
@@ -3010,7 +3075,9 @@ private struct TVMainTabView: View {
                 isActive: selectedTab == .home,
                 isFullScreenOverlayPresented: isFullScreenOverlayPresented,
                 detailsDidDisappearGeneration: detailsDidDisappearGeneration,
-                isProfileSwitching: isProfileSwitching,
+                isProfileFocusPending: isProfileFocusPending,
+                profileGateGeneration: profileGateGeneration,
+                onProfileGateReadinessChange: onProfileGateReadinessChange,
                 contentIdentity: TVHomeContentIdentity(
                     profileId: activeProfile?.id ?? "none",
                     catalogRevision: homeCatalogRevision
@@ -3108,6 +3175,11 @@ private struct TVMainTabView: View {
                 syncManager.flushPendingPushes()
             }
             if tab == .profile {
+                if isProfileFocusPending {
+                    TVHomeDebugTrace.log("app.selectedTab reset from Profile to Home because isProfileFocusPending is true")
+                    selectedTab = .home
+                    return
+                }
                 onSwitchProfile()
             }
         }
@@ -3415,6 +3487,20 @@ struct TVScrollViewFocusConfigurator: UIViewRepresentable {
 }
 #endif
 
+private enum TVHomeProfileFocusTarget: Equatable {
+    case card(key: String, sectionID: String, sectionIndex: Int)
+    case gridHero
+
+    var signature: String {
+        switch self {
+        case .card(let key, let sectionID, let sectionIndex):
+            return "card|\(sectionID)|\(sectionIndex)|\(key)"
+        case .gridHero:
+            return "gridHero"
+        }
+    }
+}
+
 struct TVHomeView: View {
     /// Failure sets a retry already ran against without improving them, keyed by
     /// the signature itself (which encodes the add-on set, so two profiles never
@@ -3430,9 +3516,10 @@ struct TVHomeView: View {
     let isFullScreenOverlayPresented: Bool
     let detailsDidDisappearGeneration: UInt
     /// True while a freshly picked profile is being prepared. Keeps Home's own
-    /// loader on screen for that whole beat, so the switch shows one screen
-    /// instead of a cover handing over to a spinner.
-    var isProfileSwitching: Bool = false
+    /// focus handoff coordinated with the root profile cover.
+    var isProfileFocusPending: Bool = false
+    var profileGateGeneration: UInt = 0
+    var onProfileGateReadinessChange: (TVHomeContentIdentity, UInt, TVProfileGateReadiness) -> Void = { _, _, _ in }
     let contentIdentity: TVHomeContentIdentity
     let collectionsRevision: UInt
     var sessionNeedsReauthentication: Bool = false
@@ -3478,12 +3565,15 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.tmdbApplyToHome) private var tmdbApplyToHome = false
     @AppStorage(SettingsKey.smbLocalRowEnabled) private var smbLocalRowEnabled = true
     @AppStorage(SettingsKey.jellyfinLocalRowEnabled) private var jellyfinLocalRowEnabled = true
+    @AppStorage(SettingsKey.catalogAutoRefreshInterval) private var catalogAutoRefreshInterval = "30 Minutes"
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var isBannerDismissed = false
 
     @State private var localTitlesSection: TVHomeSection?
     @State private var jellyfinSection: TVHomeSection?
     @State private var isLoading = true
+    @State private var profileGateFailedLoadIdentity: TVHomeContentIdentity?
     @State private var focusedMeta: NuvioMeta?
     /// Collection folder currently focused on Home. When set, the hero shows
     /// emoji + folder title instead of title poster meta/description.
@@ -3544,6 +3634,9 @@ struct TVHomeView: View {
     /// there would let `defaultFocus` reclaim focus the moment Menu tries to
     /// hand it to the sidebar.
     @State private var isGridHeroFocused = false
+    @State private var nativeProfileFocusedCardKey: String?
+    @State private var didNativeFocusGridHero = false
+    @State private var gridHeroFocusRequestGeneration = 0
     /// Suppress the one focus/layout animation caused by returning to Home from
     /// another tab. Normal left/right focus animations remain enabled.
     @State private var suppressReturnFocusAnimations = false
@@ -3684,7 +3777,7 @@ struct TVHomeView: View {
                         .onAppear {
                             requestLoadingFocus()
                         }
-                } else if let errorMessage, store.sections.isEmpty && continueWatching.isEmpty {
+                } else if let errorMessage, profileGateStartupFocusTarget == nil {
                     TVErrorView(message: errorMessage) {
                         homeReloadTask?.cancel()
                         homeReloadTask = Task { @MainActor in
@@ -3804,6 +3897,12 @@ struct TVHomeView: View {
                                             )
                                         }
                                     }
+                                    .task(id: profileGateFocusRequestSignature) {
+                                        await maintainProfileGateFocus(
+                                            for: sections,
+                                            using: verticalScrollProxy
+                                        )
+                                    }
                                     .onChange(of: scrollToTopGeneration) { _, _ in
                                         let animation = (isFastScrolling || fastNavigation)
                                             ? TVHomeLayout.fastVerticalScrollAnimation
@@ -3831,7 +3930,7 @@ struct TVHomeView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .focusSection()
-                    .defaultFocusIfAvailable($focusedCardID, store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID)
+                    .defaultFocusIfAvailable($focusedCardID, initialDefaultFocusCardID)
                 }
             }
             // Ignore the bottom safe-area inset too, so the scrolling rows window
@@ -3879,15 +3978,20 @@ struct TVHomeView: View {
         }
         .onAppear {
             TVHomeDebugTrace.startWatchdogIfNeeded()
+            reportProfileGateReadiness()
             // A TabView may recreate Home instead of keeping it mounted. Arm
             // before its saved focus is restored so the first layout pass is
             // already non-animated.
-            if isActive, let lastFocused = store.lastFocusedCardID {
-                armReturnFocusAnimationSuppression()
-                if focusedCardID == nil {
-                    pendingInitialFocusCardKey = lastFocused
-                    didRequestInitialCardFocus = false
-                    didPrepareInitialFocusViewport = false
+            if isActive {
+                if let lastFocused = store.lastFocusedCardID {
+                    armReturnFocusAnimationSuppression()
+                    if focusedCardID == nil {
+                        pendingInitialFocusCardKey = lastFocused
+                        didRequestInitialCardFocus = false
+                        didPrepareInitialFocusViewport = false
+                    }
+                } else if focusedCardID == nil, let defaultFocus = initialDefaultFocusCardID {
+                    focusedCardID = defaultFocus
                 }
             }
             // Classic was never a distinct layout; collapse legacy values to Modern.
@@ -4106,8 +4210,18 @@ struct TVHomeView: View {
                 await load(for: identity, forceReload: true)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: TVHomeCatalogOrder.forceRefreshNotification).receive(on: RunLoop.main)) { _ in
+            guard isActive && !isFullScreenOverlayPresented else { return }
+            homeReloadTask?.cancel()
+            let identity = contentIdentity
+            homeReloadTask = Task { @MainActor in
+                await load(for: identity, forceReload: true)
+            }
+        }
         .onDisappear {
             focusWork.cancelAll()
+            // The profile-focus retry is owned by a `.task(id:)` and cancels
+            // automatically when this Home view leaves the hierarchy.
             homeReloadTask?.cancel()
             continueWatchingRefreshTask?.cancel()
             continueWatchingRefreshTask = nil
@@ -4122,6 +4236,39 @@ struct TVHomeView: View {
                 requestLoadingFocus()
             } else if !loading || !showsLoading {
                 isLoadingFocusActive = false
+            }
+        }
+        .onChange(of: profileGateReadiness) { _, _ in
+            reportProfileGateReadiness()
+        }
+        .onChange(of: isProfileFocusPending) { _, switching in
+            nativeProfileFocusedCardKey = nil
+            didNativeFocusGridHero = false
+            if switching { reportProfileGateReadiness() }
+        }
+        .onChange(of: profileGateGeneration) { _, _ in
+            nativeProfileFocusedCardKey = nil
+            didNativeFocusGridHero = false
+            reportProfileGateReadiness()
+        }
+        .onChange(of: contentIdentity) { _, _ in
+            nativeProfileFocusedCardKey = nil
+            didNativeFocusGridHero = false
+            reportProfileGateReadiness()
+        }
+        .onChange(of: isFullScreenOverlayPresented) { oldVal, isPresented in
+            if oldVal && !isPresented && isActive {
+                checkAndTriggerAutoRefresh()
+            }
+        }
+        .onChange(of: isActive) { oldVal, active in
+            if !oldVal && active && !isFullScreenOverlayPresented {
+                checkAndTriggerAutoRefresh()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                checkAndTriggerAutoRefresh()
             }
         }
         .onChange(of: focusedPosterBackdropEnabled) { _, enabled in
@@ -4139,6 +4286,11 @@ struct TVHomeView: View {
                         + "lastFocused=\(store.lastFocusedCardID ?? "nil") "
                         + "didPrepareViewport=\(didPrepareInitialFocusViewport)"
                 )
+                if newValue == nil {
+                    // A FocusState assignment can request focus, but only a
+                    // native card callback below can acknowledge it.
+                    nativeProfileFocusedCardKey = nil
+                }
                 if let newValue {
                     if let pending = pendingInitialFocusCardKey {
                         if pending == newValue {
@@ -4255,6 +4407,7 @@ struct TVHomeView: View {
                         TVGridHeroSlideshowView(
                             items: heroItems,
                             selectedIndex: $gridHeroIndex,
+                            focusRequestGeneration: gridHeroFocusRequestGeneration,
                             shouldRequestInitialFocus: store.lastFocusedCardID == nil
                                 && !didRequestInitialCardFocus
                                 && !didRequestInitialGridHeroFocus,
@@ -4263,7 +4416,15 @@ struct TVHomeView: View {
                                 didRequestInitialCardFocus = true
                             },
                             backdropBleed: heroBleed,
-                            onFocusChange: { isGridHeroFocused = $0 }
+                            onFocusChange: {
+                                isGridHeroFocused = $0
+                                let wasHeroFocused = didNativeFocusGridHero
+                                didNativeFocusGridHero = isProfileFocusPending && $0
+                                if isProfileFocusPending && didNativeFocusGridHero != wasHeroFocused {
+                                    TVHomeDebugTrace.log("home.profileGate.nativeGridHeroFocus isFocused=\(didNativeFocusGridHero)")
+                                    reportProfileGateReadiness()
+                                }
+                            }
                         ) { selectedMeta in
                             navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
                         }
@@ -4289,6 +4450,7 @@ struct TVHomeView: View {
                                 onFocus: { folder in
                                     recordFocusTransition()
                                     let cardKey = TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
+                                    acknowledgeNativeProfileCardFocus(cardKey)
                                     if focusWork.restoringOverlayCardID == cardKey {
                                         completeOverlayFocusRestore(for: cardKey)
                                     }
@@ -4296,6 +4458,11 @@ struct TVHomeView: View {
                                     focusedSectionId = section.id
                                     focusedCardID = cardKey
                                     settleFolderFocus(folder, in: section.id)
+                                },
+                                onBlur: { folder in
+                                    clearNativeProfileCardFocus(
+                                        TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
+                                    )
                                 },
                                 onSelect: { folder in
                                     openCollectionFolderFromHome(
@@ -4330,6 +4497,7 @@ struct TVHomeView: View {
                                 onFocus: { meta in
                                     recordFocusTransition()
                                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                                    acknowledgeNativeProfileCardFocus(cardKey)
                                     if focusWork.restoringOverlayCardID == cardKey {
                                         completeOverlayFocusRestore(for: cardKey)
                                     }
@@ -4338,7 +4506,9 @@ struct TVHomeView: View {
                                     focusedCardID = cardKey
                                     settleCatalogFocus(on: meta, in: section.id)
                                 },
-                                onBlur: { _ in },
+                                onBlur: { meta in
+                                    clearNativeProfileCardFocus(TVHomeCardIdentity.key(rowID: section.id, item: meta))
+                                },
                                 onApproachEnd: { _ in },
                                 onSelect: { meta in
                                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
@@ -4380,7 +4550,8 @@ struct TVHomeView: View {
                                     prepareForOverlayPresentation(restoreCardID: cardKey)
                                     onStartContinueWatchingFromBeginning?(item)
                                 },
-                                onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
                             )
                             .id(section.id)
                         } else {
@@ -4394,6 +4565,7 @@ struct TVHomeView: View {
                                 onInitialFocusRequested: { didRequestInitialCardFocus = true },
                                 onFocus: { meta in
                                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                                    acknowledgeNativeProfileCardFocus(cardKey)
                                     if focusWork.restoringOverlayCardID == cardKey {
                                         completeOverlayFocusRestore(for: cardKey)
                                     }
@@ -4401,6 +4573,9 @@ struct TVHomeView: View {
                                     focusedSectionId = section.id
                                     focusedCardID = cardKey
                                     settleCatalogFocus(on: meta, in: section.id)
+                                },
+                                onBlur: { meta in
+                                    clearNativeProfileCardFocus(TVHomeCardIdentity.key(rowID: section.id, item: meta))
                                 },
                                 onSelect: { meta in
                                     navigateToDetailsFromHome(
@@ -4410,8 +4585,10 @@ struct TVHomeView: View {
                                     )
                                 },
                                 onLongPress: onLongPressCard,
+                                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) },
                                 onSeeAllFocus: {
                                     let cardKey = "\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"
+                                    acknowledgeNativeProfileCardFocus(cardKey)
                                     focusedRowIndex = index
                                     focusedSectionId = section.id
                                     focusedCardID = cardKey
@@ -4450,6 +4627,12 @@ struct TVHomeView: View {
                             using: verticalScrollProxy
                         )
                     }
+                }
+                .task(id: profileGateFocusRequestSignature) {
+                    await maintainProfileGateFocus(
+                        for: sections,
+                        using: verticalScrollProxy
+                    )
                 }
                 .onChange(of: scrollToTopGeneration) { _, _ in
                     let animation = (isFastScrolling || fastNavigation)
@@ -4678,14 +4861,182 @@ struct TVHomeView: View {
     /// load. When returning from a card the sections are already cached in the
     /// store, so we render them straight away instead of flashing the spinner.
     private var showsLoading: Bool {
-        // A profile switch holds this on regardless of what is cached: the rows
-        // underneath belong to the profile being left, and swapping them in
-        // place is what made a switch look like Home assembling itself.
-        if isProfileSwitching { return true }
         // Account progress is available before the add-on catalog requests
         // finish. Do not cover a ready Continue Watching row with the global
         // spinner while BetterPosters (or another large add-on) is loading.
-        return isLoading && store.sections.isEmpty && continueWatching.isEmpty
+        return isLoading
+            && store.sections.isEmpty
+            && continueWatching.isEmpty
+            && profileGateStartupFocusTarget == nil
+    }
+
+    private var initialDefaultFocusCardID: String? {
+        store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID ?? profileGateStartupFocusTargetCardKey
+    }
+
+    private var profileGateStartupFocusTargetCardKey: String? {
+        if case .card(let key, _, _) = profileGateStartupFocusTarget {
+            return key
+        }
+        return nil
+    }
+
+    private var profileGateStartupFocusTarget: TVHomeProfileFocusTarget? {
+        if homeLayout == "Grid View", heroEnabled, !gridHeroItems.isEmpty {
+            return .gridHero
+        }
+        for (index, section) in visibleSections.enumerated() {
+            guard section.hasContent, !section.isLoadingPlaceholder else { continue }
+            if let folder = section.collectionFolders.first {
+                return .card(
+                    key: TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder),
+                    sectionID: section.id,
+                    sectionIndex: index
+                )
+            }
+            if let item = section.items.first {
+                return .card(
+                    key: TVHomeCardIdentity.key(rowID: section.id, item: item),
+                    sectionID: section.id,
+                    sectionIndex: index
+                )
+            }
+        }
+        return nil
+    }
+
+    private var profileGateReadiness: TVProfileGateReadiness {
+        guard isProfileFocusPending else {
+            return .waiting(hasFocusableContent: false, targetSignature: nil)
+        }
+        if isFullScreenOverlayPresented { return .overlay }
+        let target = profileGateStartupFocusTarget
+        if let target {
+            return .ready(
+                targetSignature: target.signature,
+                storeLoaded: store.isLoaded(for: contentIdentity)
+            )
+        }
+        let loadSettled = store.isLoaded(for: contentIdentity)
+            || profileGateFailedLoadIdentity == contentIdentity
+        guard loadSettled else {
+            return .waiting(
+                hasFocusableContent: false,
+                targetSignature: nil
+            )
+        }
+        return .empty
+    }
+
+    private var profileGateFocusRequestSignature: String {
+        "\(isProfileFocusPending)|\(isActive)|\(profileGateGeneration)|\(contentIdentity.profileId)|"
+            + "\(contentIdentity.catalogRevision)|\(store.isLoaded(for: contentIdentity))|"
+            + "\(profileGateFailedLoadIdentity == contentIdentity)|\(isLoading)|"
+            + "\(profileGateStartupFocusTarget?.signature ?? "none")|\(isFullScreenOverlayPresented)"
+    }
+
+    private func reportProfileGateReadiness() {
+        guard isProfileFocusPending else { return }
+        TVHomeDebugTrace.log("home.reportProfileGateReadiness identity=\(contentIdentity.profileId):\(contentIdentity.catalogRevision) gen=\(profileGateGeneration) readiness=\(profileGateReadiness)")
+        onProfileGateReadinessChange(contentIdentity, profileGateGeneration, profileGateReadiness)
+    }
+
+    private func acknowledgeNativeProfileCardFocus(_ cardKey: String) {
+        guard isProfileFocusPending else { return }
+        didNativeFocusGridHero = false
+        nativeProfileFocusedCardKey = cardKey
+        TVHomeDebugTrace.log("home.profileGate.nativeCardFocus key=\(cardKey) target=\(profileGateStartupFocusTarget?.signature ?? "none")")
+        reportProfileGateReadiness()
+    }
+
+    private func clearNativeProfileCardFocus(_ cardKey: String) {
+        guard nativeProfileFocusedCardKey == cardKey else { return }
+        nativeProfileFocusedCardKey = nil
+        TVHomeDebugTrace.log("home.profileGate.nativeCardBlur key=\(cardKey)")
+        reportProfileGateReadiness()
+    }
+
+    private func hasNativeProfileFocus(for target: TVHomeProfileFocusTarget) -> Bool {
+        switch target {
+        case .card(let key, _, _):
+            return nativeProfileFocusedCardKey == key
+        case .gridHero:
+            return didNativeFocusGridHero
+        }
+    }
+
+    private func maintainProfileGateFocus(
+        for sections: [TVHomeSection],
+        using proxy: ScrollViewProxy
+    ) async {
+        guard isProfileFocusPending,
+              isActive,
+              !isFullScreenOverlayPresented,
+              let target = profileGateStartupFocusTarget else {
+            TVHomeDebugTrace.log(
+                "home.maintainProfileGateFocus skip isProfileFocusPending=\(isProfileFocusPending) "
+                    + "isActive=\(isActive) overlayPresented=\(isFullScreenOverlayPresented) "
+                    + "target=\(profileGateStartupFocusTarget?.signature ?? "nil")"
+            )
+            return
+        }
+        let identity = contentIdentity
+        let gateGeneration = profileGateGeneration
+        TVHomeDebugTrace.log("home.maintainProfileGateFocus start identity=\(identity.profileId):\(identity.catalogRevision) gen=\(gateGeneration) target=\(target.signature)")
+        await Task.yield()
+        var attempt = 0
+        while !Task.isCancelled {
+            guard !Task.isCancelled,
+                  isProfileFocusPending,
+                  isActive,
+                  contentIdentity == identity,
+                  profileGateGeneration == gateGeneration,
+                  !isFullScreenOverlayPresented,
+                  profileGateStartupFocusTarget == target else {
+                TVHomeDebugTrace.log("home.maintainProfileGateFocus loop end attempt=\(attempt) pending=\(isProfileFocusPending) active=\(isActive) targetMatch=\(profileGateStartupFocusTarget == target)")
+                return
+            }
+            if hasNativeProfileFocus(for: target) {
+                TVHomeDebugTrace.log("home.maintainProfileGateFocus target acknowledged attempt=\(attempt) target=\(target.signature)")
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                continue
+            }
+
+            switch target {
+            case .gridHero:
+                TVHomeDebugTrace.log("home.maintainProfileGateFocus setting gridHero focus attempt=\(attempt)")
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    proxy.scrollTo("home-grid-hero-top", anchor: .top)
+                }
+                gridHeroFocusRequestGeneration &+= 1
+            case .card(let key, let sectionID, let sectionIndex):
+                guard sections.contains(where: { $0.id == sectionID }) else {
+                    TVHomeDebugTrace.log("home.maintainProfileGateFocus sectionID=\(sectionID) not in sections attempt=\(attempt)")
+                    return
+                }
+                TVHomeDebugTrace.log("home.maintainProfileGateFocus setting focus to cardKey=\(key) sectionID=\(sectionID) row=\(sectionIndex) attempt=\(attempt)")
+                // Drop any progressive first-focus lock; this final target must
+                // be free to acknowledge through its real row callback.
+                pendingInitialFocusCardKey = nil
+                focusedRowIndex = sectionIndex
+                focusedSectionId = sectionID
+                rowScrollStore.setIndex(0, for: sectionID)
+                if focusedCardID != key {
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        proxy.scrollTo(sectionID, anchor: .top)
+                        focusedCardID = key
+                    }
+                }
+            }
+
+            let retryDelay: UInt64 = attempt < 8 ? 150_000_000 : 600_000_000
+            attempt += 1
+            try? await Task.sleep(nanoseconds: retryDelay)
+        }
     }
 
     // MARK: - Back Navigation (Two-Step Exit Command)
@@ -5052,6 +5403,7 @@ struct TVHomeView: View {
                     focusWork.upwardFocusTask?.cancel()
                     recordFocusTransition()
                     let cardKey = TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
+                    acknowledgeNativeProfileCardFocus(cardKey)
                     if let pending = pendingInitialFocusCardKey, pending != cardKey {
                         TVHomeDebugTrace.log(
                             "home.focus ignoring transient focus on folder \(cardKey) while pending=\(pending)"
@@ -5092,6 +5444,11 @@ struct TVHomeView: View {
                     }
                     focusedCardID = cardKey
                     settleFolderFocus(folder, in: section.id)
+                },
+                onBlur: { folder in
+                    clearNativeProfileCardFocus(
+                        TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
+                    )
                 },
                 onSelect: { folder in
                     openCollectionFolderFromHome(
@@ -5138,6 +5495,7 @@ struct TVHomeView: View {
                     recordFocusTransition()
                     let focusStarted = TVHomeDebugTrace.now()
                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
+                    acknowledgeNativeProfileCardFocus(cardKey)
                     if let pending = pendingInitialFocusCardKey, pending != cardKey {
                         TVHomeDebugTrace.log(
                             "home.focus ignoring transient focus on \(cardKey) while pending=\(pending)"
@@ -5187,6 +5545,7 @@ struct TVHomeView: View {
                 },
                 onBlur: { meta in
                     clearLandscapeFocus(cardKey: TVHomeCardIdentity.key(rowID: section.id, item: meta))
+                    clearNativeProfileCardFocus(TVHomeCardIdentity.key(rowID: section.id, item: meta))
                 },
                 onApproachEnd: { meta in
                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: meta)
@@ -5240,6 +5599,7 @@ struct TVHomeView: View {
                     onStartContinueWatchingFromBeginning?(item)
                 },
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
             )
             .equatable()
             .frame(
@@ -5734,6 +6094,9 @@ struct TVHomeView: View {
         for identity: TVHomeContentIdentity,
         forceReload: Bool = false
     ) async {
+        if isProfileFocusPending, contentIdentity == identity {
+            profileGateFailedLoadIdentity = nil
+        }
         guard identity.profileId != "none" && !identity.profileId.isEmpty else {
             isLoading = false
             return
@@ -5765,7 +6128,15 @@ struct TVHomeView: View {
                 }
                 return
             }
-            guard attempt < maximumAttempts - 1 else { return }
+            guard attempt < maximumAttempts - 1 else {
+                if isProfileFocusPending,
+                   contentIdentity == identity,
+                   !store.isLoaded(for: identity),
+                   errorMessage != nil {
+                    profileGateFailedLoadIdentity = identity
+                }
+                return
+            }
 
             do {
                 try await Task.sleep(
@@ -5785,6 +6156,9 @@ struct TVHomeView: View {
         guard identity.profileId != "none" && !identity.profileId.isEmpty else {
             isLoading = false
             return
+        }
+        if isProfileFocusPending, contentIdentity == identity {
+            profileGateFailedLoadIdentity = nil
         }
         // Progress is local/account-synced state and does not depend on the
         // catalog network request below. Publish it first so Home is useful
@@ -6500,6 +6874,88 @@ struct TVHomeView: View {
         }
     }
 
+    private func checkAndTriggerAutoRefresh() {
+        guard isActive && !isFullScreenOverlayPresented else { return }
+        guard let lastLoaded = store.lastLoadedAt else { return }
+
+        let thresholdSeconds: TimeInterval?
+        switch catalogAutoRefreshInterval {
+        case "15m", "15 Minutes":
+            thresholdSeconds = 15 * 60
+        case "30m", "30 Minutes":
+            thresholdSeconds = 30 * 60
+        case "1h", "1 Hour":
+            thresholdSeconds = 60 * 60
+        case "Always", "Every Time":
+            thresholdSeconds = 0
+        default:
+            thresholdSeconds = nil
+        }
+
+        guard let threshold = thresholdSeconds else { return }
+        let elapsed = Date().timeIntervalSince(lastLoaded)
+        if elapsed >= threshold {
+            TVHomeDebugTrace.log("home.autoRefresh triggered elapsed=\(Int(elapsed))s threshold=\(Int(threshold))s")
+            homeReloadTask?.cancel()
+            let identity = contentIdentity
+            homeReloadTask = Task { @MainActor in
+                await load(for: identity, forceReload: true)
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshHomeSection(sectionId: String) {
+        if sectionId == TVHomeSection.continueWatchingId {
+            scheduleContinueWatchingRefresh()
+            onRequestAccountRefresh()
+            return
+        }
+        if sectionId == TVHomeSection.upcomingId {
+            scheduleContinueWatchingRefresh()
+            return
+        }
+        guard let sectionIndex = store.sections.firstIndex(where: { $0.id == sectionId }) else { return }
+        let section = store.sections[sectionIndex]
+        store.sections[sectionIndex].isLoadingMore = true
+
+        Task { @MainActor in
+            defer {
+                if let idx = store.sections.firstIndex(where: { $0.id == sectionId }) {
+                    store.sections[idx].isLoadingMore = false
+                }
+            }
+
+            if section.isCollectionRow {
+                let collections = await loadCollectionSections()
+                if let matchingCol = collections.first(where: { $0.id == sectionId }),
+                   let idx = store.sections.firstIndex(where: { $0.id == sectionId }) {
+                    store.sections[idx] = matchingCol
+                }
+                return
+            }
+
+            guard let contentType = section.contentType, let catalogId = section.catalogId else { return }
+            do {
+                let page = try await repository.browseCatalog(
+                    addonId: section.addonId,
+                    contentType: contentType,
+                    catalogId: catalogId,
+                    skip: 0,
+                    genre: section.catalogGenre
+                )
+                guard let idx = store.sections.firstIndex(where: { $0.id == sectionId }) else { return }
+                store.sections[idx].items = page.items
+                store.sections[idx].nextSkip = page.nextSkip ?? page.items.count
+                store.sections[idx].hasMore = page.hasMore && !page.items.isEmpty
+                store.sections[idx].pendingItems = []
+                TVHomeDebugTrace.log("home.refreshSection succeeded section=\(sectionId) count=\(page.items.count)")
+            } catch {
+                TVHomeDebugTrace.log("home.refreshSection failed section=\(sectionId) error=\(error.localizedDescription)")
+            }
+        }
+    }
+
     private func scheduleLandscapeFocus(cardKey: String) {
         guard !suppressReturnFocusAnimations, focusedPosterBackdropEnabled else {
             focusWork.pendingLandscapeFocusedId = nil
@@ -6871,7 +7327,7 @@ struct TVHomeView: View {
         // watched snapshots; Trakt is refreshed independently above so its
         // history remains available even when another provider owns resume.
         switch source {
-        case .nuvioSync, .trakt:
+        case .nuvioSync, .trakt, .wetrakr:
             break
         case .simkl:
             Task.detached(priority: .utility) {
@@ -7114,6 +7570,7 @@ struct TVHomeSection: Identifiable {
 enum TVHomeCatalogOrder {
     static let changedNotification = Notification.Name("nuvio.tv.homeCatalogOrder.changed")
     static let snapshotChangedNotification = Notification.Name("nuvio.tv.homeCatalogSnapshot.changed")
+    static let forceRefreshNotification = Notification.Name("nuvio.tv.homeCatalog.forceRefresh")
     private static let snapshotDirectoryName = "catalogSnapshots"
     private static let snapshotWriter = TVHomeCatalogSnapshotWriter()
     private static let snapshotCacheLock = NSLock()
@@ -7247,6 +7704,7 @@ enum TVHomeCatalogOrder {
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogSyncedOrder)
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogExplicitEnabled)
         HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogCustomTitles)
+        HomeCatalogPayloadStore.remove(forKey: SettingsKey.homeCatalogDeleted)
         ProfileSettings.current.removeObject(forKey: SettingsKey.homeCatalogTitles)
         let storageKey = snapshotStorageKey(for: ProfileSettings.current)
         LargePayloadStore.remove(key: storageKey, directory: snapshotDirectoryName)
@@ -7291,6 +7749,13 @@ enum TVHomeCatalogOrder {
     /// consults this to drop hidden catalog rows before building Home.
     static func disabledCatalogKeys() -> Set<String> {
         guard let data = HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogDisabled),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }
+
+    /// Keys or IDs permanently deleted locally from Home layout.
+    static func deletedCatalogKeys() -> Set<String> {
+        guard let data = HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogDeleted),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(keys)
     }
@@ -7474,6 +7939,12 @@ enum TVHomeCatalogOrder {
     ) {
         let current = snapshotRows()
         let normalizedName = normalizedAddonSourceName(addonName)
+        let deleted = deletedCatalogKeys()
+        func isDeleted(_ row: SnapshotRow) -> Bool {
+            deleted.contains(row.id)
+                || (row.settingsKey != nil && deleted.contains(row.settingsKey!))
+                || deleted.contains(sectionOrderKey(row.id))
+        }
         func belongsToSource(_ row: SnapshotRow) -> Bool {
             if row.addonId == addonID { return true }
             guard row.addonId == nil, let rowName = row.addonName else { return false }
@@ -7481,9 +7952,9 @@ enum TVHomeCatalogOrder {
         }
 
         let insertionIndex = current.firstIndex(where: belongsToSource) ?? current.count
-        var rows = current.filter { !belongsToSource($0) }
+        var rows = current.filter { !belongsToSource($0) && !isDeleted($0) }
         var seen = Set<String>()
-        let uniqueAdditions = additions.filter { seen.insert($0.id).inserted }
+        let uniqueAdditions = additions.filter { !isDeleted($0) && seen.insert($0.id).inserted }
         rows.insert(contentsOf: uniqueAdditions, at: min(insertionIndex, rows.count))
         guard rows != current else { return }
         writeSnapshotRows(rows)
@@ -7491,7 +7962,15 @@ enum TVHomeCatalogOrder {
 
     static func writeSnapshotRows(_ rows: [SnapshotRow], in settings: UserDefaults = ProfileSettings.current) {
         TVHomeDebugTrace.measure("TVHomeCatalogOrder.writeSnapshotRows count=\(rows.count)") {
-            let uniqueRows = uniqueSnapshotRows(rows)
+            let deleted = deletedCatalogKeys()
+            let filteredRows = rows.filter { row in
+                if deleted.contains(row.id) { return false }
+                if let key = row.settingsKey, deleted.contains(key) { return false }
+                let normalized = sectionOrderKey(row.id)
+                if deleted.contains(normalized) { return false }
+                return true
+            }
+            let uniqueRows = uniqueSnapshotRows(filteredRows)
             let storageKey = snapshotStorageKey(for: settings)
 
             // Synchronously update in-memory row cache under lock so immediate callers/reads reflect changes
@@ -7595,10 +8074,15 @@ enum TVHomeCatalogOrder {
         } else {
             customTitles = [:]
         }
+        let deleted = deletedCatalogKeys()
         let resolvedRows: [SnapshotRow] = rows.compactMap { (row: [String: String]) -> SnapshotRow? in
             guard let id = row["id"], let title = row["title"] else { return nil }
+            if deleted.contains(id) { return nil }
             let addonName = row["addon"]
             let settingsKey = row["key"]
+            if let settingsKey, deleted.contains(settingsKey) { return nil }
+            let normalized = sectionOrderKey(id)
+            if deleted.contains(normalized) { return nil }
             // Resolve the display title: custom title from sync takes precedence,
             // then strip the add-on name prefix from the persisted catalog name.
             let resolvedTitle: String
@@ -7650,15 +8134,21 @@ enum TVHomeCatalogOrder {
         return rows.filter { seen.insert($0.id).inserted }
     }
 
-    fileprivate static func mergedSnapshotRows(
+    static func mergedSnapshotRows(
         current: [SnapshotRow],
         previous: [SnapshotRow]
     ) -> [SnapshotRow] {
-        var rows = uniqueSnapshotRows(current)
+        let deleted = deletedCatalogKeys()
+        func isDeleted(_ row: SnapshotRow) -> Bool {
+            deleted.contains(row.id)
+                || (row.settingsKey != nil && deleted.contains(row.settingsKey!))
+                || deleted.contains(sectionOrderKey(row.id))
+        }
+        var rows = uniqueSnapshotRows(current).filter { !isDeleted($0) }
         var seen = Set(rows.map(\.id))
 
         for (index, previousRow) in previous.enumerated() {
-            guard seen.insert(previousRow.id).inserted else { continue }
+            guard !isDeleted(previousRow), seen.insert(previousRow.id).inserted else { continue }
             rows.insert(previousRow, at: min(index, rows.count))
         }
         return rows
@@ -7842,6 +8332,49 @@ enum TVHomeCatalogOrder {
         NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 
+    /// Permanently deletes a Home catalog row from snapshots, ordering, and active visibility.
+    static func deleteRow(_ row: SnapshotRow) {
+        var deleted = deletedCatalogKeys()
+        deleted.insert(row.id)
+        if let key = row.settingsKey {
+            deleted.insert(key)
+        }
+        let normalized = sectionOrderKey(row.id)
+        if !normalized.isEmpty {
+            deleted.insert(normalized)
+        }
+        persist(deleted, forKey: SettingsKey.homeCatalogDeleted)
+
+        if let key = row.settingsKey {
+            if key.hasPrefix(TVHomeSection.collectionIdPrefix) {
+                let id = String(key.dropFirst(TVHomeSection.collectionIdPrefix.count))
+                var ids = disabledCollectionIds()
+                ids.insert(id)
+                persist(ids, forKey: SettingsKey.homeCollectionDisabled)
+            } else {
+                var disabled = disabledCatalogKeys()
+                var explicitlyEnabled = localExplicitHomeCatalogKeys()
+                disabled.insert(key)
+                explicitlyEnabled.remove(key)
+                persist(disabled, forKey: SettingsKey.homeCatalogDisabled)
+                persist(explicitlyEnabled, forKey: SettingsKey.homeCatalogExplicitEnabled)
+            }
+        }
+
+        let order = savedOrder().filter { key in
+            key != row.id && (row.settingsKey == nil || key != row.settingsKey!) && key != normalized
+        }
+        save(order)
+
+        let currentSnapshot = snapshotRows().filter { r in
+            r.id != row.id && (row.settingsKey == nil || r.settingsKey != row.settingsKey) && sectionOrderKey(r.id) != normalized
+        }
+        writeSnapshotRows(currentSnapshot)
+
+        NotificationCenter.default.post(name: changedNotification, object: nil)
+        NotificationCenter.default.post(name: snapshotChangedNotification, object: nil)
+    }
+
     private static func persist(_ keys: Set<String>, forKey key: String) {
         guard let data = try? JSONEncoder().encode(Array(keys).sorted()) else { return }
         let usesFileStorage = [
@@ -7850,7 +8383,8 @@ enum TVHomeCatalogOrder {
             SettingsKey.homeCatalogDisabled,
             SettingsKey.homeCollectionDisabled,
             SettingsKey.homeCatalogCustomTitles,
-            SettingsKey.homeCatalogExplicitEnabled
+            SettingsKey.homeCatalogExplicitEnabled,
+            SettingsKey.homeCatalogDeleted
         ].contains(key)
         if usesFileStorage {
             _ = HomeCatalogPayloadStore.write(data, forKey: key)
@@ -8033,6 +8567,13 @@ struct TVHomeContentIdentity: Hashable {
     let catalogRevision: UInt
 }
 
+enum TVProfileGateReadiness: Equatable {
+    case waiting(hasFocusableContent: Bool, targetSignature: String?)
+    case ready(targetSignature: String, storeLoaded: Bool)
+    case empty
+    case overlay
+}
+
 /// Holds the Home screen's browsing state outside `TVHomeView` so it survives
 /// the details/player push (which tears the view down). Owned by `ContentView`;
 /// lets returning from a card restore the cached catalog + the focused card
@@ -8043,6 +8584,7 @@ final class TVHomeStore: ObservableObject {
     }
     @Published var sectionsRevision: UInt = 0
     @Published var hero: NuvioMeta?
+    @Published var lastLoadedAt: Date?
     /// True when any last-known-good tree is available. Cache reuse additionally
     /// requires `loadedContentIdentity` to match the requested profile/revision.
     @Published private(set) var hasLoaded = false
@@ -8092,6 +8634,7 @@ final class TVHomeStore: ObservableObject {
         loadedContentIdentity = identity
         loadingContentIdentity = nil
         hasLoaded = true
+        lastLoadedAt = Date()
     }
 
     func cancelLoad(
@@ -8108,6 +8651,7 @@ final class TVHomeStore: ObservableObject {
         sections = []
         hero = nil
         hasLoaded = false
+        lastLoadedAt = nil
         lastFocusedCardID = nil
         loadedContentIdentity = nil
         loadingContentIdentity = nil
@@ -8389,6 +8933,7 @@ extension TVHeroView: Equatable {
 private struct TVGridHeroSlideshowView: View {
     let items: [NuvioMeta]
     @Binding var selectedIndex: Int
+    let focusRequestGeneration: Int
     let shouldRequestInitialFocus: Bool
     let onInitialFocusRequested: () -> Void
     /// Safe-area inset the artwork bleeds past on each side. Only the backdrop
@@ -8485,6 +9030,11 @@ private struct TVGridHeroSlideshowView: View {
             if let activeItem { artLayer(activeItem) }
         }
         .contentShape(Rectangle())
+        .background {
+            TVNativeFocusObserver(onFocusChange: { focused in
+                onFocusChange?(focused)
+            })
+        }
         .focusable(true)
         .focusEffectDisabledIfAvailable()
         .focused($isFocused)
@@ -8492,6 +9042,9 @@ private struct TVGridHeroSlideshowView: View {
             guard shouldRequestInitialFocus else { return }
             onInitialFocusRequested()
             DispatchQueue.main.async { isFocused = true }
+        }
+        .onChange(of: focusRequestGeneration) { _, _ in
+            isFocused = true
         }
         .onTapGesture {
             if let activeItem { onSelect(activeItem) }
@@ -8511,9 +9064,6 @@ private struct TVGridHeroSlideshowView: View {
             default:
                 break
             }
-        }
-        .onChange(of: isFocused) { _, focused in
-            onFocusChange?(focused)
         }
         .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
             guard items.count > 1 else { return }

@@ -28,6 +28,7 @@
 		<string>vlc-x-callback</string>
 		<string>outplayer</string>
 		<string>open-vidhub</string>
+		<string>senplayer</string>
 	</array>
 	<key>NSSupportsLiveActivities</key>
 	<true/>

@@ -122,6 +122,7 @@ enum SettingsKey {
     static let reduceMotion = "nuvio.tv.settings.appearance.reduceMotion"
 
     static let homeLayout = "nuvio.tv.settings.layout.homeLayout"
+    static let catalogAutoRefreshInterval = "nuvio.tv.settings.layout.catalogAutoRefreshInterval"
     /// JSON `[String]` of home section ids in the user's preferred order.
     static let homeCatalogOrder = "nuvio.tv.settings.layout.homeCatalogOrder"
     /// JSON `[String: String]` snapshot of section id → title, written by Home
@@ -133,6 +134,8 @@ enum SettingsKey {
     /// settings; the repository skips these rows. Not part of `all` — it syncs
     /// through its own RPC, not the tvOS settings blob.
     static let homeCatalogDisabled = "nuvio.tv.settings.layout.homeCatalogDisabled"
+    /// JSON `[String]` of catalog keys or IDs permanently deleted from Home layout.
+    static let homeCatalogDeleted = "nuvio.tv.settings.layout.homeCatalogDeleted"
     /// Local derived source state used to hide stale catalog snapshot rows when
     /// an add-on is disabled before Home has rebuilt its snapshot.
     static let homeCatalogDisabledAddonIDs = "nuvio.tv.settings.layout.homeCatalogDisabledAddonIDs"
@@ -189,6 +192,9 @@ enum SettingsKey {
     static let traktMoreLikeThisSource = "nuvio.tv.settings.integrations.traktMoreLikeThisSource"
     static let simklClientID = "nuvio.tv.settings.integrations.simklClientID"
     static let simklPlanToWatchHomeCatalogs = "nuvio.tv.settings.integrations.simklPlanToWatchHomeCatalogs"
+    static let wetrakrClientID = "nuvio.tv.settings.integrations.wetrakrClientID"
+    static let wetrakrClientSecret = "nuvio.tv.settings.integrations.wetrakrClientSecret"
+    static let wetrakrConnected = "nuvio.tv.settings.integrations.wetrakrConnected"
     static let tmdbEnabled = "nuvio.tv.settings.integrations.tmdbEnabled"
     static let tmdbApiKey = "nuvio.tv.settings.integrations.tmdbApiKey"
     static let tmdbLanguage = "nuvio.tv.settings.integrations.tmdbLanguage"
@@ -309,11 +315,13 @@ enum SettingsKey {
     static let iCloudLastSyncDate = "nuvio.tv.settings.advanced.iCloudLastSyncDate"
     static let simklAccessToken = "nuvio.tv.settings.integrations.simklAccessToken"
     static let simklRefreshToken = "nuvio.tv.settings.integrations.simklRefreshToken"
+    static let wetrakrAccessToken = "nuvio.tv.settings.integrations.wetrakrAccessToken"
+    static let wetrakrRefreshToken = "nuvio.tv.settings.integrations.wetrakrRefreshToken"
 
     /// Credentials and device acknowledgements must remain on this Apple TV
     /// and never enter the account settings payload.
     static let deviceLocal = Set([
-        traktConnected, traktClientID, traktClientSecret, simklClientID, aiSubtitlesGeminiAPIKey,
+        traktConnected, traktClientID, traktClientSecret, simklClientID, wetrakrClientID, wetrakrClientSecret, wetrakrConnected, aiSubtitlesGeminiAPIKey,
         p2pConsentAccepted, iCloudSyncEnabled, iCloudLastSyncDate
     ])
 
@@ -321,7 +329,7 @@ enum SettingsKey {
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
-        homeLayout, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, landscapePosters, discoverLocation,
+        homeLayout, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, landscapePosters, discoverLocation,
         searchStyle,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards,
@@ -331,6 +339,7 @@ enum SettingsKey {
         traktWatchProgressSource, watchProgressSourceChosenByUser,
         traktLibrarySourceMode, traktMoreLikeThisSource,
         simklClientID, simklAccessToken, simklRefreshToken, simklPlanToWatchHomeCatalogs,
+        wetrakrClientID, wetrakrClientSecret, wetrakrAccessToken, wetrakrRefreshToken, wetrakrConnected,
         tmdbEnabled, tmdbApiKey, tmdbLanguage,
         tmdbUseTrailers, tmdbUseArtwork, tmdbUseBasicInfo, tmdbUseDetails, tmdbUseCredits,
         tmdbUseProductions, tmdbUseNetworks, tmdbUseEpisodes, tmdbUseSeasonPosters,
@@ -3405,9 +3414,13 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
     let rows = TVHomeCatalogOrder.snapshotRows()
     let disabledAddonIDs = TVHomeCatalogOrder.disabledAddonIDs()
     let disabledAddonNames = TVHomeCatalogOrder.disabledAddonNames()
+    let deletedKeys = TVHomeCatalogOrder.deletedCatalogKeys()
     let cinemetaPrefix = "\(CinemetaCatalogRepository.cinemetaAddonId)_"
     let isCinemetaActive = CinemetaCatalogRepository.isCinemetaEnabled
     let sourceRows = rows.filter { row in
+        if deletedKeys.contains(row.id) { return false }
+        if let sk = row.settingsKey, deletedKeys.contains(sk) { return false }
+        if deletedKeys.contains(TVHomeCatalogOrder.sectionOrderKey(row.id)) { return false }
         if let addonId = row.addonId, disabledAddonIDs.contains(addonId) {
             return false
         }
@@ -3443,6 +3456,12 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
         ]
         let existingIDs = Set(sourceRows.map(\.id))
         for builtIn in builtIns where !existingIDs.contains(builtIn.id) {
+            let key = TVHomeCatalogOrder.catalogSettingsKey(
+                addonId: CinemetaCatalogRepository.cinemetaAddonId,
+                contentType: builtIn.type,
+                catalogId: builtIn.catalogId
+            )
+            guard !deletedKeys.contains(builtIn.id), !deletedKeys.contains(key) else { continue }
             merged.append(
                 TVHomeCatalogOrder.SnapshotRow(
                     id: builtIn.id,
@@ -3452,11 +3471,7 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
                     contentType: builtIn.type,
                     catalogId: builtIn.catalogId,
                     manifestURL: "https://v3-cinemeta.strem.io/manifest.json",
-                    settingsKey: TVHomeCatalogOrder.catalogSettingsKey(
-                        addonId: CinemetaCatalogRepository.cinemetaAddonId,
-                        contentType: builtIn.type,
-                        catalogId: builtIn.catalogId
-                    )
+                    settingsKey: key
                 )
             )
         }
@@ -3476,6 +3491,7 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
                 contentType: row.type,
                 catalogId: row.catalogId
             )
+            guard !deletedKeys.contains(row.id), !deletedKeys.contains(key) else { continue }
             merged.append(
                 TVHomeCatalogOrder.SnapshotRow(
                     id: row.id,
@@ -3530,12 +3546,17 @@ private struct IntegrationSettingsView: View {
     @StateObject private var traktViewModel: TraktSettingsViewModel
     @StateObject private var simklViewModel: SimklSettingsViewModel
     @StateObject private var mdbListViewModel: MdbListSettingsViewModel
+    @StateObject private var wetrakrViewModel: WeTrakrSettingsViewModel
     @AppStorage private var traktClientID: String
     @AppStorage private var traktClientSecret: String
     @AppStorage private var simklClientID: String
+    @AppStorage private var wetrakrClientID: String
+    @AppStorage private var wetrakrClientSecret: String
     @State private var traktClientIDDraft: String
     @State private var traktClientSecretDraft: String
     @State private var simklClientIDDraft: String
+    @State private var wetrakrClientIDDraft: String
+    @State private var wetrakrClientSecretDraft: String
     @AppStorage(SettingsKey.tmdbEnabled) private var tmdbEnabled = false
     @AppStorage(SettingsKey.tmdbApiKey) private var tmdbApiKey = ""
     @AppStorage(SettingsKey.mdbListEnabled) private var mdbListEnabled = false
@@ -3560,6 +3581,8 @@ private struct IntegrationSettingsView: View {
     @State private var showingSimklSettings = false
     @State private var showingMdbListLogin = false
     @State private var showingMdbListSettings = false
+    @State private var showingWeTrakrLogin = false
+    @State private var showingWeTrakrSettings = false
     @State private var showingTmdbOptions = false
     @State private var showingMdbListOptions = false
     @State private var showingAISubtitleOptions = false
@@ -3574,6 +3597,8 @@ private struct IntegrationSettingsView: View {
         let storedTraktClientID = profileStore.string(forKey: SettingsKey.traktClientID) ?? ""
         let storedTraktClientSecret = profileStore.string(forKey: SettingsKey.traktClientSecret) ?? ""
         let storedSimklClientID = profileStore.string(forKey: SettingsKey.simklClientID) ?? ""
+        let storedWeTrakrClientID = profileStore.string(forKey: SettingsKey.wetrakrClientID) ?? ""
+        let storedWeTrakrClientSecret = profileStore.string(forKey: SettingsKey.wetrakrClientSecret) ?? ""
         _traktViewModel = StateObject(
             wrappedValue: TraktSettingsViewModel(store: profileStore)
         )
@@ -3582,6 +3607,9 @@ private struct IntegrationSettingsView: View {
         )
         _mdbListViewModel = StateObject(
             wrappedValue: MdbListSettingsViewModel(store: profileStore, profileScope: profileScope)
+        )
+        _wetrakrViewModel = StateObject(
+            wrappedValue: WeTrakrSettingsViewModel(store: profileStore, profileScope: profileScope)
         )
         _traktClientID = AppStorage(
             wrappedValue: "",
@@ -3598,9 +3626,21 @@ private struct IntegrationSettingsView: View {
             SettingsKey.simklClientID,
             store: profileStore
         )
+        _wetrakrClientID = AppStorage(
+            wrappedValue: "",
+            SettingsKey.wetrakrClientID,
+            store: profileStore
+        )
+        _wetrakrClientSecret = AppStorage(
+            wrappedValue: "",
+            SettingsKey.wetrakrClientSecret,
+            store: profileStore
+        )
         _traktClientIDDraft = State(initialValue: storedTraktClientID)
         _traktClientSecretDraft = State(initialValue: storedTraktClientSecret)
         _simklClientIDDraft = State(initialValue: storedSimklClientID)
+        _wetrakrClientIDDraft = State(initialValue: storedWeTrakrClientID)
+        _wetrakrClientSecretDraft = State(initialValue: storedWeTrakrClientSecret)
         _p2pEnabled = AppStorage(
             wrappedValue: false,
             SettingsKey.p2pEnabled,
@@ -3654,6 +3694,47 @@ private struct IntegrationSettingsView: View {
             }
 
             SettingsGroup(
+                title: L10n.string("settings_mdblist_title", fallback: "MDBList (Watch Progress & Scrobble)"),
+                subtitle: L10n.string(
+                    "tvos_settings_mdblist_tracking_subtitle",
+                    fallback: "Sync playback, watched history, and Continue Watching with your MDBList account"
+                )
+            ) {
+                MdbListConnectionSettingsCard(
+                    viewModel: mdbListViewModel,
+                    accentColor: accentColor,
+                    onStartLogin: connectMdbList,
+                    onOpenSettings: { showingMdbListSettings = true }
+                )
+            }
+
+            SettingsGroup(
+                title: "WeTrakr",
+                subtitle: "Track movies, TV shows and anime with watch history and scrobbling"
+            ) {
+                SettingsTextFieldRow(
+                    title: "WeTrakr Client ID",
+                    subtitle: "Your app key from WeTrakr Settings API — stored only on this Apple TV",
+                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                    text: $wetrakrClientIDDraft,
+                    onCommit: {
+                        wetrakrClientID = wetrakrClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        wetrakrViewModel.credentialsDidChange()
+                    }
+                )
+
+                SettingsInfoRow(title: "WeTrakr Activation URL", value: WeTrakrConfig.activationURL)
+
+                WeTrakrConnectionSettingsCard(
+                    viewModel: wetrakrViewModel,
+                    accentColor: accentColor,
+                    credentialsReady: wetrakrCredentialsReady,
+                    onStartLogin: connectWeTrakr,
+                    onOpenSettings: { showingWeTrakrSettings = true }
+                )
+            }
+
+            SettingsGroup(
                 title: L10n.string("mdblist_trakt_title", fallback: "Trakt"),
                 subtitle: L10n.string(
                     "tvos_integrations_trakt_subtitle",
@@ -3694,21 +3775,6 @@ private struct IntegrationSettingsView: View {
                     credentialsReady: traktCredentialsReady,
                     onStartLogin: connectTrakt,
                     onOpenSettings: { showingTraktSettings = true }
-                )
-            }
-
-            SettingsGroup(
-                title: L10n.string("settings_mdblist_title", fallback: "MDBList (Watch Progress & Scrobble)"),
-                subtitle: L10n.string(
-                    "tvos_settings_mdblist_tracking_subtitle",
-                    fallback: "Sync playback, watched history, and Continue Watching with your MDBList account"
-                )
-            ) {
-                MdbListConnectionSettingsCard(
-                    viewModel: mdbListViewModel,
-                    accentColor: accentColor,
-                    onStartLogin: connectMdbList,
-                    onOpenSettings: { showingMdbListSettings = true }
                 )
             }
 
@@ -3892,6 +3958,8 @@ private struct IntegrationSettingsView: View {
             simklViewModel.reload()
             simklViewModel.loadConnectedData()
             mdbListViewModel.reload()
+            wetrakrViewModel.reload()
+            wetrakrViewModel.loadConnectedData()
         }
         .alert(
             L10n.string("tvos_settings_p2p_consent_title", fallback: "P2P Torrent Streaming"),
@@ -3981,6 +4049,19 @@ private struct IntegrationSettingsView: View {
             MdbListConnectedSettingsSheet(viewModel: mdbListViewModel, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
+        .sheet(isPresented: $showingWeTrakrLogin, onDismiss: {
+            wetrakrViewModel.reload()
+            if wetrakrViewModel.mode == .connected {
+                showingWeTrakrSettings = true
+            }
+        }) {
+            WeTrakrDeviceLoginSheet(viewModel: wetrakrViewModel, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .sheet(isPresented: $showingWeTrakrSettings) {
+            WeTrakrConnectedSettingsSheet(viewModel: wetrakrViewModel, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
         .sheet(isPresented: $showingTmdbOptions) {
             TmdbOptionsSheet(accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
@@ -4001,6 +4082,9 @@ private struct IntegrationSettingsView: View {
         }
         .onChange(of: mdbListViewModel.mode) { _, mode in
             if mode == .connected { showingMdbListLogin = false }
+        }
+        .onChange(of: wetrakrViewModel.mode) { _, mode in
+            if mode == .connected { showingWeTrakrLogin = false }
         }
         .onChange(of: debridProvider) { _, newKind in
             guard let kind = DebridProviderKind(rawValue: newKind) else { return }
@@ -4034,6 +4118,20 @@ private struct IntegrationSettingsView: View {
             if simklClientID != trimmed {
                 simklClientID = trimmed
                 simklViewModel.credentialsDidChange()
+            }
+        }
+        .onChange(of: wetrakrClientIDDraft) { _, newValue in
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if wetrakrClientID != trimmed {
+                wetrakrClientID = trimmed
+                wetrakrViewModel.credentialsDidChange()
+            }
+        }
+        .onChange(of: wetrakrClientSecretDraft) { _, newValue in
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if wetrakrClientSecret != trimmed {
+                wetrakrClientSecret = trimmed
+                wetrakrViewModel.credentialsDidChange()
             }
         }
     }
@@ -4131,6 +4229,20 @@ private struct IntegrationSettingsView: View {
     private func connectMdbList() {
         mdbListViewModel.reload()
         showingMdbListLogin = true
+    }
+
+    private var wetrakrCredentialsReady: Bool {
+        !wetrakrClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func connectWeTrakr() {
+        wetrakrClientID = wetrakrClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        wetrakrViewModel.credentialsDidChange()
+        guard wetrakrCredentialsReady else { return }
+        showingWeTrakrLogin = true
+        if wetrakrViewModel.mode != .awaitingApproval {
+            wetrakrViewModel.startLogin()
+        }
     }
 }
 
@@ -6792,6 +6904,389 @@ private struct SimklLoadingDebugReport: View {
     }
 }
 
+// MARK: - WeTrakr Views
+
+private struct WeTrakrConnectionSettingsCard: View {
+    @ObservedObject var viewModel: WeTrakrSettingsViewModel
+    let accentColor: Color
+    let credentialsReady: Bool
+    let onStartLogin: () -> Void
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 18) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.50, green: 0.18, blue: 0.76),
+                                    Color(red: 0.32, green: 0.08, blue: 0.54)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Text("WeTrakr")
+                        .font(.system(size: 19, weight: .black))
+                        .foregroundColor(.white)
+                }
+                .frame(width: 112, height: 62)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(statusTitle)
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
+
+                    Text(statusSubtitle)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 16)
+            }
+
+            switch viewModel.mode {
+            case .disconnected, .awaitingApproval:
+                SettingsActionRow(
+                    title: viewModel.mode == .awaitingApproval
+                        ? "Continue WeTrakr Login"
+                        : "Connect with WeTrakr",
+                    subtitle: credentialsReady
+                        ? "Scan the QR or enter the PIN at wetrakr.com/activate"
+                        : "Enter your WeTrakr Client ID first",
+                    value: viewModel.mode == .awaitingApproval
+                        ? "Resume"
+                        : "Connect",
+                    accentColor: accentColor
+                ) {
+                    onStartLogin()
+                }
+                .opacity(credentialsReady ? 1 : 0.5)
+                .disabled(!credentialsReady)
+            case .connected:
+                SettingsActionRow(
+                    title: "WeTrakr Account",
+                    subtitle: "View the connected account or disconnect this profile",
+                    value: "Open",
+                    accentColor: accentColor,
+                    action: onOpenSettings
+                )
+            }
+
+            if let message = viewModel.statusMessage, !message.isEmpty, viewModel.mode == .connected {
+                Text(message)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundColor(.white.opacity(0.62))
+            }
+            if let error = viewModel.errorMessage, !error.isEmpty, viewModel.mode != .awaitingApproval {
+                Text(error)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(Color(red: 1.0, green: 0.43, blue: 0.43))
+            }
+        }
+    }
+
+    private var statusTitle: String {
+        switch viewModel.mode {
+        case .connected:
+            let name = (viewModel.displayName ?? viewModel.username ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? "Connected" : "Connected as \(name)"
+        case .awaitingApproval:
+            return "Approval Pending"
+        case .disconnected:
+            return "Not Connected"
+        }
+    }
+
+    private var statusSubtitle: String {
+        switch viewModel.mode {
+        case .connected:
+            return "Tracks watch progress, scrobbling, and history seamlessly across devices."
+        case .awaitingApproval:
+            return "Authorization code active. Scan the QR or visit wetrakr.com/activate to finish."
+        case .disconnected:
+            return credentialsReady
+                ? "Start the device pairing flow to sign in with your WeTrakr account."
+                : "Enter your WeTrakr Client ID above to enable connection."
+        }
+    }
+}
+
+private struct WeTrakrDeviceLoginSheet: View {
+    @ObservedObject var viewModel: WeTrakrSettingsViewModel
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var activationURL: String {
+        viewModel.verificationURI ?? WeTrakrConfig.activationURL
+    }
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Text(viewModel.mode == .connected ? "WeTrakr Connected" : "Connect WeTrakr")
+                .font(.system(size: 42, weight: .regular))
+                .foregroundColor(.white)
+
+            if viewModel.mode == .connected {
+                Text((viewModel.displayName ?? viewModel.username).map { "Signed in as \($0)" } ?? "This Apple TV is linked to WeTrakr.")
+                    .font(.system(size: 23, weight: .medium))
+                    .foregroundColor(.white.opacity(0.66))
+                    .multilineTextAlignment(.center)
+                dialogButton(title: "Done", isPrimary: true) { dismiss() }
+            } else if let code = viewModel.deviceUserCode, !code.isEmpty {
+                Text("Scan the QR code on your phone, or open the link below and enter the activation code.")
+                    .font(.system(size: 23, weight: .medium))
+                    .foregroundColor(.white.opacity(0.68))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let image = QRCode.image(from: activationURL, scale: 10) {
+                    Image(uiImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 300, height: 300)
+                        .padding(16)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                }
+
+                VStack(spacing: 12) {
+                    Text(code)
+                        .font(.system(size: 54, weight: .bold, design: .rounded))
+                        .tracking(4)
+                        .foregroundColor(.white)
+                        .accessibilityLabel("WeTrakr activation code \(code)")
+                    Text(activationURL)
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.white.opacity(0.54))
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 10) {
+                    if viewModel.isPolling { ProgressView().tint(.white) }
+                    Text(viewModel.statusMessage ?? "Waiting for approval…")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.white.opacity(0.64))
+                }
+
+                if let error = viewModel.errorMessage, !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Color(red: 1.0, green: 0.43, blue: 0.43))
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 18) {
+                    dialogButton(title: "Cancel", isPrimary: false) {
+                        viewModel.cancelLogin()
+                        dismiss()
+                    }
+                    dialogButton(title: "Retry", isPrimary: true) {
+                        viewModel.cancelLogin()
+                        viewModel.startLogin()
+                    }
+                }
+            } else if viewModel.errorMessage == nil {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                    .frame(height: 320)
+                Text(viewModel.statusMessage ?? "Starting WeTrakr login…")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(.white.opacity(0.64))
+                dialogButton(title: "Cancel", isPrimary: false) {
+                    viewModel.cancelLogin()
+                    dismiss()
+                }
+            } else {
+                Text(viewModel.errorMessage ?? "Unable to start WeTrakr login.")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(Color(red: 1.0, green: 0.43, blue: 0.43))
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 18) {
+                    dialogButton(title: "Close", isPrimary: false) { dismiss() }
+                    dialogButton(title: "Retry", isPrimary: true) { viewModel.startLogin() }
+                }
+            }
+        }
+        .frame(width: 960)
+        .padding(.horizontal, 88)
+        .padding(.vertical, 64)
+        .loginGlassPanel()
+        .onAppear {
+            viewModel.reload()
+            if viewModel.mode == .disconnected && viewModel.deviceUserCode == nil {
+                viewModel.startLogin()
+            }
+        }
+        .onChange(of: viewModel.mode) { _, mode in
+            if mode == .connected {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    dismiss()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dialogButton(title: String, isPrimary: Bool, action: @escaping () -> Void) -> some View {
+        ProviderLoginGlassButton(title: title, isPrimary: isPrimary, action: action)
+    }
+}
+
+private struct WeTrakrConnectedSettingsSheet: View {
+    @ObservedObject var viewModel: WeTrakrSettingsViewModel
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @State private var showingDisconnectConfirmation = false
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("WeTrakr")
+                                .font(.system(size: 36, weight: .bold))
+                                .foregroundColor(.white)
+
+                            Text(connectedSubtitle)
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
+                        }
+
+                        SettingsGroup(
+                            title: "Account",
+                            subtitle: "Account information returned by WeTrakr"
+                        ) {
+                            if let username = viewModel.username, !username.isEmpty {
+                                SettingsInfoRow(title: "Username", value: username)
+                            }
+                            if let displayName = viewModel.displayName, !displayName.isEmpty {
+                                SettingsInfoRow(title: "Display Name", value: displayName)
+                            }
+                            if let plan = viewModel.accountPlan, !plan.isEmpty {
+                                SettingsInfoRow(title: "Plan", value: plan.uppercased())
+                            }
+                            if let accountID = viewModel.accountID, !accountID.isEmpty {
+                                SettingsInfoRow(title: "Account ID", value: accountID)
+                            }
+                            SettingsInfoRow(title: "Auth Protocol", value: "OAuth 2.0 (Device Flow)")
+                            SettingsActionRow(
+                                title: "Disconnect",
+                                subtitle: "Remove this profile's WeTrakr tokens from this Apple TV",
+                                value: "Disconnect",
+                                accentColor: accentColor
+                            ) {
+                                showingDisconnectConfirmation = true
+                            }
+                        }
+
+                        SettingsGroup(
+                            title: "WeTrakr Features",
+                            subtitle: "Choose how WeTrakr is used throughout Nuvio"
+                        ) {
+                            SettingsChoiceRow(
+                                title: "Watch Progress",
+                                subtitle: "Use WeTrakr for Resume, Continue Watching, and scrobbling",
+                                selection: watchProgressSelection,
+                                options: RemoteTrackingState.availableProgressSources().map(\.label),
+                                accentColor: accentColor
+                            )
+
+                            SettingsChoiceRow(
+                                title: "Library Source",
+                                subtitle: "Use WeTrakr tracking lists as your Nuvio library",
+                                selection: librarySourceSelection,
+                                options: RemoteTrackingState.availableLibrarySources().map(\.label),
+                                accentColor: accentColor
+                            )
+
+                            SettingsActionRow(
+                                title: "Sync Now",
+                                subtitle: "Refresh WeTrakr watch progress, account data, and tracking items",
+                                value: (viewModel.isLoading || viewModel.isStatsLoading) ? "Syncing" : "Refresh",
+                                accentColor: accentColor
+                            ) {
+                                viewModel.refreshNow()
+                            }
+                            .disabled(viewModel.isLoading || viewModel.isStatsLoading)
+                        }
+
+                        if let message = viewModel.statusMessage, !message.isEmpty {
+                            Text(message)
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
+                        }
+                        if let error = viewModel.errorMessage, !error.isEmpty {
+                            Text(error)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.red.opacity(0.9))
+                        }
+                    }
+                    .frame(width: 1_000, alignment: .leading)
+                    .padding(.horizontal, 52)
+                    .padding(.vertical, 38)
+                }
+                .focusSection()
+            }
+        }
+        .onExitCommand { dismiss() }
+        .task {
+            viewModel.reload()
+            viewModel.loadConnectedData()
+        }
+        .onChange(of: viewModel.mode) { _, mode in
+            if mode != .connected { dismiss() }
+        }
+        .confirmationDialog(
+            "Disconnect WeTrakr?",
+            isPresented: $showingDisconnectConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect", role: .destructive) {
+                viewModel.disconnect()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private var connectedSubtitle: String {
+        let name = (viewModel.displayName ?? viewModel.username ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Manage WeTrakr sync and account options." : "Connected as \(name). Manage sync and account options."
+    }
+
+    private var watchProgressSelection: Binding<String> {
+        Binding(
+            get: { TraktSettingsStore.watchProgressSource.label },
+            set: { label in
+                TraktSettingsStore.markWatchProgressSourceChosenByUser()
+                TraktSettingsStore.watchProgressSource =
+                    TraktWatchProgressSource.allCases.first { $0.label == label } ?? .wetrakr
+            }
+        )
+    }
+
+    private var librarySourceSelection: Binding<String> {
+        Binding(
+            get: { TraktSettingsStore.librarySourceMode.label },
+            set: { label in
+                TraktSettingsStore.librarySourceMode =
+                    TraktLibrarySourceMode.allCases.first { $0.label == label } ?? .local
+            }
+        )
+    }
+}
+
 private struct ProviderLoginGlassButton: View {
     let title: String
     let isPrimary: Bool
@@ -6906,7 +7401,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsOptionRow(
                     title: L10n.string("tvos_settings_external_player", fallback: "External Player"),
-                    subtitle: L10n.string("tvos_settings_hand_streams_to_infuse_vlc_outplayer_npl_fb341610", fallback: "Hand streams to Infuse, VLC, Outplayer, nPlayer, or VidHub when installed"),
+                    subtitle: L10n.string("tvos_settings_hand_streams_to_infuse_vlc_outplayer_npl_fb341610", fallback: "Hand streams to Infuse, VLC, Outplayer, nPlayer, VidHub, or SenPlayer when installed"),
                     selection: $externalPlayer,
                     options: externalPlayers,
                     accentColor: accentColor
@@ -10207,6 +10702,8 @@ private struct AddonReorderButton: View {
 @MainActor
 private struct HomeCatalogOrderSection: View {
     let accentColor: Color
+    @AppStorage(SettingsKey.catalogAutoRefreshInterval) private var catalogAutoRefreshInterval = "30 Minutes"
+    private let catalogAutoRefreshOptions = ["Disabled", "15 Minutes", "30 Minutes", "1 Hour", "Always"]
     @State private var rows: [TVHomeCatalogOrder.SnapshotRow] = []
     /// Enabled state per row, read once on appear and updated by the taps here.
     /// Kept beside `rows` rather than re-read per redraw: each read decodes two
@@ -10215,6 +10712,23 @@ private struct HomeCatalogOrderSection: View {
 
     var body: some View {
         SettingsGroup(title: L10n.string("tvos_settings_home_catalogs", fallback: "Home Catalogs"), subtitle: L10n.string("tvos_settings_controls_catalog_and_collection_row_orde_b7069193", fallback: "Controls catalog and collection row order on Home")) {
+            SettingsActionRow(
+                title: L10n.string("settings_refresh_all_catalogs_now", fallback: "Refresh All Catalogs"),
+                subtitle: L10n.string("settings_refresh_all_catalogs_subtitle", fallback: "Reload fresh items from all add-ons now"),
+                value: L10n.string("settings_refresh_action", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                NotificationCenter.default.post(name: TVHomeCatalogOrder.forceRefreshNotification, object: nil)
+            }
+
+            SettingsOptionRow(
+                title: L10n.string("settings_catalog_auto_refresh", fallback: "Auto-Refresh Catalogs"),
+                subtitle: L10n.string("settings_catalog_auto_refresh_subtitle", fallback: "Reload catalogs after inactivity when returning to Home"),
+                selection: $catalogAutoRefreshInterval,
+                options: catalogAutoRefreshOptions,
+                accentColor: accentColor
+            )
+
             if rows.isEmpty {
                 SettingsInfoRow(title: L10n.string("tvos_settings_no_rows_recorded_yet", fallback: "No rows recorded yet"), value: L10n.string("tvos_settings_open_home_once", fallback: "Open Home once"))
             } else {
@@ -10227,7 +10741,9 @@ private struct HomeCatalogOrderSection: View {
                         accentColor: accentColor,
                         canMoveUp: index > 0,
                         canMoveDown: index < rows.count - 1,
+                        canDelete: row.settingsKey != nil,
                         onToggle: { setEnabled(row, isEnabled: !(enabledByRowId[row.id] ?? true)) },
+                        onDelete: row.settingsKey != nil ? { deleteRow(row) } : nil,
                         onMove: { up in move(index, up: up) }
                     )
                 }
@@ -10265,6 +10781,14 @@ private struct HomeCatalogOrderSection: View {
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
     }
 
+    private func deleteRow(_ row: TVHomeCatalogOrder.SnapshotRow) {
+        guard row.settingsKey != nil else { return }
+        rows.removeAll { $0.id == row.id }
+        enabledByRowId.removeValue(forKey: row.id)
+        TVHomeCatalogOrder.deleteRow(row)
+        NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+    }
+
     private func move(_ index: Int, up: Bool) {
         let target = up ? index - 1 : index + 1
         guard rows.indices.contains(index), rows.indices.contains(target) else { return }
@@ -10285,7 +10809,9 @@ private struct HomeCatalogOrderRow: View {
     let accentColor: Color
     let canMoveUp: Bool
     let canMoveDown: Bool
+    var canDelete: Bool = true
     let onToggle: () -> Void
+    var onDelete: (() -> Void)? = nil
     let onMove: (Bool) -> Void
 
     @FocusState private var isFocused: Bool
@@ -10321,6 +10847,9 @@ private struct HomeCatalogOrderRow: View {
             .focusEffectDisabledIfAvailable()
             .entryLockable()
 
+            if let onDelete {
+                AddonReorderButton(systemImage: "trash", disabled: !canDelete, action: onDelete)
+            }
             AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) { onMove(true) }
             AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) { onMove(false) }
         }

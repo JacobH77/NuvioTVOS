@@ -70,6 +70,29 @@ private val iosExternalPlayerSpecs = listOf(
             "open-vidhub://x-callback-url/open?url=${request.sourceUrl.urlQueryEncode()}"
         },
     ),
+    IosExternalPlayerSpec(
+        id = "senplayer",
+        name = "SenPlayer",
+        scheme = "senplayer",
+        buildUrl = { request ->
+            buildString {
+                append("senplayer://x-callback-url/play?url=")
+                append(request.sourceUrl.urlQueryEncode())
+                val baseTitle = request.buildPlayerTitle(includeEpisodeTitle = true)
+                val filename = if (baseTitle.contains('.')) baseTitle else "$baseTitle.mp4"
+                append("&filename=")
+                append(filename.urlQueryEncode())
+                if (request.resumePositionMs > 0L) {
+                    append("&position=")
+                    append(request.resumePositionMs / 1000L)
+                }
+                request.subtitles?.forEach { subtitle ->
+                    append("&sub=")
+                    append(subtitle.url.urlQueryEncode())
+                }
+            }
+        },
+    ),
 )
 
 internal actual object ExternalPlayerPlatform {
