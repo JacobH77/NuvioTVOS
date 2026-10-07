@@ -344,6 +344,7 @@ struct TVCatalogRow: View {
     var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
     var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
     var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
+    var onRefreshCatalog: (() -> Void)? = nil
     var onMove: ((MoveCommandDirection) -> Void)? = nil
 
     @State private var scrollIndex: Int?
@@ -607,6 +608,7 @@ struct TVCatalogRow: View {
                     onRemoveFromContinueWatching: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
                         if let p = progressItem { onRemoveFromContinueWatching?(p) }
                     } : nil,
+                    onRefreshCatalog: onRefreshCatalog,
                     cardIndex: itemIndex,
                     layoutMode: rowHomeLayout,
                     showPosterLabels: rowPosterLabels,
@@ -776,8 +778,10 @@ struct TVHomeCatalogGridSection: View {
     var showAddonName: Bool = true
     let onInitialFocusRequested: () -> Void
     let onFocus: (NuvioMeta) -> Void
+    var onBlur: ((NuvioMeta) -> Void)? = nil
     let onSelect: (NuvioMeta) -> Void
     var onLongPress: ((NuvioMeta) -> Void)? = nil
+    var onRefreshCatalog: (() -> Void)? = nil
     let onSeeAllFocus: () -> Void
     let onSeeAll: () -> Void
 
@@ -789,6 +793,14 @@ struct TVHomeCatalogGridSection: View {
 
     private var seeAllKey: String {
         "\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"
+    }
+
+    private var defaultFocusCardKey: String? {
+        guard let first = previewItems.first else { return nil }
+        if let initialFocusCardKey, previewItems.contains(where: { TVHomeCardIdentity.key(rowID: section.id, item: $0) == initialFocusCardKey }) {
+            return initialFocusCardKey
+        }
+        return TVHomeCardIdentity.key(rowID: section.id, item: first)
     }
 
     var body: some View {
@@ -831,7 +843,9 @@ struct TVHomeCatalogGridSection: View {
                         shouldRequestInitialFocus: shouldRequestInitialFocus,
                         onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
                         onFocus: { onFocus($0) },
-                        onLongPress: onLongPress.map { cb in { cb(item) } }
+                        onBlur: onBlur,
+                        onLongPress: onLongPress.map { cb in { cb(item) } },
+                        onRefreshCatalog: onRefreshCatalog
                     ) {
                         onSelect(item)
                     }
@@ -854,6 +868,7 @@ struct TVHomeCatalogGridSection: View {
             }
         }
         .padding(.horizontal, TVHomeGridLayout.horizontalPadding)
+        .defaultFocusIfAvailable(externalFocus, defaultFocusCardKey)
     }
 }
 
@@ -865,6 +880,7 @@ struct TVHomeSeeAllCard: View {
     var shouldRequestInitialFocus = false
     var onInitialFocusRequested: (() -> Void)? = nil
     let onFocus: () -> Void
+    var onBlur: (() -> Void)? = nil
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -912,13 +928,12 @@ struct TVHomeSeeAllCard: View {
             )
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1)
         }
-        .buttonStyle(PosterCardButtonStyle())
+        .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
+            if focused { onFocus() } else { onBlur?() }
+        }))
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue))
         .focusEffectDisabledIfAvailable()
-        .onChange(of: isFocused) { _, focused in
-            if focused { onFocus() }
-        }
         .onAppear {
             guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
             didRequestInitialFocus = true
@@ -1152,6 +1167,7 @@ struct TVCollectionFolderRow: View {
     var suppressFocusAnimations = false
     let onInitialFocusRequested: () -> Void
     let onFocus: (TVCollectionFolderItem) -> Void
+    var onBlur: ((TVCollectionFolderItem) -> Void)? = nil
     let onSelect: (TVCollectionFolderItem) -> Void
     var onMove: ((MoveCommandDirection) -> Void)? = nil
 
@@ -1331,6 +1347,7 @@ struct TVCollectionFolderRow: View {
                         }
                         onFocus(folder)
                     },
+                    onBlur: { onBlur?(folder) },
                     layoutMode: rowHomeLayout,
                     showPosterLabels: rowPosterLabels,
                     smoothFocusAnimations: rowSmoothFocus && !fastNavigation,
@@ -1419,6 +1436,7 @@ struct TVCollectionFolderCard: View {
     var externalFocus: FocusState<String?>.Binding? = nil
     var externalFocusValue: String? = nil
     var onFocus: (() -> Void)? = nil
+    var onBlur: (() -> Void)? = nil
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
     var smoothFocusAnimations: Bool = true
@@ -1518,15 +1536,14 @@ struct TVCollectionFolderCard: View {
             Button(action: onSelect) {
                 cardContent
             }
-            .buttonStyle(PosterCardButtonStyle())
+            .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
+                if focused { onFocus?() } else { onBlur?() }
+            }))
             .disabled(!allowsFocus)
             .focused($isFocused)
             .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? folder.id))
             .focusEffectDisabledIfAvailable()
             .modifier(OptionalMoveCommandHandler(handler: onMove))
-            .onChange(of: isFocused) { _, focused in
-                if focused { onFocus?() }
-            }
             .onAppear {
                 guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
                 didRequestInitialFocus = true

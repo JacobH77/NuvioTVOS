@@ -202,6 +202,7 @@ struct PosterCard: View {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onRefreshCatalog: (() -> Void)? = nil
     var cardIndex: Int? = nil
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
@@ -246,32 +247,34 @@ struct PosterCard: View {
         // Keep directional input in tvOS's focus engine. Per-card move
         // handlers bypass the clickpad dead zone and can turn a light touch
         // into an immediate focus change.
-        Button(action: onClick) {
-            posterContent
-        }
-        .buttonStyle(PosterCardButtonStyle())
-        .disabled(!allowsFocus)
-        .focused($isFocused)
-        .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
-        .nuvioFocusEffectDisabledIfAvailable()
-        .modifier(OptionalMoveCommandHandler(handler: onMove))
-        .titleActionsContextMenu(
-            meta: meta,
-            onOpenDetails: onOpenDetails ?? onClick,
-            continueProgress: continueProgress,
-            continueIsUpNext: continueIsUpNext,
-            onPlayManually: onPlayManually,
-            onStartFromBeginning: onStartFromBeginning,
-            onRemoveFromContinueWatching: onRemoveFromContinueWatching
-        )
+        ZStack(alignment: .topLeading) {
+            Button(action: onClick) {
+                posterContent
+            }
+            .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
+                if focused { onFocus?(meta) } else { onBlur?(meta) }
+            }))
+            .disabled(!allowsFocus)
+            .focused($isFocused)
+            .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
+            .nuvioFocusEffectDisabledIfAvailable()
+            .modifier(OptionalMoveCommandHandler(handler: onMove))
+            .titleActionsContextMenu(
+                meta: meta,
+                onOpenDetails: onOpenDetails ?? onClick,
+                continueProgress: continueProgress,
+                continueIsUpNext: continueIsUpNext,
+                onPlayManually: onPlayManually,
+                onStartFromBeginning: onStartFromBeginning,
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onRefreshCatalog: onRefreshCatalog
+            )
             .onChange(of: isFocused) { _, focused in
                 if focused {
-                    onFocus?(meta)
                     didFinishTrailerPreview = false
                 } else {
                     landscapePreloadArmed = false
                     cancelTrailerPreview()
-                    onBlur?(meta)
                 }
             }
             // A task keyed to the real rendered state cannot miss the landscape
@@ -318,18 +321,17 @@ struct PosterCard: View {
                     didRequestInitialFocus = false
                 }
             }
-            // The row cell takes the full (landscape) width so neighbouring
-            // cards are pushed aside rather than overlapped, while the focusable
-            // surface stays portrait-width — keeping up/down navigation aligned.
             .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
-            .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
-            // Critically damped — no overshoot when expanding to landscape on Home.
-            .animation(
-                effectiveSmoothFocus
-                    ? .spring(response: landscapeTransitionDuration, dampingFraction: 1.0)
-                    : nil,
-                value: effectiveLandscape
-            )
+        }
+        .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
+        .zIndex(showsFocusedAppearance ? 1 : 0)
+        // Critically damped — no overshoot when expanding to landscape on Home.
+        .animation(
+            effectiveSmoothFocus
+                ? .spring(response: landscapeTransitionDuration, dampingFraction: 1.0)
+                : nil,
+            value: effectiveLandscape
+        )
         #else
         Button(action: onClick) {
             posterContent
@@ -342,7 +344,8 @@ struct PosterCard: View {
             continueIsUpNext: continueIsUpNext,
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
-            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onRefreshCatalog: onRefreshCatalog
         )
         .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
         #endif
@@ -680,11 +683,14 @@ struct PosterCard: View {
         return effectiveHomeLayout == "Compact" ? 170 : 210
     }
 
-    /// Width the card occupies in the row layout — and therefore its focus
-    /// frame. Always the portrait width for dynamic expansion, but full width
-    /// for always-landscape / square items.
+    /// Keep the focusable surface aligned with the standard portrait column
+    /// when a landscape card is displayed. The artwork remains landscape,
+    /// but tvOS should use the leading edge for vertical row matching.
     private var layoutWidth: CGFloat {
-        if isEffectivelyAlwaysLandscape || tileShape == .square || meta.tileShape == .square {
+        if effectiveLandscape {
+            return effectiveHomeLayout == "Compact" ? 170 : 210
+        }
+        if tileShape == .square || meta.tileShape == .square {
             return cardWidth
         }
         return effectiveHomeLayout == "Compact" ? 170 : 210
@@ -1247,10 +1253,12 @@ struct PosterGridCard: View {
     var shouldRequestInitialFocus = false
     var onInitialFocusRequested: (() -> Void)? = nil
     var onFocus: ((NuvioMeta) -> Void)? = nil
+    var onBlur: ((NuvioMeta) -> Void)? = nil
     var onLongPress: (() -> Void)? = nil
     /// Forces the title/subtitle caption to render regardless of the user's
     /// global poster-labels setting (used by Search's Netflix-style grid).
     var forceShowLabels = false
+    var onRefreshCatalog: (() -> Void)? = nil
     /// Optional directional-command hook used by grid search views to transfer
     /// focus to their keyboard controls at a grid boundary.
     var onMove: ((MoveCommandDirection) -> Void)? = nil
@@ -1332,18 +1340,18 @@ struct PosterGridCard: View {
             cardContent
                 .scaleEffect(showsFocusedAppearance ? 1.06 : 1.0)
         }
-        .buttonStyle(PosterCardButtonStyle())
+        .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
+            if focused { onFocus?(meta) } else { onBlur?(meta) }
+        }))
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusValue ?? meta.id))
         .focusEffectDisabledIfAvailable()
         .modifier(OptionalMoveCommandHandler(handler: onMove))
         .titleActionsContextMenu(
             meta: meta,
-            onOpenDetails: action
+            onOpenDetails: action,
+            onRefreshCatalog: onRefreshCatalog
         )
-        .onChange(of: focused) { _, isFocused in
-            if isFocused { onFocus?(meta) }
-        }
         .onAppear {
             guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
             didRequestInitialFocus = true
@@ -2415,8 +2423,17 @@ struct WatchedCheckmarkBadge: View {
 
 /// Custom button style for poster cards
 struct PosterCardButtonStyle: ButtonStyle {
+    var onNativeFocusChange: ((Bool) -> Void)? = nil
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            #if os(tvOS)
+            .background {
+                if let onNativeFocusChange {
+                    TVNativeFocusObserver(onFocusChange: onNativeFocusChange)
+                }
+            }
+            #endif
             #if os(tvOS)
             .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
             #else
@@ -2427,6 +2444,33 @@ struct PosterCardButtonStyle: ButtonStyle {
 }
 
 #if os(tvOS)
+/// Observe the focus environment inside a focused surface's descendants.
+/// Unlike a FocusState write, this reports focus granted by the native engine.
+struct TVNativeFocusObserver: View {
+    @Environment(\.isFocused) private var isFocused
+    @State private var reportedFocus = false
+    let onFocusChange: (Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onAppear {
+                if isFocused {
+                    reportedFocus = true
+                    onFocusChange(true)
+                }
+            }
+            .onChange(of: isFocused) { _, focused in
+                reportedFocus = focused
+                onFocusChange(focused)
+            }
+            .onDisappear {
+                if reportedFocus { onFocusChange(false) }
+            }
+    }
+}
+
 extension View {
     @ViewBuilder
     func nuvioFocusEffectDisabledIfAvailable() -> some View {
@@ -2540,6 +2584,7 @@ struct TitleActionsMenuContent: View {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onRefreshCatalog: (() -> Void)? = nil
     var body: some View {
         contextMenuContent
     }
@@ -2621,6 +2666,16 @@ struct TitleActionsMenuContent: View {
                     systemImage: isItemWatched ? "eye.slash" : "eye"
                 )
             }
+
+            if let onRefreshCatalog {
+                Button {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
+                        onRefreshCatalog()
+                    }
+                } label: {
+                    Label(L10n.string("action_refresh_catalog", fallback: "Refresh Catalog"), systemImage: "arrow.clockwise")
+                }
+            }
         }
     }
 
@@ -2668,6 +2723,7 @@ struct TitleActionsContextMenu: ViewModifier {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onRefreshCatalog: (() -> Void)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -2679,7 +2735,8 @@ struct TitleActionsContextMenu: ViewModifier {
                     continueIsUpNext: continueIsUpNext,
                     onPlayManually: onPlayManually,
                     onStartFromBeginning: onStartFromBeginning,
-                    onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                    onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                    onRefreshCatalog: onRefreshCatalog
                 )
             }
     }
@@ -2693,7 +2750,8 @@ extension View {
         continueIsUpNext: Bool = false,
         onPlayManually: (() -> Void)? = nil,
         onStartFromBeginning: (() -> Void)? = nil,
-        onRemoveFromContinueWatching: (() -> Void)? = nil
+        onRemoveFromContinueWatching: (() -> Void)? = nil,
+        onRefreshCatalog: (() -> Void)? = nil
     ) -> some View {
         modifier(
             TitleActionsContextMenu(
@@ -2703,7 +2761,8 @@ extension View {
                 continueIsUpNext: continueIsUpNext,
                 onPlayManually: onPlayManually,
                 onStartFromBeginning: onStartFromBeginning,
-                onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onRefreshCatalog: onRefreshCatalog
             )
         )
     }

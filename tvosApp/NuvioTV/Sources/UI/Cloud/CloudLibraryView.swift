@@ -11,6 +11,7 @@ struct CloudLibraryView: View {
     /// The item whose files are being shown; `nil` at the top level.
     @State private var openItem: CloudItem?
     @FocusState private var focused: String?
+    @FocusState private var isLoadingFocusActive: Bool
 
     init(store: UserDefaults, onPlay: @escaping (URL, NuvioMeta) -> Void, onBack: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: CloudLibraryViewModel(store: store))
@@ -42,10 +43,22 @@ struct CloudLibraryView: View {
             }
             .padding(.horizontal, 80)
             .padding(.top, 56)
+
+            if viewModel.isLoading || (viewModel.errorMessage != nil && viewModel.items.isEmpty) {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .focusable(true)
+                    .focused($isLoadingFocusActive)
+            }
         }
         .onExitCommand { openItem == nil ? onBack() : closeItem() }
         .onAppear {
             TVHomeDebugTrace.log("cloudLibrary.appear")
+            if viewModel.isLoading {
+                DispatchQueue.main.async {
+                    isLoadingFocusActive = true
+                }
+            }
         }
         .onDisappear {
             TVHomeDebugTrace.log("cloudLibrary.disappear")

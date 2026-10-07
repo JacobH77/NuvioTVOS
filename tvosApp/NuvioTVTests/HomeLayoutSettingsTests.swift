@@ -537,13 +537,14 @@ final class HomeLayoutSettingsTests: XCTestCase {
         let order = ["addon_1", "addon_2"]
         let orderData = try! JSONEncoder().encode(order)
         _ = HomeCatalogPayloadStore.write(orderData, forKey: SettingsKey.homeCatalogOrder)
-        _ = HomeCatalogPayloadStore.write(orderData, forKey: SettingsKey.homeCatalogSyncedOrder)
-        ProfileSettings.current.set(orderData, forKey: SettingsKey.homeCatalogTitles)
+        let deletedData = try! JSONEncoder().encode(["deleted_key"])
+        _ = HomeCatalogPayloadStore.write(deletedData, forKey: SettingsKey.homeCatalogDeleted)
 
         TVHomeCatalogOrder.clearOrder()
 
         XCTAssertNil(HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogOrder))
         XCTAssertNil(HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogSyncedOrder))
+        XCTAssertNil(HomeCatalogPayloadStore.data(forKey: SettingsKey.homeCatalogDeleted))
         XCTAssertNil(ProfileSettings.current.data(forKey: SettingsKey.homeCatalogTitles))
     }
 
@@ -1737,4 +1738,123 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertFalse(repository.homeCatalogLoadWasPartial)
         XCTAssertNil(repository.homeCatalogFailureSignature)
     }
+
+    func testDeleteCatalogRowPersistentlyRemovesFromSnapshotsAndOrder() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        let row1 = TVHomeCatalogOrder.SnapshotRow(
+            id: "addon_test.addon_movie_popular",
+            title: "Popular Movies",
+            addonName: "Test Addon",
+            addonId: "test.addon",
+            contentType: "movie",
+            catalogId: "popular",
+            manifestURL: "https://example.com/manifest.json",
+            manifestShowInHome: true,
+            settingsKey: "test.addon_movie_popular"
+        )
+        let row2 = TVHomeCatalogOrder.SnapshotRow(
+            id: "addon_test.addon_series_popular",
+            title: "Popular Series",
+            addonName: "Test Addon",
+            addonId: "test.addon",
+            contentType: "series",
+            catalogId: "popular",
+            manifestURL: "https://example.com/manifest.json",
+            manifestShowInHome: true,
+            settingsKey: "test.addon_series_popular"
+        )
+
+        TVHomeCatalogOrder.writeSnapshotRows([row1, row2])
+        TVHomeCatalogOrder.save([row1.id, row2.id])
+        TVHomeCatalogOrder.setRowEnabled(row1, isEnabled: true)
+
+        XCTAssertEqual(TVHomeCatalogOrder.snapshotRows().count, 2)
+        XCTAssertEqual(TVHomeCatalogOrder.savedOrder(), [TVHomeCatalogOrder.sectionOrderKey(row1.id), TVHomeCatalogOrder.sectionOrderKey(row2.id)])
+
+        // Delete row1
+        TVHomeCatalogOrder.deleteRow(row1)
+
+        // Verify deleted key is persisted
+        XCTAssertTrue(TVHomeCatalogOrder.deletedCatalogKeys().contains("test.addon_movie_popular"))
+        XCTAssertTrue(TVHomeCatalogOrder.deletedCatalogKeys().contains("addon_test.addon_movie_popular"))
+
+        // Verify snapshot no longer contains row1
+        let snapshotsAfterDelete: [TVHomeCatalogOrder.SnapshotRow] = TVHomeCatalogOrder.snapshotRows()
+        XCTAssertEqual(snapshotsAfterDelete.map { $0.id }, [row2.id])
+
+        // Verify order no longer contains row1
+        let orderAfterDelete = TVHomeCatalogOrder.savedOrder()
+        XCTAssertEqual(orderAfterDelete, [TVHomeCatalogOrder.sectionOrderKey(row2.id)])
+
+        // Verify row1 is marked disabled
+        XCTAssertTrue(TVHomeCatalogOrder.disabledCatalogKeys().contains("test.addon_movie_popular"))
+
+        // Attempting to re-add row1 via replaceSnapshotRows should ignore deleted row
+        TVHomeCatalogOrder.replaceSnapshotRows(
+            forAddonID: "test.addon",
+            addonName: "Test Addon",
+            with: [row1, row2]
+        )
+        let snapshotAfterReplace: [TVHomeCatalogOrder.SnapshotRow] = TVHomeCatalogOrder.snapshotRows()
+        XCTAssertEqual(snapshotAfterReplace.map { $0.id }, [row2.id])
+
+        // Attempting to merge snapshot containing row1 should ignore deleted row
+        let merged: [TVHomeCatalogOrder.SnapshotRow] = TVHomeCatalogOrder.mergedSnapshotRows(
+            current: [row1],
+            previous: [row2]
+        )
+        XCTAssertEqual(merged.map { $0.id }, [row2.id])
+    }
+
+    func testDeleteCollectionRowPersistentlyRemovesCollection() throws {
+        let profile = activateHomeVisibilityProfile()
+        defer { clearHomeVisibilityProfile(profile) }
+
+        let collectionRow = TVHomeCatalogOrder.SnapshotRow(
+            id: "collection_custom_folder_1",
+            title: "My Folder",
+            settingsKey: "collection_custom_folder_1"
+        )
+
+        TVHomeCatalogOrder.writeSnapshotRows([collectionRow])
+        TVHomeCatalogOrder.save([collectionRow.id])
+
+        XCTAssertEqual(TVHomeCatalogOrder.snapshotRows().count, 1)
+
+        TVHomeCatalogOrder.deleteRow(collectionRow)
+
+        XCTAssertTrue(TVHomeCatalogOrder.deletedCatalogKeys().contains("collection_custom_folder_1"))
+        XCTAssertTrue(TVHomeCatalogOrder.disabledCollectionIds().contains("custom_folder_1"))
+        XCTAssertTrue(TVHomeCatalogOrder.snapshotRows().isEmpty)
+        XCTAssertTrue(TVHomeCatalogOrder.savedOrder().isEmpty)
+    }
+
+    func testCatalogAutoRefreshIntervalSetting() {
+        XCTAssertEqual(SettingsKey.catalogAutoRefreshInterval, "nuvio.tv.settings.layout.catalogAutoRefreshInterval")
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.catalogAutoRefreshInterval))
+
+        let defaults = UserDefaults(suiteName: "CatalogAutoRefreshIntervalTestsDefaults")!
+        defaults.removePersistentDomain(forName: "CatalogAutoRefreshIntervalTestsDefaults")
+
+        // Default should be 1800 (30 minutes)
+        let defaultInterval = defaults.object(forKey: SettingsKey.catalogAutoRefreshInterval) as? Double ?? 1800
+        XCTAssertEqual(defaultInterval, 1800)
+
+        // Can be set to 900 (15 min) or 0 (Always) or -1 (Disabled)
+        defaults.set(900.0, forKey: SettingsKey.catalogAutoRefreshInterval)
+        XCTAssertEqual(defaults.double(forKey: SettingsKey.catalogAutoRefreshInterval), 900.0)
+
+        defaults.set(0.0, forKey: SettingsKey.catalogAutoRefreshInterval)
+        XCTAssertEqual(defaults.double(forKey: SettingsKey.catalogAutoRefreshInterval), 0.0)
+
+        defaults.set(-1.0, forKey: SettingsKey.catalogAutoRefreshInterval)
+        XCTAssertEqual(defaults.double(forKey: SettingsKey.catalogAutoRefreshInterval), -1.0)
+    }
+
+    func testForceRefreshNotificationDefined() {
+        XCTAssertEqual(TVHomeCatalogOrder.forceRefreshNotification.rawValue, "nuvio.tv.homeCatalog.forceRefresh")
+    }
 }
+
