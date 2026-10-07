@@ -191,7 +191,7 @@ class PlayerViewModel: ObservableObject {
     @Published var skipSegmentCountdown: Int?
 
     var showSkipSegmentCard: Bool {
-        guard activeSkipInterval != nil, !showSettingsPanel else { return false }
+        guard activeSkipInterval != nil, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return false }
         if activeSkipInterval?.id == autoHiddenSkipIntervalId, !showControls { return false }
         return showControls || skipSegmentCountdown != nil
     }
@@ -244,6 +244,7 @@ class PlayerViewModel: ObservableObject {
     @Published private(set) var trailerDiagnostics: String?
     @Published private(set) var trailerQualityLabel: String?
     @Published private(set) var hasRenderedFirstFrame = false
+    private var hasProducedMidFilePosition = false
     private var playbackDebugHUDBackend: PlayerEngineKind?
     private var didShowPlaybackDebugHUDForStream = false
 
@@ -502,6 +503,9 @@ class PlayerViewModel: ObservableObject {
                       coordinator.loadGeneration == generation else { return }
                 if !self.hasRenderedFirstFrame {
                     self.hasRenderedFirstFrame = true
+                    if let meta = self.activeMeta {
+                        self.prewarmSceneIfNeeded(meta: meta, isTrailerPlayback: self.subtitle == PlaybackMarkers.trailerSubtitle)
+                    }
                 }
                 self.tick()
             }
@@ -608,6 +612,7 @@ class PlayerViewModel: ObservableObject {
         guard sessionCoordinator.lastLoadError == nil else { return }
         status = .buffering
         isAwaitingStreamStart = true
+        hasProducedMidFilePosition = false
         currentLoadStarted = false
         startPolling()
         startLoadWatchdog()
@@ -1085,6 +1090,7 @@ class PlayerViewModel: ObservableObject {
         self.pendingResumeSeconds = isLiveStream ? nil : resumeFrom
         self.didApplyResume = false
         self.lastStablePlaybackTime = nil
+        self.hasProducedMidFilePosition = false
         self.explicitSeekProgressCheckpoint = nil
         self.didStartTraktScrobble = false
         self.didQueueTraktStop = false
@@ -1134,7 +1140,6 @@ class PlayerViewModel: ObservableObject {
         self.hasExplicitSubtitleSelection = false
         self.sceneSessionID = UUID()
         loadSkipIntervalsIfNeeded(meta: meta, isTrailerPlayback: isTrailerPlayback)
-        prewarmSceneIfNeeded(meta: meta, isTrailerPlayback: isTrailerPlayback)
     }
 
     private var effectiveFilename: String? {
@@ -1877,6 +1882,7 @@ class PlayerViewModel: ObservableObject {
         isAdvancingEpisode = false
         switchingSourceMessage = "Starting stream"
         isAwaitingStreamStart = true
+        hasProducedMidFilePosition = false
         reloadAttempts += 1
         showNextEpisodeCard = false
         nextEpisodeCountdown = nil
@@ -2248,10 +2254,12 @@ class PlayerViewModel: ObservableObject {
            c.hasCoherentTimeSample,
            !c.isPlayerLoading,
            !c.isAtEndOfFile,
+           !c.isPlayerEnded,
            !isReplacementSlate,
            latestTime.duration > 0,
-           latestTime.current >= 0,
+           latestTime.current > 0,
            latestTime.current < latestTime.duration {
+            hasProducedMidFilePosition = true
             if !isPreSeekSettlingSample {
                 explicitSeekProgressCheckpoint = nil
                 lastStablePlaybackTime = latestTime
@@ -2496,6 +2504,7 @@ class PlayerViewModel: ObservableObject {
             if !isLiveStream,
                let activeMeta, isTrackablePlayback,
                hasRenderedFirstFrame,
+               hasProducedMidFilePosition,
                !isAwaitingStreamStart,
                !isAdvanceInFlight,
                !isSwitchingSource, !isReloadingStream, !isFailingOver,
@@ -2544,7 +2553,7 @@ class PlayerViewModel: ObservableObject {
 
         if !isLiveStream {
             let postPlayEnabled = ProfileSettings.current.object(forKey: SettingsKey.postPlayRecommendationsEnabled) as? Bool ?? true
-            let hasBlockingOverlay = showSettingsPanel || sidePanel != nil || isScrubbing || showPauseOverlay
+            let hasBlockingOverlay = showSettingsPanel || showScenePanel || isSceneDetailVisible || sidePanel != nil || isScrubbing || showPauseOverlay
             let endingStartTime = skipIntervals.first(where: \.isEnding)?.startTime
             postPlayController.updateTimeline(
                 position: time.current,
@@ -2670,6 +2679,8 @@ class PlayerViewModel: ObservableObject {
                   self.isTimelineFocused,
                   !self.controlsAutoHideSuspended,
                   !self.showSettingsPanel,
+                  !self.showScenePanel,
+                  !self.isSceneDetailVisible,
                   !self.isScrubbing,
                   self.sidePanel == nil,
                   self.subtitle != PlaybackMarkers.trailerSubtitle
@@ -2742,6 +2753,7 @@ class PlayerViewModel: ObservableObject {
         aetherController?.destroyPlayer()
         PictureInPictureManager.shared.invalidateSession()
         postPlayController.stop()
+        sceneCoordinator.resetSession()
         status = .idle
     }
 
@@ -2900,7 +2912,7 @@ class PlayerViewModel: ObservableObject {
             revealControls()
             return
         }
-        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel else { return }
+        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         hidePeek()
 
         stopRepeatingNudge(commit: false)
@@ -2931,7 +2943,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func advanceHoldSeek() {
-        guard isHoldingSeek, hasStartedPlayback, !isScrubbing, !showSettingsPanel else { return }
+        guard isHoldingSeek, hasStartedPlayback, !isScrubbing, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         let now = Date()
         let holdDuration = now.timeIntervalSince(seekHoldStartDate ?? now)
 
@@ -3327,7 +3339,7 @@ class PlayerViewModel: ObservableObject {
 
     func beginScrub() {
         guard !isHoldingSeek, pendingSeekDelta == 0 else { return }
-        guard !isLiveStream, hasStartedPlayback, !showSettingsPanel else { return }
+        guard !isLiveStream, hasStartedPlayback, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         guard status == .paused else { return }
         hidePeek()
         suspendCoarseThumbnailWork()
@@ -3398,7 +3410,7 @@ class PlayerViewModel: ObservableObject {
     // MARK: Trackpad input
 
     func remoteTouchBegan() {
-        guard !isHoldingSeek, pendingSeekDelta == 0 else { return }
+        guard !isHoldingSeek, pendingSeekDelta == 0, !showScenePanel, !isSceneDetailVisible else { return }
         scrubLastDx = 0
         scrubEngagedThisStroke = false
         touchBeganWhileStatus = status
@@ -3410,7 +3422,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     func remoteTouchMoved(dx: CGFloat, dy: CGFloat) {
-        guard !isHoldingSeek, pendingSeekDelta == 0 else { return }
+        guard !isHoldingSeek, pendingSeekDelta == 0, !showScenePanel, !isSceneDetailVisible else { return }
         switch touchIntent {
         case .scrub:
             suppressMoveBriefly()
@@ -3452,7 +3464,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     func remoteTouchEnded(dx: CGFloat, dy: CGFloat) {
-        guard !isHoldingSeek, pendingSeekDelta == 0 else { return }
+        guard !isHoldingSeek, pendingSeekDelta == 0, !showScenePanel, !isSceneDetailVisible else { return }
         if touchIntent == .scrub {
             endScrubGesture()
         } else if touchIntent == .consumed || max(abs(dx), abs(dy)) >= 15 {
@@ -3527,6 +3539,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func dpadSample(x: Double, y: Double) {
+        guard !showScenePanel, !isSceneDetailVisible else { return }
         if isScrubbing {
             wheelSample(x: x, y: y)
             return
@@ -3550,12 +3563,12 @@ class PlayerViewModel: ObservableObject {
 
     /// Light touchpad contact (no click, no swipe) → peek bar.
     private func remoteTapped() {
-        guard hasStartedPlayback, !isScrubbing, !showControls, !showSettingsPanel else { return }
+        guard hasStartedPlayback, !isScrubbing, !showControls, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         showPeek()
     }
 
     func showPeek() {
-        guard hasStartedPlayback, !showControls, !isScrubbing, !showSettingsPanel else { return }
+        guard hasStartedPlayback, !showControls, !isScrubbing, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         peekVisible = true
         peekTask?.cancel()
         peekTask = Task { [weak self] in
@@ -3610,7 +3623,7 @@ class PlayerViewModel: ObservableObject {
             return
         }
         guard status == .playing else { return }
-        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel else { return }
+        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         // Discrete tap: do not interrupt an active hold-to-seek session
         guard !isHoldingSeek else { return }
         hidePeek()
@@ -3700,7 +3713,7 @@ class PlayerViewModel: ObservableObject {
             return
         }
         guard status == .playing else { return }
-        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel else { return }
+        guard hasStartedPlayback, !isScrubbing, !showSettingsPanel, !showScenePanel, !isSceneDetailVisible else { return }
         guard !isHoldingSeek else { return }
 
         let delta = direction == .left ? -Double(seekStepSeconds) : Double(seekStepSeconds)
@@ -4237,7 +4250,7 @@ class PlayerViewModel: ObservableObject {
                 guard self.status == .playing else { return }
                 guard !self.controlsAutoHideSuspended else { return }
                 guard !self.isHoldingSeek else { return }
-                guard !self.showSettingsPanel else { return }
+                guard !self.showSettingsPanel, !self.showScenePanel, !self.isSceneDetailVisible else { return }
                 guard self.sidePanel == nil else { return }
                 guard !self.isScrubbing else { return }
                 self.showControls = false
@@ -4269,7 +4282,7 @@ class PlayerViewModel: ObservableObject {
 
     func revealControls() {
         hidePeek()
-        if isScrubbing || controlsAutoHideSuspended { return }
+        if isScrubbing || controlsAutoHideSuspended || showScenePanel || isSceneDetailVisible { return }
         // Full transport chrome supersedes the pause metadata sheet.
         cancelPauseOverlaySchedule()
         showPauseOverlay = false
@@ -4460,6 +4473,7 @@ class PlayerViewModel: ObservableObject {
         switchingSourceMessage = message
         loadingStepMessage = message
         isAwaitingStreamStart = true
+        hasProducedMidFilePosition = false
         status = .buffering
         cancelPauseOverlaySchedule()
         showPauseOverlay = false
@@ -4593,7 +4607,14 @@ class PlayerViewModel: ObservableObject {
     }()
     
     private(set) lazy var sceneViewModel: SceneViewModel = {
-        SceneViewModel(coordinator: sceneCoordinator)
+        let vm = SceneViewModel(coordinator: sceneCoordinator)
+        vm.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        return vm
     }()
 
     private func buildSceneContext(
@@ -5111,6 +5132,7 @@ class PlayerViewModel: ObservableObject {
         didDetectReplacementStream = true
         engine.pausePlayback()
         lastStablePlaybackTime = nil
+        hasProducedMidFilePosition = false
         explicitSeekProgressCheckpoint = nil
         if let meta = activeMeta {
             let numbers = resolvedEpisodeNumbers

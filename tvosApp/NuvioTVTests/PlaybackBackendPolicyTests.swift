@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import XCTest
+import AetherEngine
 import SwiftAssRenderer
 @testable import NuvioTV
 
@@ -1715,9 +1716,10 @@ final class PlaybackBackendPolicyTests: XCTestCase {
     }
 
     @MainActor
-    func testASSFrameHostViewPreservesFrameDuringReloadWhenDialogueIsActive() {
-        let renderer = AssSubtitlesRenderer(fontConfig: FontConfig(fontsPath: URL(fileURLWithPath: NSTemporaryDirectory())))
-        let script = """
+    private func makeASSFrameTestRenderer() -> (renderer: AssSubtitlesRenderer, builder: ASSScriptBuilder) {
+        let renderer = AssSubtitlesRenderer(fontConfig: FontConfig(
+            fontsPath: URL(fileURLWithPath: NSTemporaryDirectory()), fontProvider: .coreText))
+        let header = """
         [Script Info]
         ScriptType: v4.00+
         PlayResX: 1920
@@ -1726,18 +1728,58 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
         Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1
-
-        [Events]
-        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        Dialogue: 0,0:00:01.00,0:00:05.00,Default,,0,0,0,,Hello world
+        Style: AltStyle,Arial,24,&H00FFFF00,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1
         """
-        renderer.loadTrack(content: script)
+        let builder = ASSScriptBuilder(header: header)
+        XCTAssertTrue(builder.add(rawEventText: "0,0,Default,,0,0,0,,Same line", start: 1, end: 2))
+        XCTAssertTrue(builder.add(rawEventText: "1,0,AltStyle,,0,0,0,,Same line", start: 3, end: 5))
+        renderer.setCanvasSize(CGSize(width: 1920, height: 1080), scale: 1)
+        renderer.loadTrack(content: builder.script())
         let loadedExpectation = expectation(description: "track loaded")
         renderer.loadFrame(offset: 0) { _ in
             loadedExpectation.fulfill()
         }
         wait(for: [loadedExpectation], timeout: 2.0)
+        return (renderer, builder)
+    }
 
+    @MainActor
+    private func eventIdentity(_ builder: ASSScriptBuilder, at offset: TimeInterval) -> [String] {
+        ASSRenderCoordinator.activeDialogueIdentity(in: builder.eventIdentitySnapshot(), at: offset)
+    }
+
+    @MainActor
+    private func renderedASSnapshot(_ renderer: AssSubtitlesRenderer, builder: ASSScriptBuilder,
+                                    at offset: TimeInterval) -> ASSRenderSnapshot {
+        var image: ProcessedImage?
+        let loadedExpectation = expectation(description: "loadFrame_\(offset)")
+        renderer.loadFrame(offset: offset) { rendered in
+            image = rendered
+            loadedExpectation.fulfill()
+        }
+        wait(for: [loadedExpectation], timeout: 2.0)
+        return ASSRenderSnapshot(
+            offset: offset,
+            image: image,
+            dialogueIdentity: eventIdentity(builder, at: offset),
+            rendererGeneration: 1,
+            rendererID: ObjectIdentifier(renderer))
+    }
+
+    @MainActor
+    private func nilASSnapshot(_ renderer: AssSubtitlesRenderer, builder: ASSScriptBuilder,
+                               at offset: TimeInterval) -> ASSRenderSnapshot {
+        ASSRenderSnapshot(
+            offset: offset,
+            image: nil,
+            dialogueIdentity: eventIdentity(builder, at: offset),
+            rendererGeneration: 1,
+            rendererID: ObjectIdentifier(renderer))
+    }
+
+    @MainActor
+    func testASSFrameHostFollowsRenderedOffsetsAcrossClockLagSeekAndExpiry() {
+        let (renderer, builder) = makeASSFrameTestRenderer()
         let reloadSignal = PassthroughSubject<ASSRenderCoordinator.ReloadEvent, Never>()
         let hostView = ASSFrameHostView(
             renderer: renderer,
@@ -1745,30 +1787,88 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             onCanvasSizeChanged: nil
         )
 
-        // Give hostView an image to represent an active subtitle
-        let dummyImage = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 40)).image { _ in }
         let subview = hostView.subviews.first(where: { $0 is UIImageView }) as? UIImageView
         XCTAssertNotNil(subview)
-        subview?.image = dummyImage
-        subview?.isHidden = false
-
-        // 1. Within active dialogue window (1s - 5s)
-        hostView.sourceTime = 3.0
-        XCTAssertFalse(renderer.dialogues(at: 3.0).isEmpty)
-
-        // Reload begins and finishes with nil (simulating progressive cue arrival & unchanged frame)
-        reloadSignal.send(.began)
-        reloadSignal.send(.finished(nil))
-
-        // Image MUST be preserved and not wiped
+        let lineB = renderedASSnapshot(renderer, builder: builder, at: 3.05)
+        XCTAssertNotNil(lineB.image)
+        XCTAssertTrue(lineB.dialogueIdentity.contains { $0.contains("AltStyle") })
+        reloadSignal.send(.frameRendered(lineB))
         XCTAssertNotNil(subview?.image)
         XCTAssertFalse(subview?.isHidden ?? true)
 
-        // 2. Playback advances past the end of the dialogue window (> 5.0s)
-        hostView.sourceTime = 5.5
-        XCTAssertTrue(renderer.dialogues(at: 5.5).isEmpty)
+        // A lagging SwiftUI clock sample (2.95) has no visibility input to apply;
+        // the frame rendered at 3.05 remains on screen until another render event.
+        let displayedBImage = subview?.image
+        XCTAssertNotNil(displayedBImage)
+        XCTAssertFalse(subview?.isHidden ?? true)
 
-        // Image MUST be hidden when dialogue window expires
+        // Re-rendering the same active line keeps the UIImage instance when its
+        // CGImage and rect are unchanged.
+        reloadSignal.send(.frameRendered(renderedASSnapshot(renderer, builder: builder, at: 4.5)))
+        XCTAssertTrue(subview?.image === displayedBImage)
+        XCTAssertFalse(subview?.isHidden ?? true)
+
+        // Seeking into A/B's gap authoritatively clears the old B frame.
+        let gap = renderedASSnapshot(renderer, builder: builder, at: 2.5)
+        XCTAssertNil(gap.image)
+        XCTAssertTrue(gap.dialogueIdentity.isEmpty)
+        reloadSignal.send(.frameRendered(gap))
+        XCTAssertNil(subview?.image)
+        XCTAssertTrue(subview?.isHidden ?? false)
+
+        // A seek back to A draws only A, and the exact rendered end clears it
+        // even when no periodic observer sample has caught up yet.
+        let lineA = renderedASSnapshot(renderer, builder: builder, at: 1.5)
+        XCTAssertNotNil(lineA.image)
+        XCTAssertTrue(lineA.dialogueIdentity.contains { $0.contains("Default") })
+        reloadSignal.send(.frameRendered(lineA))
+        XCTAssertNotNil(subview?.image)
+        XCTAssertFalse(subview?.isHidden ?? true)
+
+        let expired = renderedASSnapshot(renderer, builder: builder, at: 5.1)
+        XCTAssertNil(expired.image)
+        reloadSignal.send(.frameRendered(expired))
+        XCTAssertNil(subview?.image)
+        XCTAssertTrue(subview?.isHidden ?? false)
+    }
+
+    @MainActor
+    func testASSReloadNilPreservesOnlyTheSameActiveDialogueIdentity() {
+        let (renderer, builder) = makeASSFrameTestRenderer()
+        let timeline = builder.eventIdentitySnapshot()
+        let lineBState = ASSRenderCoordinator.dialogueIdentityState(in: timeline, at: 4.5)
+        XCTAssertEqual(lineBState.validity, 3.0..<5.0)
+        XCTAssertFalse(lineBState.validity.contains(1.5))
+        let reloadSignal = PassthroughSubject<ASSRenderCoordinator.ReloadEvent, Never>()
+        let hostView = ASSFrameHostView(renderer: renderer, reloadSignal: reloadSignal,
+                                        onCanvasSizeChanged: nil)
+        let subview = hostView.subviews.first(where: { $0 is UIImageView }) as? UIImageView
+
+        // The renderer's convenience lookup only returns text, so these two
+        // same-text lines appear equal there despite their distinct style/times.
+        XCTAssertEqual(renderer.dialogues(at: 4.5), renderer.dialogues(at: 1.5))
+        XCTAssertNotEqual(eventIdentity(builder, at: 4.5), eventIdentity(builder, at: 1.5))
+
+        reloadSignal.send(.frameRendered(renderedASSnapshot(renderer, builder: builder, at: 3.05)))
+        let visibleB = subview?.image
+        XCTAssertNotNil(visibleB)
+
+        reloadSignal.send(.began)
+        reloadSignal.send(.finished(nilASSnapshot(renderer, builder: builder, at: 4.5)))
+        XCTAssertTrue(subview?.image === visibleB)
+        XCTAssertFalse(subview?.isHidden ?? true)
+
+        // A nil completion at A's exact rendered offset cannot revive B.
+        reloadSignal.send(.began)
+        reloadSignal.send(.finished(nilASSnapshot(renderer, builder: builder, at: 1.5)))
+        XCTAssertNil(subview?.image)
+        XCTAssertTrue(subview?.isHidden ?? false)
+
+        // Nor can a nil completion with no active dialogue preserve a stale frame.
+        reloadSignal.send(.frameRendered(renderedASSnapshot(renderer, builder: builder, at: 3.05)))
+        XCTAssertNotNil(subview?.image)
+        reloadSignal.send(.began)
+        reloadSignal.send(.finished(nilASSnapshot(renderer, builder: builder, at: 2.5)))
         XCTAssertNil(subview?.image)
         XCTAssertTrue(subview?.isHidden ?? false)
     }
@@ -2507,6 +2607,44 @@ final class WatchedSourceReconciliationTests: XCTestCase {
             WatchedStore.items().first?.sources,
             Set([TraktWatchProgressSource.nuvioSync.rawValue])
         )
+    }
+
+    func testNuvioAbsenceRemovesAnEpisodeOwnedOnlyByNuvioSync() {
+        let item = watchedEpisode(sources: [.nuvioSync])
+        XCTAssertTrue(WatchedStore.mergeRemote([item], confirmsTombstoneDeletions: false))
+
+        XCTAssertTrue(
+            WatchedStore.reconcileNuvioSnapshot([], syncStartedAt: Date().addingTimeInterval(1))
+        )
+
+        XCTAssertTrue(WatchedStore.items().isEmpty)
+        XCTAssertTrue(WatchedStore.tombstones().isEmpty)
+    }
+
+    func testNuvioAbsencePreservesTheSameEpisodeOwnedByTrakt() {
+        let item = watchedEpisode(sources: [.nuvioSync, .trakt])
+        XCTAssertTrue(WatchedStore.mergeRemote([item], confirmsTombstoneDeletions: false))
+
+        XCTAssertTrue(
+            WatchedStore.reconcileNuvioSnapshot([], syncStartedAt: Date().addingTimeInterval(1))
+        )
+
+        XCTAssertEqual(
+            WatchedStore.items().first?.sources,
+            Set([TraktWatchProgressSource.trakt.rawValue])
+        )
+    }
+
+    func testNuvioReconcilePreservesLocalMarksCreatedAfterSyncStarted() {
+        let item = watchedEpisode(sources: [.nuvioSync])
+        XCTAssertTrue(WatchedStore.mergeRemote([item], confirmsTombstoneDeletions: false))
+
+        // sync started in the past, item marked more recently
+        XCTAssertTrue(
+            WatchedStore.reconcileNuvioSnapshot([], syncStartedAt: item.watchedAt.addingTimeInterval(-10))
+        )
+
+        XCTAssertFalse(WatchedStore.items().isEmpty)
     }
 
     private func watchedEpisode(

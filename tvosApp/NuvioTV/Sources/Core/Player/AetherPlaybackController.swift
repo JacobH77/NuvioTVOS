@@ -2407,13 +2407,22 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
 
     // MARK: PlaybackEngineControlling surface
 
+    private var isAwaitingEngineLoad = false
+    private var engineLoadInitialPhase: PlaybackPhase? = nil
+
     var onFirstFrameReady: (() -> Void)?
-    var hasFirstFrameReadyForDisplay: Bool { engine.hasFirstFrameReadyForDisplay }
+    var hasFirstFrameReadyForDisplay: Bool {
+        guard !isAwaitingEngineLoad else { return false }
+        return engine.hasFirstFrameReadyForDisplay
+    }
     private(set) var audioTracks: [PlaybackTrackInfo] = []
     private(set) var subtitleTracks: [PlaybackTrackInfo] = []
     private(set) var isPlayerLoading = true
     private(set) var isPlayerPlaying = false
-    var isTransportPlaying: Bool { engine.isTransportPlaying }
+    var isTransportPlaying: Bool {
+        guard !isAwaitingEngineLoad else { return false }
+        return engine.isTransportPlaying
+    }
     private(set) var isPlayerEnded = false
     private(set) var isAtEndOfFile = false
     private(set) var hasCoherentTimeSample = false
@@ -3089,11 +3098,9 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                 }
             }
             do {
-                screensaverDebugLog("[ScreensaverDebug][AetherController] calling engine.reloadAtCurrentPosition(shouldResume=\(shouldResume))")
-                let outcome = try await self.engine.reloadAtCurrentPosition {
-                    $0.autoplay = shouldResume
-                }
-                screensaverDebugLog("[ScreensaverDebug][AetherController] engine.reloadAtCurrentPosition returned: applied=\(outcome.applied), sessionOwned=\(outcome.sessionOwned), rebuilt=\(outcome.rebuilt)")
+                screensaverDebugLog("[ScreensaverDebug][AetherController] calling engine.reloadAtCurrentPosition()")
+                try await self.engine.reloadAtCurrentPosition()
+                screensaverDebugLog("[ScreensaverDebug][AetherController] engine.reloadAtCurrentPosition completed")
             } catch {
                 guard self.lifecycleReloadToken == token else { return }
                 let message = error.localizedDescription
@@ -3158,7 +3165,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         engine.$hasFirstFrameReadyForDisplay
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isReady in
-                guard let self else { return }
+                guard let self, !self.isAwaitingEngineLoad else { return }
                 if isReady {
                     if self.isPlayerLoading {
                         self.isPlayerLoading = false
@@ -3172,7 +3179,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         engine.clock.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.refreshClock()
+                guard let self, !self.isAwaitingEngineLoad else { return }
+                self.refreshClock()
             }
             .store(in: &cancellables)
 
@@ -3264,6 +3272,19 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
 
     private func applyPhase(_ phase: PlaybackPhase, engineIsBuffering: Bool) {
+        if isAwaitingEngineLoad {
+            if phase != engineLoadInitialPhase {
+                isAwaitingEngineLoad = false
+                engineLoadInitialPhase = nil
+            } else {
+                isPlayerLoading = true
+                isPlayerPlaying = false
+                isPlayerEnded = false
+                isAtEndOfFile = false
+                refreshClock()
+                return
+            }
+        }
         switch phase {
         case .idle:
             isPlayerLoading = false
@@ -3333,17 +3354,37 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
 
     private func refreshClock() {
+        guard !isAwaitingEngineLoad else {
+            positionMs = 0
+            durationMs = 0
+            bufferedMs = 0
+            sourceTimeSeconds = 0
+            lastKnownPositionMs = 0
+            lastKnownDurationMs = 0
+            lastKnownSourceTimeSeconds = 0
+            hasCoherentTimeSample = false
+            return
+        }
         let current = engine.clock.currentTime
         let source = engine.clock.sourceTime
         let buffered = engine.clock.bufferedPosition
         sourceTimeSeconds = source.isFinite ? max(0, source) : 0
-        positionMs = Int64((max(0, current) * 1000).rounded())
+        let sampledPositionMs = Int64((max(0, current) * 1000).rounded())
         bufferedMs = Int64((max(0, buffered) * 1000).rounded())
         if current.isFinite, current >= 0, engine.duration > 0 {
-            hasCoherentTimeSample = true
             // Prevent teardown/suspension 0-clock sample from clobbering an established playback position
-            if positionMs > 0 || lastKnownPositionMs == 0 || engine.state == .seeking {
-                lastKnownPositionMs = positionMs
+            if sampledPositionMs > 0 || lastKnownPositionMs == 0 || engine.state == .seeking {
+                lastKnownPositionMs = sampledPositionMs
+                positionMs = sampledPositionMs
+                hasCoherentTimeSample = true
+            } else if lastKnownPositionMs > 0 {
+                // When returning from background while paused or reconnecting, preserve the established position
+                // rather than exposing a transient 0.0 clock sample.
+                positionMs = lastKnownPositionMs
+                hasCoherentTimeSample = true
+            } else {
+                positionMs = sampledPositionMs
+                hasCoherentTimeSample = true
             }
         }
         if source.isFinite, source >= 0, engine.duration > 0 {
@@ -3576,10 +3617,19 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         assCoordinator.setSubtitleDelay(subtitleDelaySeconds)
         setAspectMode(request.aspectMode)
         didReportTerminalError = false
+        isAwaitingEngineLoad = true
+        engineLoadInitialPhase = engine.playbackPhase
         isPlayerLoading = true
         isPlayerEnded = false
         isAtEndOfFile = false
         hasCoherentTimeSample = false
+        positionMs = 0
+        durationMs = 0
+        bufferedMs = 0
+        sourceTimeSeconds = 0
+        lastKnownPositionMs = 0
+        lastKnownDurationMs = 0
+        lastKnownSourceTimeSeconds = 0
         currentErrorMessage = ""
         sourceProbe = nil
         let externalRegistration = AetherExternalSubtitleRegistration.make(
@@ -3698,6 +3748,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                     probe = try await self.engine.load(url: request.videoURL, options: options)
                 }
                 guard self.loadGeneration == gen else { return }
+                self.isAwaitingEngineLoad = false
+                self.engineLoadInitialPhase = nil
                 self.sourceProbe = probe
                 self.isPlayerLoading = false
                 self.setSpeed(request.playbackRate)
@@ -3706,6 +3758,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                 #endif
             } catch {
                 guard self.loadGeneration == gen else { return }
+                self.isAwaitingEngineLoad = false
+                self.engineLoadInitialPhase = nil
                 let message = error.localizedDescription
                 self.currentErrorMessage = message
                 self.isPlayerLoading = false
@@ -3879,6 +3933,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         artworkLoadTask = nil
         nowPlayingInfo = [:]
         resetAISubtitleStartupHold()
+        isAwaitingEngineLoad = false
+        engineLoadInitialPhase = nil
         loadGeneration += 1
         resetHybridThumbnailState(generation: loadGeneration)
         engine.pictureInPictureActive = false
@@ -3939,6 +3995,23 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
 
     func refreshPlaybackState() {
+        if isAwaitingEngineLoad {
+            if engine.playbackPhase != engineLoadInitialPhase {
+                isAwaitingEngineLoad = false
+                engineLoadInitialPhase = nil
+            } else {
+                isPlayerLoading = true
+                isPlayerPlaying = false
+                isPlayerEnded = false
+                isAtEndOfFile = false
+                hasCoherentTimeSample = false
+                positionMs = 0
+                durationMs = 0
+                bufferedMs = 0
+                sourceTimeSeconds = 0
+                return
+            }
+        }
         refreshClock()
         mapAudioTracks(engine.audioTracks)
         mapSubtitleTracks(engine.subtitleTracks)

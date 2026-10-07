@@ -12,11 +12,20 @@ import SwiftLibass
 /// `sidecarASSHeader` for an external subtitle) and emits event lines when
 /// `LoadOptions.preserveASSMarkup` is enabled.  The coordinator keeps the
 /// renderer lifecycle on the main actor while writing embedded fonts off-main.
+struct ASSRenderSnapshot {
+    let offset: TimeInterval
+    let image: ProcessedImage?
+    let dialogueIdentity: [String]
+    let rendererGeneration: Int
+    let rendererID: ObjectIdentifier
+}
+
 @MainActor
 final class ASSRenderCoordinator {
     enum ReloadEvent {
         case began
-        case finished(ProcessedImage?)
+        case frameRendered(ASSRenderSnapshot)
+        case finished(ASSRenderSnapshot)
     }
 
     private(set) var renderer: AssSubtitlesRenderer?
@@ -43,6 +52,11 @@ final class ASSRenderCoordinator {
     private var reloadRevision = 0
     private var reloadInFlightRevision: Int?
     private var requiredReloadPasses = 0
+    private var lastSnapshotDialogueIdentity: [String]?
+    private var lastSnapshotIdentityValidity: Range<Double>?
+    private var lastSnapshotRendererGeneration: Int?
+    private var lastSnapshotRendererID: ObjectIdentifier?
+    private var loadedDialogueTimeline: [(start: Double, end: Double, identity: String)] = []
 
     private struct OfferKey: Hashable {
         let id: Int
@@ -162,6 +176,8 @@ final class ASSRenderCoordinator {
         reloadRevision &+= 1
         reloadInFlightRevision = nil
         requiredReloadPasses = 0
+        loadedDialogueTimeline.removeAll(keepingCapacity: false)
+        resetSnapshotCache()
     }
 
     private func installRenderer(at directory: URL, fonts: [FontAttachment]) {
@@ -277,7 +293,30 @@ final class ASSRenderCoordinator {
         isRendering = true
         pendingRender = nil
         let captureGeneration = generation
+        let captureRendererID = ObjectIdentifier(renderer)
+        let previousSnapshotDialogueIdentity = lastSnapshotDialogueIdentity
+        let previousSnapshotIdentityValidity = lastSnapshotIdentityValidity
+        let previousSnapshotRendererGeneration = lastSnapshotRendererGeneration
+        let previousSnapshotRendererID = lastSnapshotRendererID
+        let dialogueTimeline = loadedDialogueTimeline
         renderer.loadFrame(offset: offset) { [weak self] image in
+            // `loadFrame` completes on the renderer's serial work queue. Keep the
+            // exact requested offset beside its image and resolve identities from
+            // the loaded script snapshot before another render can be queued.
+            let canReuseIdentity = !isRequiredReloadRender
+                && previousSnapshotRendererGeneration == captureGeneration
+                && previousSnapshotRendererID == captureRendererID
+                && previousSnapshotIdentityValidity?.contains(offset) == true
+            let identityState = canReuseIdentity
+                ? (identity: previousSnapshotDialogueIdentity ?? [],
+                   validity: previousSnapshotIdentityValidity ?? (-Double.infinity..<Double.infinity))
+                : Self.dialogueIdentityState(in: dialogueTimeline, at: offset)
+            let snapshot = ASSRenderSnapshot(
+                offset: offset,
+                image: image,
+                dialogueIdentity: identityState.identity,
+                rendererGeneration: captureGeneration,
+                rendererID: captureRendererID)
             DispatchQueue.main.async {
                 guard let self, self.generation == captureGeneration else { return }
                 if isRequiredReloadRender, let reloadRevision,
@@ -299,7 +338,12 @@ final class ASSRenderCoordinator {
                    self.requiredReloadPasses == 0,
                    !hasPendingReloadRender {
                     self.reloadInFlightRevision = nil
-                    self.reloadSignal.send(.finished(image))
+                    self.cacheAcceptedSnapshot(snapshot, validity: identityState.validity)
+                    self.reloadSignal.send(.finished(snapshot))
+                } else if reloadRevision == nil, self.reloadInFlightRevision == nil,
+                          !isRequiredReloadRender {
+                    self.cacheAcceptedSnapshot(snapshot, validity: identityState.validity)
+                    self.reloadSignal.send(.frameRendered(snapshot))
                 }
                 self.isRendering = false
                 if let next = self.pendingRender {
@@ -313,6 +357,48 @@ final class ASSRenderCoordinator {
                 self.flushIfDue()
             }
         }
+    }
+
+    private func cacheAcceptedSnapshot(_ snapshot: ASSRenderSnapshot, validity: Range<Double>) {
+        lastSnapshotDialogueIdentity = snapshot.dialogueIdentity
+        lastSnapshotIdentityValidity = validity
+        lastSnapshotRendererGeneration = snapshot.rendererGeneration
+        lastSnapshotRendererID = snapshot.rendererID
+    }
+
+    private func resetSnapshotCache() {
+        lastSnapshotDialogueIdentity = nil
+        lastSnapshotIdentityValidity = nil
+        lastSnapshotRendererGeneration = nil
+        lastSnapshotRendererID = nil
+    }
+
+    nonisolated static func activeDialogueIdentity(
+        in timeline: [(start: Double, end: Double, identity: String)],
+        at offset: TimeInterval
+    ) -> [String] {
+        dialogueIdentityState(in: timeline, at: offset).identity
+    }
+
+    nonisolated static func dialogueIdentityState(
+        in timeline: [(start: Double, end: Double, identity: String)],
+        at offset: TimeInterval
+    ) -> (identity: [String], validity: Range<Double>) {
+        var identity: [String] = []
+        var lower = -Double.infinity
+        var upper = Double.infinity
+        for event in timeline {
+            // Even an unchanged composite can cross into a different ASS event.
+            // Reuse its identity only until the next start or end boundary.
+            for boundary in [event.start, event.end] {
+                if boundary <= offset { lower = max(lower, boundary) }
+                else { upper = min(upper, boundary) }
+            }
+            if offset >= event.start, offset < event.end {
+                identity.append("\(event.start)|\(event.end)|\(event.identity)")
+            }
+        }
+        return (identity, lower..<upper)
     }
 
     private func consume(_ cues: [SubtitleCue]) {
@@ -406,6 +492,7 @@ final class ASSRenderCoordinator {
         let revision = reloadRevision
         reloadInFlightRevision = revision
         requiredReloadPasses = 1
+        loadedDialogueTimeline = builder?.eventIdentitySnapshot() ?? []
         reloadSignal.send(.began)
         renderer.loadTrack(content: content)
         let time = currentPlaybackTime() - subtitleDelaySeconds

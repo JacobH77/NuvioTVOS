@@ -177,6 +177,7 @@ enum ExternalPlayer: String, CaseIterable, Identifiable {
     case outplayer = "Outplayer"
     case nplayer = "nPlayer"
     case vidhub = "VidHub"
+    case senplayer = "SenPlayer"
 
     var id: String { rawValue }
 
@@ -192,6 +193,7 @@ enum ExternalPlayer: String, CaseIterable, Identifiable {
         case .outplayer: return "arrow.up.right.video.fill"
         case .nplayer: return "play.rectangle.fill"
         case .vidhub: return "play.square.fill"
+        case .senplayer: return "play.rectangle.on.rectangle.fill"
         }
     }
 
@@ -281,11 +283,31 @@ enum ExternalPlayer: String, CaseIterable, Identifiable {
                 query += "&sub=\(first)"
             }
             return URL(string: query)
+        case .senplayer:
+            var query = "senplayer://x-callback-url/play?url=\(encoded)"
+            if let encodedFilename, !encodedFilename.isEmpty {
+                query += "&filename=\(encodedFilename)"
+            }
+            if let position, position > 0 {
+                query += "&position=\(Int(position))"
+            }
+            for sub in encodedSubs.prefix(8) {
+                query += "&sub=\(sub)"
+            }
+            for (name, callback) in [("x-success", successURL), ("x-error", errorURL)] {
+                if let callback,
+                   let encodedCallback = callback.absoluteString.addingPercentEncoding(
+                       withAllowedCharacters: .externalPlayerURLValue
+                   ) {
+                    query += "&\(name)=\(encodedCallback)"
+                }
+            }
+            return URL(string: query)
         }
     }
 
     /// Builds a sanitized, scraper-friendly media filename for external players
-    /// (e.g. Infuse, Outplayer, VidHub) to enable accurate metadata matching (TMDb / TheTVDB)
+    /// (e.g. Infuse, Outplayer, VidHub, SenPlayer) to enable accurate metadata matching (TMDb / TheTVDB)
     /// and prevent displaying raw stream hashes/tokens.
     static func mediaFilename(
         meta: NuvioMeta?,
