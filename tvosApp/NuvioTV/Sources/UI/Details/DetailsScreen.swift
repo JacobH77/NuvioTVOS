@@ -132,11 +132,19 @@ struct DetailsScreen: View {
         TVHomeDebugTrace.log("details.init id=\(id) type=\(type)")
     }
 
+    @FocusState private var isLoadingInitialFocusActive: Bool
+
     var body: some View {
         ZStack {
             if viewModel.uiState.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #if os(tvOS)
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .focusable(true)
+                    .focused($isLoadingInitialFocusActive)
+                #endif
             } else if let error = viewModel.uiState.error {
                 ErrorView(
                     error: error,
@@ -241,7 +249,13 @@ struct DetailsScreen: View {
                     backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                     logoUrl: meta.logoUrl,
                     title: meta.name,
-                    message: detailsLoadingMessage
+                    message: detailsLoadingMessage,
+                    onDismiss: {
+                        PlaybackStartupTiming.cancel()
+                        isSmartPlaybackPending = false
+                        isResolvingDebrid = false
+                        isPreparingPlayback = false
+                    }
                 )
                 .transition(.opacity)
                 .zIndex(25)
@@ -344,8 +358,19 @@ struct DetailsScreen: View {
             isSmartPlaybackPending = false
             isResolvingDebrid = false
             isPreparingPlayback = false
+            #if os(tvOS)
+            if viewModel.uiState.isLoading {
+                DispatchQueue.main.async {
+                    isLoadingInitialFocusActive = true
+                }
+            }
+            #endif
             TVHomeDebugTrace.log("details.appear id=\(id) type=\(type)")
-            viewModel.loadDetails(id: id, type: type)
+            if viewModel.uiState.meta == nil || viewModel.uiState.meta?.id != id {
+                viewModel.loadDetails(id: id, type: type)
+            } else {
+                viewModel.refreshWatchlistAndWatchedStatus()
+            }
             presentInitialStreamPickerIfNeeded()
         }
         .onDisappear {
@@ -2749,8 +2774,6 @@ struct TvDetailsContent: View {
                     TrailerPlaybackHandoff.shared.recordHandoff(metaId: metaId, time: seconds)
                 }
             }
-            stopBackgroundTrailer(manual: true)
-            return
         }
         stopBackgroundTrailer(manual: false)
         onBack()
@@ -2808,6 +2831,7 @@ struct TvDetailsContent: View {
             onTrailerClick: {
                 presentFullscreenTrailer()
             },
+            onBack: handleDetailsBack,
             focus: $actionFocus,
             entryLocked: focusedDetailsSection != .actions,
             onFocus: {
@@ -2956,6 +2980,7 @@ struct TvDetailsContent: View {
                                         onEpisodePlayManually?(video)
                                     } : nil,
                                     onEpisodeMenuPresented: { onEpisodeMenuPresented?($0) },
+                                    onBack: handleDetailsBack,
                                     episodeFocus: $episodeFocus,
                                     restrictFocusToKey: restoreEpisodeKey,
                                     entryLocked: focusedDetailsSection != .episodes,
@@ -2982,6 +3007,7 @@ struct TvDetailsContent: View {
                                     onTrailerClick: {
                                         presentFullscreenTrailer()
                                     },
+                                    onBack: handleDetailsBack,
                                     headerFocus: $castHeaderFocus,
                                     entryLocked: focusedDetailsSection != .cast,
                                     onFocus: {
@@ -3017,6 +3043,7 @@ struct TvDetailsContent: View {
                                             stopBackgroundTrailer(manual: false)
                                             onOpenTitle?(item.id, item.type)
                                         },
+                                        onBack: handleDetailsBack,
                                         onFocus: {
                                             if focusedDetailsSection != .related {
                                                 focusedDetailsSection = .related
@@ -3051,6 +3078,7 @@ struct TvDetailsContent: View {
                                         onSelect: { company in
                                             onOpenProduction?(company)
                                         },
+                                        onBack: handleDetailsBack,
                                         onFocus: {
                                             if focusedDetailsSection != .network {
                                                 focusedDetailsSection = .network
@@ -3082,6 +3110,7 @@ struct TvDetailsContent: View {
                                         onSelect: { company in
                                             onOpenProduction?(company)
                                         },
+                                        onBack: handleDetailsBack,
                                         onFocus: {
                                             if focusedDetailsSection != .production {
                                                 focusedDetailsSection = .production
@@ -3112,6 +3141,7 @@ struct TvDetailsContent: View {
                                         onSelect: { comment in
                                             onCommentSelect?(comment)
                                         },
+                                        onBack: handleDetailsBack,
                                         onFocus: {
                                             if focusedDetailsSection != .comments {
                                                 focusedDetailsSection = .comments
@@ -3699,6 +3729,7 @@ private struct TvDetailsActionRow: View {
     var showMdbListRating: Bool = false
     var onRateClick: (() -> Void)? = nil
     let onTrailerClick: () -> Void
+    var onBack: (() -> Void)? = nil
     var focus: FocusState<DetailsActionFocus?>.Binding
     let entryLocked: Bool
     let onFocus: () -> Void
@@ -3715,7 +3746,8 @@ private struct TvDetailsActionRow: View {
                 tag: .play,
                 action: onPlayClick,
                 onFocus: onFocus,
-                longPressAction: onPlayLongPress
+                longPressAction: onPlayLongPress,
+                onBack: onBack
             )
 
             TvDetailsActionButton(
@@ -3731,7 +3763,8 @@ private struct TvDetailsActionRow: View {
                 focus: focus,
                 tag: .watchlist,
                 action: onWatchlistClick,
-                onFocus: onFocus
+                onFocus: onFocus,
+                onBack: onBack
             )
             .disabled(entryLocked)
 
@@ -3745,7 +3778,8 @@ private struct TvDetailsActionRow: View {
                     focus: focus,
                     tag: .rate,
                     action: { onRateClick?() },
-                    onFocus: onFocus
+                    onFocus: onFocus,
+                    onBack: onBack
                 )
                 .disabled(entryLocked)
             }
@@ -3763,7 +3797,8 @@ private struct TvDetailsActionRow: View {
                 focus: focus,
                 tag: .watched,
                 action: onWatchedClick,
-                onFocus: onFocus
+                onFocus: onFocus,
+                onBack: onBack
             )
             .disabled(entryLocked)
 
@@ -3776,11 +3811,15 @@ private struct TvDetailsActionRow: View {
                 focus: focus,
                 tag: .trailer,
                 action: onTrailerClick,
-                onFocus: onFocus
+                onFocus: onFocus,
+                onBack: onBack
             )
             .disabled(entryLocked)
         }
         .focusSection()
+        .onExitCommand {
+            onBack?()
+        }
     }
 }
 
@@ -3828,6 +3867,7 @@ private struct TvDetailsActionButton: View {
     let action: () -> Void
     let onFocus: () -> Void
     var longPressAction: (() -> Void)? = nil
+    var onBack: (() -> Void)? = nil
 
     @State private var didTriggerHold = false
     private var isFocused: Bool { focus.wrappedValue == tag }
@@ -3867,6 +3907,9 @@ private struct TvDetailsActionButton: View {
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
             didTriggerHold = false
+        }
+        .onExitCommand {
+            onBack?()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
@@ -4191,6 +4234,7 @@ private struct TvDetailsCastAndTrailer: View {
     let people: [TmdbPersonMetadata]
     let onPersonClick: (TmdbPersonMetadata) -> Void
     let onTrailerClick: () -> Void
+    var onBack: (() -> Void)? = nil
     var headerFocus: FocusState<DetailsCastHeaderFocus?>.Binding
     let entryLocked: Bool
     let onFocus: () -> Void
@@ -4207,7 +4251,8 @@ private struct TvDetailsCastAndTrailer: View {
                         isSelected: false,
                         focus: headerFocus,
                         tag: .creatorAndCast,
-                        onFocus: onFocus
+                        onFocus: onFocus,
+                        onBack: onBack
                     ) {}
 
                     Text("|")
@@ -4220,6 +4265,7 @@ private struct TvDetailsCastAndTrailer: View {
                         focus: headerFocus,
                         tag: .trailer,
                         onFocus: onFocus,
+                        onBack: onBack,
                         action: onTrailerClick
                     )
                         .disabled(entryLocked)
@@ -4234,7 +4280,8 @@ private struct TvDetailsCastAndTrailer: View {
                                 onFocus: {
                                     focusedPersonIndex = index
                                     onFocus()
-                                }
+                                },
+                                onBack: onBack
                             )
                             .disabled(entryLocked)
                         }
@@ -4244,6 +4291,9 @@ private struct TvDetailsCastAndTrailer: View {
                 .scrollClipDisabledIfAvailable()
             }
             .focusSection()
+            .onExitCommand {
+                onBack?()
+            }
         }
     }
 
@@ -4276,6 +4326,7 @@ private struct TvDetailsSectionButton: View {
     var focus: FocusState<DetailsCastHeaderFocus?>.Binding
     let tag: DetailsCastHeaderFocus
     let onFocus: () -> Void
+    var onBack: (() -> Void)? = nil
     let action: () -> Void
 
     private var isFocused: Bool { focus.wrappedValue == tag }
@@ -4298,6 +4349,9 @@ private struct TvDetailsSectionButton: View {
                 onFocus()
             }
         }
+        .onExitCommand {
+            onBack?()
+        }
     }
 }
 
@@ -4313,6 +4367,7 @@ private struct TvDetailsRelatedRow: View {
     let items: [RelatedTitle]
     let entryLocked: Bool
     let onSelect: (RelatedTitle) -> Void
+    var onBack: (() -> Void)? = nil
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
@@ -4364,6 +4419,9 @@ private struct TvDetailsRelatedRow: View {
             )
         }
         .focusSection()
+        .onExitCommand {
+            onBack?()
+        }
     }
 }
 
@@ -4372,6 +4430,7 @@ private struct TvDetailsProductionRow: View {
     let companies: [MetaCompany]
     let entryLocked: Bool
     let onSelect: (MetaCompany) -> Void
+    var onBack: (() -> Void)? = nil
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
@@ -4407,7 +4466,8 @@ private struct TvDetailsProductionRow: View {
                         onFocus: {
                             if scrollIndex != index { scrollIndex = index }
                             onFocus()
-                        }
+                        },
+                        onBack: onBack
                     )
                     .disabled(entryLocked && index != entryCompanyIndex)
                 }
@@ -4421,6 +4481,9 @@ private struct TvDetailsProductionRow: View {
             )
         }
         .focusSection()
+        .onExitCommand {
+            onBack?()
+        }
     }
 }
 
@@ -4428,6 +4491,7 @@ private struct TvDetailsCompanyCard: View {
     let company: MetaCompany
     let onSelect: () -> Void
     let onFocus: () -> Void
+    var onBack: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
@@ -4504,6 +4568,9 @@ private struct TvDetailsCompanyCard: View {
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
         }
+        .onExitCommand {
+            onBack?()
+        }
         .disabled(company.tmdbId == nil)
         .opacity(company.tmdbId == nil ? 0.55 : 1)
     }
@@ -4513,6 +4580,7 @@ private struct TvDetailsCommentsRow: View {
     let comments: [TraktCommentReview]
     let entryLocked: Bool
     let onSelect: (TraktCommentReview) -> Void
+    var onBack: (() -> Void)? = nil
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
@@ -4540,7 +4608,8 @@ private struct TvDetailsCommentsRow: View {
                         onFocus: {
                             if scrollIndex != index { scrollIndex = index }
                             onFocus()
-                        }
+                        },
+                        onBack: onBack
                     )
                     .disabled(entryLocked && index != scrollIndex)
                 }
@@ -4556,6 +4625,9 @@ private struct TvDetailsCommentsRow: View {
             )
         }
         .focusSection()
+        .onExitCommand {
+            onBack?()
+        }
     }
 }
 
@@ -4563,6 +4635,7 @@ private struct TvDetailsCommentCard: View {
     let comment: TraktCommentReview
     let onSelect: () -> Void
     let onFocus: () -> Void
+    var onBack: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
 
@@ -4616,6 +4689,9 @@ private struct TvDetailsCommentCard: View {
         .animation(.easeOut(duration: 0.14), value: isFocused)
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
+        }
+        .onExitCommand {
+            onBack?()
         }
     }
 }
@@ -4843,13 +4919,7 @@ private struct TvDetailsFullscreenTrailerOverlay: View {
     @State private var timeObserverToken: Any? = nil
 
     private var transportFocusOrder: [TvDetailsTrailerControlFocus] {
-        var order: [TvDetailsTrailerControlFocus] = []
-        if AVPictureInPictureController.isPictureInPictureSupported() {
-            order.append(.pip)
-        }
-        order.append(.subtitles)
-        order.append(.audio)
-        return order
+        [.subtitles, .audio]
     }
 
     private func isTransportButtonFocusable(_ key: TvDetailsTrailerControlFocus) -> Bool {
@@ -5072,20 +5142,6 @@ private struct TvDetailsFullscreenTrailerOverlay: View {
     private var transportRow: some View {
         HStack(spacing: 18) {
             Spacer()
-
-            if AVPictureInPictureController.isPictureInPictureSupported() {
-                glassIconButton(
-                    size: 70,
-                    iconSize: 28,
-                    focusKey: .pip,
-                    isFocused: focusedControl == .pip
-                ) {
-                    togglePictureInPicture()
-                } icon: {
-                    Image(systemName: "pip.enter")
-                }
-                .id("trailer_pip_button")
-            }
 
             TrailerSubtitleMenuButton(
                 noneOption: subtitleNoneOption,
@@ -5529,6 +5585,7 @@ private struct TvDetailsPersonCard: View {
     let person: TmdbPersonMetadata
     let onSelect: () -> Void
     let onFocus: () -> Void
+    var onBack: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
     @State private var profileImage: UIImage?
@@ -5583,6 +5640,9 @@ private struct TvDetailsPersonCard: View {
             if focused {
                 onFocus()
             }
+        }
+        .onExitCommand {
+            onBack?()
         }
         .task(id: person.profileURL) {
             await loadProfileImage()
@@ -5848,6 +5908,7 @@ private struct TvDetailsEpisodes: View {
     let onSelect: (NuvioVideo) -> Void
     var onPlayManually: ((NuvioVideo) -> Void)? = nil
     let onEpisodeMenuPresented: (Bool) -> Void
+    var onBack: (() -> Void)? = nil
     var episodeFocus: FocusState<String?>.Binding
     /// While set, only the control with this key can take focus — see the
     /// restore in `TvDetailsContent`.
@@ -5878,6 +5939,7 @@ private struct TvDetailsEpisodes: View {
         onSelect: @escaping (NuvioVideo) -> Void,
         onPlayManually: ((NuvioVideo) -> Void)? = nil,
         onEpisodeMenuPresented: @escaping (Bool) -> Void,
+        onBack: (() -> Void)? = nil,
         episodeFocus: FocusState<String?>.Binding,
         restrictFocusToKey: String?,
         entryLocked: Bool,
@@ -5894,6 +5956,7 @@ private struct TvDetailsEpisodes: View {
         self.onSelect = onSelect
         self.onPlayManually = onPlayManually
         self.onEpisodeMenuPresented = onEpisodeMenuPresented
+        self.onBack = onBack
         self.episodeFocus = episodeFocus
         self.restrictFocusToKey = restrictFocusToKey
         self.entryLocked = entryLocked
@@ -5915,6 +5978,9 @@ private struct TvDetailsEpisodes: View {
             episodeCardStrip
         }
         .focusSection()
+        .onExitCommand {
+            onBack?()
+        }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
             refreshWatchedState()
         }
@@ -6092,6 +6158,7 @@ private struct TvDetailsEpisodes: View {
                         action: { onSelect(video) },
                         onPlayManually: onPlayManually != nil ? { onPlayManually?(video) } : nil,
                         smartStreamSelection: smartStreamSelection,
+                        onBack: onBack,
                         focus: episodeFocus,
                         restrictFocusToKey: effectiveFocusRestriction,
                         onMoveDown: onMoveDownFromEpisode,
@@ -6123,6 +6190,7 @@ private struct TvDetailsEpisodes: View {
                             isSelected: season == selectedSeason,
                             onFocus: onFocus,
                             onMoveUp: onMoveUpFromSeason,
+                            onBack: onBack,
                             action: {
                                 userDidSelectSeason = true
                                 selectedSeason = season
@@ -6200,6 +6268,7 @@ private struct TvSeasonPill: View {
     let isSelected: Bool
     let onFocus: () -> Void
     let onMoveUp: () -> Void
+    var onBack: (() -> Void)? = nil
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -6221,6 +6290,9 @@ private struct TvSeasonPill: View {
         .animation(.easeOut(duration: 0.14), value: isSelected)
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
+        }
+        .onExitCommand {
+            onBack?()
         }
         .onMoveCommand { direction in
             if direction == .up {
@@ -6247,6 +6319,7 @@ private struct TvEpisodeCard: View {
     let action: () -> Void
     var onPlayManually: (() -> Void)? = nil
     var smartStreamSelection: Bool = false
+    var onBack: (() -> Void)? = nil
     var focus: FocusState<String?>.Binding
     let restrictFocusToKey: String?
     let onMoveDown: () -> Void
@@ -6396,6 +6469,9 @@ private struct TvEpisodeCard: View {
             .animation(.easeOut(duration: 0.14), value: isFocused)
             .onChange(of: isFocused) { _, focused in
                 if focused { onFocus() }
+            }
+            .onExitCommand {
+                onBack?()
             }
             .contextMenu {
                 if smartStreamSelection, let onPlayManually {

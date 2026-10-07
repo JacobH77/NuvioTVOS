@@ -555,4 +555,23 @@ final class DetailsViewModelTests: XCTestCase {
         repo.cacheMetadata(fullMeta, requestedID: testId)
         XCTAssertTrue(repo.isCachedFullMetadata(id: testId))
     }
+
+    func testRefreshWatchlistAndWatchedStatus() async {
+        await viewModel.loadDetails(id: "movie_1", type: "movie").value
+        XCTAssertFalse(viewModel.uiState.isInWatchlist)
+        XCTAssertFalse(viewModel.uiState.isWatched)
+
+        guard let meta = viewModel.uiState.meta else {
+            XCTFail("Meta should not be nil")
+            return
+        }
+
+        LibraryStore.add(meta: meta)
+        WatchedStore.add(meta: meta)
+
+        viewModel.refreshWatchlistAndWatchedStatus()
+
+        XCTAssertTrue(viewModel.uiState.isInWatchlist)
+        XCTAssertTrue(viewModel.uiState.isWatched)
+    }
 }

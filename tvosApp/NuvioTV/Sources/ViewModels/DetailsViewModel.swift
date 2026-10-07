@@ -531,6 +531,16 @@ class DetailsViewModel: ObservableObject {
         }
     }
 
+    /// Refreshes local watchlist and watched state without reloading metadata,
+    /// stream groups, or enrichment from the network.
+    func refreshWatchlistAndWatchedStatus() {
+        guard let meta = uiState.meta else { return }
+        var updatedState = uiState
+        updatedState.isInWatchlist = LibraryStore.contains(metaId: meta.id, type: meta.type)
+        updatedState.isWatched = WatchedStore.contains(meta: meta)
+        uiState = updatedState
+    }
+
     func toggleWatchlist() {
         guard let meta = uiState.meta else { return }
         if TraktSettingsStore.librarySourceMode == .local {
