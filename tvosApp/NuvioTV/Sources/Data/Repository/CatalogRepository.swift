@@ -308,6 +308,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
         let disabled = TVHomeCatalogOrder.disabledCatalogKeys()
             .sorted()
             .joined(separator: ",")
+        let deleted = TVHomeCatalogOrder.deletedCatalogKeys()
+            .sorted()
+            .joined(separator: ",")
         let order = TVHomeCatalogOrder.syncedCatalogOrderIndex()
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
@@ -322,18 +325,12 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }).sorted().joined(separator: "|")
         let explicitHomeKeys = visibility.explicitHomeKeys.sorted().joined(separator: ",")
         let showType = ProfileSettings.current.object(forKey: SettingsKey.homeCatalogShowType) as? Bool ?? true
-        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] order:[\(order)] customTitles:[\(customTitles)] folderSources:[\(folderSources)] explicitHome:[\(explicitHomeKeys)] showType:\(showType)"
+        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] deleted:[\(deleted)] order:[\(order)] customTitles:[\(customTitles)] folderSources:[\(folderSources)] explicitHome:[\(explicitHomeKeys)] showType:\(showType)"
     }
     private let baseURL = URL(string: "https://v3-cinemeta.strem.io")!
     private static var cachedMetaById: [String: NuvioMeta] = [:]
     private static var cachedFullMetaIds: Set<String> = []
     private static let metadataCacheQueue = DispatchQueue(label: "nuvio.catalog.metadata-cache", attributes: .concurrent)
-    private let builtInSubtitleAddons = [
-        StremioSubtitleAddon(
-            name: "OpenSubtitles v3",
-            manifestURL: URL(string: "https://opensubtitles-v3.strem.io/manifest.json")!
-        )
-    ]
     private let genres = [
         "Action", "Adventure", "Animation", "Biography", "Comedy",
         "Crime", "Documentary", "Drama", "Family", "Fantasy",
@@ -728,8 +725,18 @@ final class CinemetaCatalogRepository: CatalogRepository {
 
             let base = manifestURL.deletingLastPathComponent()
             let addonDisplayName = manifest.displayName ?? Self.streamAddonName(for: manifestURL)
+            let deletedCatalogKeys = TVHomeCatalogOrder.deletedCatalogKeys()
             let manifestEligible = (manifest.catalogs ?? []).filter { catalog in
-                catalog.eligibleForHome
+                let settingsKey = TVHomeCatalogOrder.catalogSettingsKey(
+                    addonId: manifest.id,
+                    contentType: catalog.type,
+                    catalogId: catalog.id
+                )
+                let rowId = "addon_\(manifest.id)_\(catalog.type)_\(catalog.id)"
+                if deletedCatalogKeys.contains(settingsKey) || deletedCatalogKeys.contains(rowId) {
+                    return false
+                }
+                return catalog.eligibleForHome
                     && (!catalog.requiresGenre || catalog.firstGenreOption != nil)
             }
             let registeredRows = manifestEligible.map { catalog in
@@ -942,6 +949,21 @@ final class CinemetaCatalogRepository: CatalogRepository {
                type: metaType
            ) {
             resolvedId = imdb
+        }
+
+        if id.hasPrefix("wetrakr:"),
+           let token = WeTrakrRuntimeSession.authenticatedState()?.accessToken,
+           !token.isEmpty {
+            let wetrakrNum = String(id.dropFirst("wetrakr:".count))
+            let clientID = WeTrakrConfig.clientID(in: ProfileSettings.current)
+            if let resolved = await WeTrakrProgressService.resolveExternalID(
+                wetrakrID: wetrakrNum,
+                isSeries: isSeries,
+                token: token,
+                clientID: clientID
+            ) {
+                resolvedId = resolved
+            }
         }
 
         let resolvedCanonicalImdbID = NuvioMeta.canonicalImdbID(from: resolvedId)
@@ -1182,7 +1204,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
     /// Every enabled manifest URL — the manually entered one plus the list synced
     /// from the account — deduplicated in priority order.
     static var configuredStreamAddonManifestURLs: [URL] {
-        configuredStreamAddonPreferences.compactMap { preference in
+        configuredStreamAddonManifestURLs(in: ProfileSettings.current)
+    }
+
+    static func configuredStreamAddonManifestURLs(in defaults: UserDefaults) -> [URL] {
+        configuredStreamAddonPreferences(in: defaults).compactMap { preference in
             guard preference.enabled else { return nil }
             return normalizedManifestURL(from: preference.url)
         }
@@ -1472,13 +1498,14 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
     }
 
-    /// Built-in subtitles plus every enabled installed add-on whose manifest
-    /// advertises the Stremio `subtitles` resource.
-    private func configuredSubtitleAddons(id: String, type: String) async -> [StremioSubtitleAddon] {
+    /// Enabled installed add-ons whose manifest advertises the Stremio `subtitles` resource.
+    func configuredSubtitleAddons(id: String, type: String,
+                                  manifestURLs: [URL]? = nil) async -> [StremioSubtitleAddon] {
         let subtitleType = Self.isSeriesType(type) ? "series" : "movie"
-        var addons = builtInSubtitleAddons
-        var seenURLs = Set(addons.map(\.manifestURL))
-        let candidateURLs = Self.configuredStreamAddonManifestURLs.filter { seenURLs.insert($0).inserted }
+        var addons: [StremioSubtitleAddon] = []
+        var seenURLs: Set<URL> = []
+        let candidateURLs = (manifestURLs ?? Self.configuredStreamAddonManifestURLs)
+            .filter { seenURLs.insert($0).inserted }
 
         let manifests = await loadManifestsConcurrently(urls: candidateURLs)
         for manifestURL in candidateURLs {
@@ -2543,7 +2570,7 @@ private struct StremioStreamAddon {
     }
 }
 
-private struct StremioSubtitleAddon {
+struct StremioSubtitleAddon {
     let name: String
     let manifestURL: URL
 

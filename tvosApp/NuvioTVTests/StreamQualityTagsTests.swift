@@ -302,6 +302,11 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertNotNil(vidhub)
         XCTAssertTrue(vidhub!.absoluteString.starts(with: "vidhub://"))
 
+        let senplayer = ExternalPlayer.senplayer.launchURL(for: stream, subtitleURLs: [sub])
+        XCTAssertNotNil(senplayer)
+        XCTAssertTrue(senplayer!.absoluteString.starts(with: "senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(senplayer!.absoluteString.contains("sub="))
+
         let builtIn = ExternalPlayer.builtIn.launchURL(for: stream)
         XCTAssertNil(builtIn)
     }
@@ -335,6 +340,16 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertTrue(vidhub!.absoluteString.contains("vidhub://play?url="))
         XCTAssertTrue(vidhub!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
         XCTAssertTrue(vidhub!.absoluteString.contains("position=45"))
+
+        let senplayer = ExternalPlayer.senplayer.launchURL(
+            for: stream,
+            filename: movieFilename,
+            position: 60.0
+        )
+        XCTAssertNotNil(senplayer)
+        XCTAssertTrue(senplayer!.absoluteString.contains("senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(senplayer!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
+        XCTAssertTrue(senplayer!.absoluteString.contains("position=60"))
     }
 
     func testExternalPlayerMediaFilenameGeneration() {
@@ -431,6 +446,22 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-tv://"))
     }
 
+    func testSenPlayerXCallbacksArePercentEncoded() {
+        let stream = URL(string: "https://cdn.example/movie.mkv?token=a&b=c")!
+        let success = URL(string: "nuvio-tv://external-playback/ABC-123")!
+        let error = URL(string: "nuvio-tv://external-playback/error/ABC-123")!
+        let launch = ExternalPlayer.senplayer.launchURL(
+            for: stream,
+            successURL: success,
+            errorURL: error
+        )!
+
+        XCTAssertTrue(launch.absoluteString.starts(with: "senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(launch.absoluteString.contains("x-success=nuvio-tv%3A%2F%2Fexternal-playback%2FABC-123"))
+        XCTAssertTrue(launch.absoluteString.contains("x-error=nuvio-tv%3A%2F%2Fexternal-playback%2Ferror%2FABC-123"))
+        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-tv://"))
+    }
+
     func testExternalPlaybackCallbackParsingAndCompletionFraction() {
         let callback = ExternalPlaybackCallback.parse(
             URL(string: "nuvio-tv://external-playback/ABC-123?progress=0.9")!
@@ -517,6 +548,7 @@ final class StreamQualityTagsTests: XCTestCase {
             XCTAssertFalse(player.rawValue.isEmpty)
             XCTAssertEqual(ExternalPlayer.from(player.rawValue), player)
         }
+        XCTAssertEqual(ExternalPlayer.from("SenPlayer"), .senplayer)
         XCTAssertEqual(ExternalPlayer.from("Unknown"), .builtIn)
         XCTAssertEqual(ExternalPlayer.from(nil), .builtIn)
     }

@@ -24,6 +24,7 @@ final class StreamsRepository: ObservableObject {
 
     private var activeJob: Task<Void, Never>?
     private var activeRequestKey: String?
+    private var activeAddonManifestURLs: [URL]?
 
     /// Actor-backed success-only cache (no permanent failure entries).
     private static let manifestCache = StreamManifestCache()
@@ -39,6 +40,15 @@ final class StreamsRepository: ObservableObject {
         episode: Int? = nil
     ) -> String {
         "\(type)::\(videoId)::\(season.map(String.init) ?? "")::\(episode.map(String.init) ?? "")"
+    }
+
+    nonisolated static func requestConfigurationMatches(
+        activeRequestKey: String?,
+        requestKey: String,
+        activeAddonManifestURLs: [URL]?,
+        configuredAddonManifestURLs: [URL]
+    ) -> Bool {
+        activeRequestKey == requestKey && activeAddonManifestURLs == configuredAddonManifestURLs
     }
 
     /// Parse `tt1234567:1:5`-style series episode ids into season/episode.
@@ -129,16 +139,22 @@ final class StreamsRepository: ObservableObject {
             ? Self.seasonEpisode(fromVideoId: videoId)
             : (season, episode)
         let key = Self.requestKey(type: type, videoId: videoId, season: se.0, episode: se.1)
+        let addonManifestURLs = CinemetaCatalogRepository.configuredStreamAddonManifestURLs
         let current = state
 
         if !forceRefresh,
-           activeRequestKey == key,
+           Self.requestConfigurationMatches(
+            activeRequestKey: activeRequestKey,
+            requestKey: key,
+            activeAddonManifestURLs: activeAddonManifestURLs,
+            configuredAddonManifestURLs: addonManifestURLs),
            current.hasResolvedTargets || current.isAnyLoading || current.emptyStateReason != nil {
             print("[StreamsRepo] skip reload key=\(key) groups=\(current.groups.count) loading=\(current.isAnyLoading)")
             return
         }
 
         activeRequestKey = key
+        activeAddonManifestURLs = addonManifestURLs
         state = StreamsDiscoveryState(
             requestKey: key,
             revision: state.revision &+ 1,
@@ -151,7 +167,8 @@ final class StreamsRepository: ObservableObject {
             await self?.runDiscovery(
                 requestKey: key,
                 type: type,
-                videoId: videoId
+                videoId: videoId,
+                addonManifestURLs: addonManifestURLs
             )
         }
     }
@@ -199,7 +216,9 @@ final class StreamsRepository: ObservableObject {
 
     // MARK: - Discovery
 
-    private func runDiscovery(requestKey: String, type: String, videoId: String) async {
+    private func runDiscovery(requestKey: String, type: String, videoId: String,
+                              addonManifestURLs: [URL]) async {
+        guard !Task.isCancelled else { return }
         let ownedGroups = [localStreamGroup(videoId: videoId), jellyfinStreamGroup(videoId: videoId)]
             .compactMap { $0 }
         state = StreamsDiscoveryState(
@@ -209,11 +228,7 @@ final class StreamsRepository: ObservableObject {
             isAnyLoading: true
         )
 
-        let preferences = CinemetaCatalogRepository.configuredStreamAddonPreferences
-        let enabledURLs = preferences.compactMap { pref -> URL? in
-            guard pref.enabled else { return nil }
-            return CinemetaCatalogRepository.normalizedManifestURL(from: pref.url)
-        }
+        let enabledURLs = addonManifestURLs
 
         guard !enabledURLs.isEmpty else {
             state = StreamsDiscoveryState(
@@ -229,6 +244,7 @@ final class StreamsRepository: ObservableObject {
 
         // Load missing manifests concurrently (app-lifetime cache).
         let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        guard !Task.isCancelled else { return }
 
         // Preserve configured order; only include stream-capable, id-compatible add-ons.
         var targets: [StreamAddonTarget] = []
@@ -294,14 +310,15 @@ final class StreamsRepository: ObservableObject {
             }
         }
 
-        guard activeRequestKey == requestKey else { return }
+        guard !Task.isCancelled, activeRequestKey == requestKey else { return }
 
         // Stream groups are done, but smart subtitle matching must not run until
         // external subtitle decoration finishes. Stay "loading" through that step.
         publish(groups: state.groups, requestKey: requestKey, forceLoading: true)
 
-        let externalSubtitles = await fetchExternalSubtitles(type: type, videoId: videoId)
-        guard activeRequestKey == requestKey else { return }
+        let externalSubtitles = await fetchExternalSubtitles(
+            type: type, videoId: videoId, manifestURLs: enabledURLs)
+        guard !Task.isCancelled, activeRequestKey == requestKey else { return }
 
         var finalGroups = state.groups
         if !externalSubtitles.isEmpty {
@@ -535,65 +552,37 @@ final class StreamsRepository: ObservableObject {
     private func fetchExternalSubtitles(
         type: String,
         videoId: String,
+        manifestURLs: [URL],
         videoHash: String? = nil,
         videoSize: Int64? = nil,
         filename: String? = nil
     ) async -> [NuvioSubtitle] {
+        guard !Task.isCancelled else { return [] }
         let subtitleType = Self.isSeriesType(type) ? "series" : "movie"
-        let builtIn: [(name: String, url: URL)] = [
-            (
-                "OpenSubtitles v3",
-                URL(string: "https://opensubtitles-v3.strem.io/manifest.json")!
-            )
-        ]
-
         var endpoints: [(name: String, subtitleURL: URL)] = []
-        for item in builtIn {
-            if let baseURL = AddonTransportUrls.buildResourceURL(
-                manifestURL: item.url,
-                resource: "subtitles",
-                type: subtitleType,
-                id: videoId
-            ) {
-                endpoints.append((item.name, baseURL))
-            }
-            if let extraURL = AddonTransportUrls.buildSubtitleURL(
-                manifestURL: item.url,
-                type: subtitleType,
-                id: videoId,
-                videoHash: videoHash,
-                videoSize: videoSize,
-                filename: filename
-            ), !endpoints.contains(where: { $0.subtitleURL == extraURL }) {
-                endpoints.append((item.name, extraURL))
-            }
-        }
 
-        let enabledURLs = CinemetaCatalogRepository.configuredStreamAddonManifestURLs
-        let manifests = await Self.loadManifestsConcurrently(urls: enabledURLs)
-        for url in enabledURLs {
-            guard let manifest = manifests[url],
-                  manifest.supportsResource("subtitles", type: subtitleType, id: videoId) else {
-                continue
-            }
-            let name = manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url)
+        let manifests = await Self.loadManifestsConcurrently(urls: manifestURLs)
+        guard !Task.isCancelled else { return [] }
+        let providers = Self.compatibleExternalSubtitleProviders(
+            manifestURLs: manifestURLs, manifests: manifests, type: subtitleType, id: videoId)
+        for provider in providers {
             if let baseURL = AddonTransportUrls.buildResourceURL(
-                manifestURL: url,
+                manifestURL: provider.manifestURL,
                 resource: "subtitles",
                 type: subtitleType,
                 id: videoId
             ) {
-                endpoints.append((name, baseURL))
+                endpoints.append((provider.name, baseURL))
             }
             if let extraURL = AddonTransportUrls.buildSubtitleURL(
-                manifestURL: url,
+                manifestURL: provider.manifestURL,
                 type: subtitleType,
                 id: videoId,
                 videoHash: videoHash,
                 videoSize: videoSize,
                 filename: filename
             ), !endpoints.contains(where: { $0.subtitleURL == extraURL }) {
-                endpoints.append((name, extraURL))
+                endpoints.append((provider.name, extraURL))
             }
         }
 
@@ -602,7 +591,8 @@ final class StreamsRepository: ObservableObject {
         await withTaskGroup(of: [NuvioSubtitle].self) { group in
             for endpoint in endpoints {
                 group.addTask {
-                    await Self.fetchSubtitles(from: endpoint.subtitleURL, source: endpoint.name)
+                    guard !Task.isCancelled else { return [] }
+                    return await Self.fetchSubtitles(from: endpoint.subtitleURL, source: endpoint.name)
                 }
             }
             for await batch in group {
@@ -616,7 +606,21 @@ final class StreamsRepository: ObservableObject {
                 }
             }
         }
+        guard !Task.isCancelled else { return [] }
         return accumulated
+    }
+
+    nonisolated static func compatibleExternalSubtitleProviders(
+        manifestURLs: [URL],
+        manifests: [URL: StreamAddonManifest],
+        type: String,
+        id: String
+    ) -> [(name: String, manifestURL: URL)] {
+        manifestURLs.compactMap { url in
+            guard let manifest = manifests[url],
+                  manifest.supportsResource("subtitles", type: type, id: id) else { return nil }
+            return (manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url), url)
+        }
     }
 
     private static func fetchSubtitles(from url: URL, source: String) async -> [NuvioSubtitle] {

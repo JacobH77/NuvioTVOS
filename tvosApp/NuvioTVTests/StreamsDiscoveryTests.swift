@@ -86,6 +86,78 @@ final class StreamsDiscoveryTests: XCTestCase {
         XCTAssertEqual(movieKey, "movie::tt99::::")
     }
 
+    func testConfiguredSubtitleManifestURLsIncludeOnlyEnabledInstalledAddons() throws {
+        let suiteName = "NuvioTVTests.SubtitleAddonPreferences.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let openSubtitlesURL = "https://opensubtitles-v3.strem.io/manifest.json"
+
+        XCTAssertTrue(CinemetaCatalogRepository.configuredStreamAddonManifestURLs(in: defaults).isEmpty)
+
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences(
+            [StreamAddonPreference(url: openSubtitlesURL, enabled: false)], in: defaults)
+        XCTAssertTrue(CinemetaCatalogRepository.configuredStreamAddonManifestURLs(in: defaults).isEmpty)
+
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences(
+            [StreamAddonPreference(url: openSubtitlesURL, enabled: true)], in: defaults)
+        XCTAssertEqual(
+            CinemetaCatalogRepository.configuredStreamAddonManifestURLs(in: defaults),
+            [try XCTUnwrap(URL(string: openSubtitlesURL))]
+        )
+
+        // Removing the installed preference removes it from the next request snapshot.
+        CinemetaCatalogRepository.setConfiguredStreamAddonPreferences([], in: defaults)
+        XCTAssertTrue(CinemetaCatalogRepository.configuredStreamAddonManifestURLs(in: defaults).isEmpty)
+    }
+
+    func testConfiguredSubtitleSearchDoesNotAddAnUninstalledProvider() async {
+        let repository = CinemetaCatalogRepository()
+        let addons = await repository.configuredSubtitleAddons(
+            id: "tt1234567", type: "movie", manifestURLs: [])
+        XCTAssertTrue(addons.isEmpty)
+    }
+
+    func testExternalSubtitleProvidersRequireConfiguredCompatibleManifest() throws {
+        let providerURL = try XCTUnwrap(URL(string: "https://opensubtitles-v3.strem.io/manifest.json"))
+        let unconfiguredURL = try XCTUnwrap(URL(string: "https://other.example/manifest.json"))
+        let compatible = try JSONDecoder().decode(StreamAddonManifest.self, from: Data(
+            #"{"id":"com.example.subtitles","name":"Example Subs","types":["movie"],"idPrefixes":["tt"],"resources":[{"name":"subtitles","types":["movie"]}]}"#.utf8
+        ))
+        let streamOnly = try JSONDecoder().decode(StreamAddonManifest.self, from: Data(
+            #"{"id":"com.example.streams","name":"Streams Only","types":["movie"],"resources":["stream"]}"#.utf8
+        ))
+        let manifests = [providerURL: compatible, unconfiguredURL: streamOnly]
+
+        let absent = StreamsRepository.compatibleExternalSubtitleProviders(
+            manifestURLs: [], manifests: manifests, type: "movie", id: "tt1234567")
+        XCTAssertTrue(absent.isEmpty)
+
+        let disabledOrDeleted = StreamsRepository.compatibleExternalSubtitleProviders(
+            manifestURLs: [unconfiguredURL], manifests: manifests, type: "movie", id: "tt1234567")
+        XCTAssertTrue(disabledOrDeleted.isEmpty)
+
+        let enabled = StreamsRepository.compatibleExternalSubtitleProviders(
+            manifestURLs: [providerURL, unconfiguredURL], manifests: manifests,
+            type: "movie", id: "tt1234567")
+        XCTAssertEqual(enabled.map(\.manifestURL), [providerURL])
+        XCTAssertEqual(enabled.map(\.name), ["Example Subs"])
+    }
+
+    func testSameTitleDiscoveryDoesNotReuseResultsAfterAddonConfigurationChanges() {
+        let key = StreamsRepository.requestKey(type: "movie", videoId: "tt1234567")
+        let providerURL = URL(string: "https://opensubtitles-v3.strem.io/manifest.json")!
+
+        XCTAssertTrue(StreamsRepository.requestConfigurationMatches(
+            activeRequestKey: key, requestKey: key,
+            activeAddonManifestURLs: [providerURL], configuredAddonManifestURLs: [providerURL]))
+        XCTAssertFalse(StreamsRepository.requestConfigurationMatches(
+            activeRequestKey: key, requestKey: key,
+            activeAddonManifestURLs: [providerURL], configuredAddonManifestURLs: []))
+        XCTAssertFalse(StreamsRepository.requestConfigurationMatches(
+            activeRequestKey: key, requestKey: key,
+            activeAddonManifestURLs: [], configuredAddonManifestURLs: [providerURL]))
+    }
+
     func testSeasonEpisodeParsedFromVideoId() {
         let se = StreamsRepository.seasonEpisode(fromVideoId: "tt0944947:2:5")
         XCTAssertEqual(se.season, 2)
