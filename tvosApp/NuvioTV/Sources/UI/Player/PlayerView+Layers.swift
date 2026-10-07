@@ -163,6 +163,8 @@ extension PlayerView {
             isActive: {
                 !isWakingFromBackground
                     && viewModel.currentErrorDiagnostic == nil && !viewModel.showSettingsPanel
+                    && !viewModel.showScenePanel
+                    && !viewModel.isSceneDetailVisible
                     && viewModel.sidePanel == nil
                     && !viewModel.postPlayState.isVisible
                     && !viewModel.isHoldingSeek
@@ -186,6 +188,8 @@ extension PlayerView {
             isActive: !isWakingFromBackground
                 && viewModel.currentErrorDiagnostic == nil
                 && !viewModel.showSettingsPanel
+                && !viewModel.showScenePanel
+                && !viewModel.isSceneDetailVisible
                 && viewModel.sidePanel == nil
                 && !viewModel.isScrubbing
                 && !viewModel.postPlayState.isVisible
@@ -227,6 +231,7 @@ extension PlayerView {
         !viewModel.showControls
             && !viewModel.showSettingsPanel
             && !viewModel.showScenePanel
+            && !viewModel.isSceneDetailVisible
             && !viewModel.postPlayState.isVisible
             && viewModel.sidePanel == nil
             && viewModel.currentErrorDiagnostic == nil
@@ -288,6 +293,7 @@ extension PlayerView {
                     && !viewModel.showSkipSegmentCard
                     && !viewModel.showSettingsPanel
                     && !viewModel.showScenePanel
+                    && !viewModel.isSceneDetailVisible
                     && !viewModel.postPlayState.isVisible
                     && viewModel.sidePanel == nil
             )
@@ -521,7 +527,7 @@ extension PlayerView {
     @ViewBuilder
     var playerControlsLayer: some View {
         if didReportPlaybackStarted, viewModel.currentErrorDiagnostic == nil {
-            let isSeekingOrControlsVisible = (viewModel.showControls || viewModel.isScrubbing || viewModel.isHoldingSeek || viewModel.pendingSeekDelta != 0) && !viewModel.showScenePanel
+            let isSeekingOrControlsVisible = (viewModel.showControls || viewModel.isScrubbing || viewModel.isHoldingSeek || viewModel.pendingSeekDelta != 0) && !viewModel.showScenePanel && !viewModel.isSceneDetailVisible
             PlayerControls(
                 viewModel: viewModel,
                 isSkipSegmentFocused: skipSegmentFocused,
@@ -554,7 +560,7 @@ extension PlayerView {
                     && !viewModel.showSettingsPanel
                     && !viewModel.showPauseOverlay
             )
-            .disabled(!isSeekingOrControlsVisible || viewModel.showScenePanel)
+            .disabled(!isSeekingOrControlsVisible || viewModel.showScenePanel || viewModel.isSceneDetailVisible)
             .animation(.playerControls, value: viewModel.showControls)
             .animation(.playerControls, value: didReportPlaybackStarted)
             .animation(.playerControls, value: viewModel.isSwitchingSource)
@@ -565,6 +571,7 @@ extension PlayerView {
             .animation(.playerControls, value: viewModel.pendingSeekDelta)
             .animation(.playerControls, value: viewModel.showPauseOverlay)
             .animation(.playerControls, value: viewModel.showScenePanel)
+            .animation(.playerControls, value: viewModel.isSceneDetailVisible)
         }
     }
 

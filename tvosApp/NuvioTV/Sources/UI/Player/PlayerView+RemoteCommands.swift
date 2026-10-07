@@ -48,11 +48,10 @@ extension PlayerView {
                     viewModel.revealControls()
                     return
                 }
-                if viewModel.postPlayState.isTrailerPlaying {
-                    viewModel.stopPostPlayTrailer()
-                    return
-                }
                 if viewModel.postPlayState.isVisible {
+                    if viewModel.postPlayState.isTrailerPlaying {
+                        viewModel.stopPostPlayTrailer()
+                    }
                     let endGuard: Double = max(0, viewModel.time.duration - 3)
                     if viewModel.postPlayState.canReturnToPlayer,
                        viewModel.time.current < endGuard,

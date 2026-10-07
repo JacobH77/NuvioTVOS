@@ -6,7 +6,6 @@ import SwiftUI
 struct ASSRenderedSubtitles: UIViewRepresentable {
     let renderer: AssSubtitlesRenderer
     let reloadSignal: PassthroughSubject<ASSRenderCoordinator.ReloadEvent, Never>
-    let sourceTime: Double
     let onCanvasSizeChanged: ((AssSubtitlesRenderer) -> Void)?
 
     func makeUIView(context: Context) -> ASSFrameHostView {
@@ -17,24 +16,13 @@ struct ASSRenderedSubtitles: UIViewRepresentable {
         )
     }
 
-    func updateUIView(_ view: ASSFrameHostView, context: Context) {
-        view.sourceTime = sourceTime
-    }
+    func updateUIView(_ view: ASSFrameHostView, context: Context) {}
 }
 
 /// Keeps the last frame during a track reload; libass briefly publishes nil
 /// while reparsing even when a visible cue has not ended.
 @MainActor
 final class ASSFrameHostView: UIView {
-    var sourceTime: Double = 0 {
-        didSet {
-            guard imageView.image != nil, !isReloading else { return }
-            if renderer.dialogues(at: sourceTime).isEmpty {
-                hide()
-            }
-        }
-    }
-
     private let renderer: AssSubtitlesRenderer
     private let onCanvasSizeChanged: ((AssSubtitlesRenderer) -> Void)?
     private let imageView = UIImageView()
@@ -45,6 +33,11 @@ final class ASSFrameHostView: UIView {
     private var previousBounds = CGRect.zero
     private var cancellables = Set<AnyCancellable>()
     private var isReloading = false
+    private var displayedImage: CGImage?
+    private var displayedImageRect: CGRect?
+    private var displayedImageScale: CGFloat?
+    private var displayedDialogueIdentity: [String]?
+    private var displayedRendererGeneration: Int?
     private var previousCanvasSize = CGSize.zero
     private var previousDisplayScale: CGFloat = 0
 
@@ -68,23 +61,12 @@ final class ASSFrameHostView: UIView {
                 switch event {
                 case .began:
                     self.isReloading = true
-                case .finished(let image):
+                case .frameRendered(let snapshot):
+                    guard !self.isReloading else { return }
+                    self.acceptFrame(snapshot)
+                case .finished(let snapshot):
                     self.isReloading = false
-                    if let image {
-                        self.display(image)
-                    } else if self.renderer.dialogues(at: self.sourceTime).isEmpty {
-                        self.hide()
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        renderer.framesPublisher()
-            .sink { [weak self] image in
-                guard let self else { return }
-                if let image {
-                    self.display(image)
-                } else if !self.isReloading && self.renderer.dialogues(at: self.sourceTime).isEmpty {
-                    self.hide()
+                    self.finishReload(snapshot)
                 }
             }
             .store(in: &cancellables)
@@ -116,26 +98,62 @@ final class ASSFrameHostView: UIView {
         }
     }
 
-    private func display(_ image: ProcessedImage?) {
-        if let image {
-            guard !isReloading else { return }
-            isReloading = false
-            previousBounds = bounds
-            imageView.frame = image.imageRect
-            imageView.image = UIImage(cgImage: image.image, scale: displayScale, orientation: .up)
-            imageView.isHidden = false
+    private func acceptFrame(_ snapshot: ASSRenderSnapshot) {
+        guard snapshot.rendererID == ObjectIdentifier(renderer) else { return }
+        guard let image = snapshot.image else {
+            hide()
+            return
+        }
+        display(image, dialogueIdentity: snapshot.dialogueIdentity,
+                rendererGeneration: snapshot.rendererGeneration)
+    }
+
+    private func finishReload(_ snapshot: ASSRenderSnapshot) {
+        guard snapshot.rendererID == ObjectIdentifier(renderer) else { return }
+        if let image = snapshot.image {
+            display(image, dialogueIdentity: snapshot.dialogueIdentity,
+                    rendererGeneration: snapshot.rendererGeneration)
             return
         }
 
-        guard !isReloading else { return }
-        if renderer.dialogues(at: sourceTime).isEmpty {
+        // libass can publish nil while a reload reparses an unchanged active line.
+        // Preserve only when the final rendered offset still resolves to the same
+        // active dialogue on the same track generation.
+        guard displayedImage != nil,
+              !snapshot.dialogueIdentity.isEmpty,
+              displayedDialogueIdentity == snapshot.dialogueIdentity,
+              displayedRendererGeneration == snapshot.rendererGeneration else {
             hide()
+            return
         }
     }
 
+    private func display(_ image: ProcessedImage, dialogueIdentity: [String],
+                         rendererGeneration: Int) {
+        let scale = displayScale
+        let imageUnchanged = displayedImage === image.image
+            && displayedImageRect == image.imageRect
+            && displayedImageScale == scale
+        previousBounds = bounds
+        imageView.frame = image.imageRect
+        if !imageUnchanged {
+            imageView.image = UIImage(cgImage: image.image, scale: scale, orientation: .up)
+            displayedImage = image.image
+            displayedImageRect = image.imageRect
+            displayedImageScale = scale
+        }
+        displayedDialogueIdentity = dialogueIdentity
+        displayedRendererGeneration = rendererGeneration
+        imageView.isHidden = false
+    }
+
     private func hide() {
-        isReloading = false
         imageView.image = nil
         imageView.isHidden = true
+        displayedImage = nil
+        displayedImageRect = nil
+        displayedImageScale = nil
+        displayedDialogueIdentity = nil
+        displayedRendererGeneration = nil
     }
 }

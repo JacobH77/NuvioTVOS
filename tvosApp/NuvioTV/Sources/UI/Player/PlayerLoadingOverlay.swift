@@ -202,8 +202,10 @@ struct PlayerLoadingOverlay: View {
     var message: String = L10n.string("player_status_starting_stream", fallback: "Starting stream")
     var startTime: Date? = nil
     var showTimer: Bool = true
+    var onDismiss: (() -> Void)? = nil
 
     @AppStorage(SettingsKey.showLoadingStatus) private var showLoadingStatus = true
+    @FocusState private var isFocusActive: Bool
     @State private var isPulsing = false
     @State private var logoLoadFailed = false
     @State private var mountedDate = Date()
@@ -215,6 +217,13 @@ struct PlayerLoadingOverlay: View {
 
     var body: some View {
         ZStack {
+            #if os(tvOS)
+            Color.clear
+                .frame(width: 1, height: 1)
+                .focusable(true)
+                .focused($isFocusActive)
+            #endif
+
             // 1. Solid Black Base
             Color.black.ignoresSafeArea()
 
@@ -372,8 +381,18 @@ struct PlayerLoadingOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
+        #if os(tvOS)
+        .onExitCommand {
+            onDismiss?()
+        }
+        #endif
         .onAppear {
             isPulsing = true
+            #if os(tvOS)
+            DispatchQueue.main.async {
+                isFocusActive = true
+            }
+            #endif
         }
     }
 

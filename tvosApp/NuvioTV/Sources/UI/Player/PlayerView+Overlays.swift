@@ -68,7 +68,8 @@ extension PlayerView {
                         backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                         logoUrl: meta.logoUrl,
                         title: meta.name,
-                        message: viewModel.loadingStepMessage
+                        message: viewModel.loadingStepMessage,
+                        onDismiss: onBack
                     )
                     .transition(.opacity)
                 } else if !viewModel.hasRenderedFirstFrame {
@@ -84,7 +85,8 @@ extension PlayerView {
                         backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                         logoUrl: meta.logoUrl,
                         title: meta.name,
-                        message: viewModel.loadingStepMessage
+                        message: viewModel.loadingStepMessage,
+                        onDismiss: onBack
                     )
                     .transition(.opacity)
                 }
@@ -205,6 +207,7 @@ struct PlaybackErrorOverlayView: View {
         .glassRoundedRect(cornerRadius: 28)
         .shadow(color: .black.opacity(0.7), radius: 24, y: 8)
         .focusSection()
+        .onExitCommand(perform: onClose)
         .onAppear {
             if !didInitializeFocus {
                 didInitializeFocus = true

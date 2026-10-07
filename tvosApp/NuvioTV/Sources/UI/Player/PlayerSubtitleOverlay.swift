@@ -71,7 +71,6 @@ struct PlayerSubtitleOverlay: View {
                     ASSRenderedSubtitles(
                         renderer: renderer,
                         reloadSignal: playback.assReloadSignal,
-                        sourceTime: evaluationTime,
                         onCanvasSizeChanged: playback.onASSCanvasSizeChanged
                     )
                     .id(ObjectIdentifier(renderer))

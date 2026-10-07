@@ -192,6 +192,7 @@ struct PlayerControls: View {
             && !viewModel.showPauseOverlay
             && !viewModel.showSettingsPanel
             && !viewModel.showScenePanel
+            && !viewModel.isSceneDetailVisible
             && !viewModel.postPlayState.isVisible
             && viewModel.sidePanel == nil
     }
@@ -650,6 +651,7 @@ struct PlayerControls: View {
                 && !viewModel.showSettingsPanel
                 && !viewModel.showPauseOverlay
                 && !viewModel.showScenePanel
+                && !viewModel.isSceneDetailVisible
         )
         .focused($focusedControl, equals: .timeline)
         .focusEffectDisabledIfAvailable()

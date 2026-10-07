@@ -1306,4 +1306,109 @@ extension PlayerControlsSettingsTests {
     }
 }
 
+final class ExternalPlayerTests: XCTestCase {
+    func testExternalPlayerSubtitleForwarding() {
+        let stream = URL(string: "https://cdn.example/movie.mkv")!
+        let sub = URL(string: "https://subs.example/en.srt")!
+        let infuse = ExternalPlayer.infuse.launchURL(for: stream, subtitleURLs: [sub])
+        XCTAssertNotNil(infuse)
+        XCTAssertTrue(infuse!.absoluteString.contains("sub="))
+        XCTAssertTrue(infuse!.absoluteString.contains("infuse://"))
+
+        let vlc = ExternalPlayer.vlc.launchURL(for: stream, subtitleURLs: [sub])
+        XCTAssertNotNil(vlc)
+        XCTAssertTrue(vlc!.absoluteString.contains("vlc-x-callback://"))
+        XCTAssertTrue(vlc!.absoluteString.contains("sub="))
+
+        let outplayer = ExternalPlayer.outplayer.launchURL(for: stream)
+        XCTAssertNotNil(outplayer)
+        XCTAssertTrue(outplayer!.absoluteString.starts(with: "outplayer://"))
+
+        let nplayer = ExternalPlayer.nplayer.launchURL(for: stream)
+        XCTAssertNotNil(nplayer)
+        XCTAssertTrue(nplayer!.absoluteString.starts(with: "nplayer-https://"))
+
+        let vidhub = ExternalPlayer.vidhub.launchURL(for: stream)
+        XCTAssertNotNil(vidhub)
+        XCTAssertTrue(vidhub!.absoluteString.starts(with: "vidhub://"))
+
+        let senplayer = ExternalPlayer.senplayer.launchURL(for: stream, subtitleURLs: [sub])
+        XCTAssertNotNil(senplayer)
+        XCTAssertTrue(senplayer!.absoluteString.starts(with: "senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(senplayer!.absoluteString.contains("sub="))
+
+        let builtIn = ExternalPlayer.builtIn.launchURL(for: stream)
+        XCTAssertNil(builtIn)
+    }
+
+    func testExternalPlayerFilenameAndPositionParameters() {
+        let stream = URL(string: "https://torrentio.strem.fun/stream/btQt7hBjitPmN5KQjRjZxT49F4ISsyPyyjqDx27KjX0os01JifcLDA")!
+        let movieFilename = "Superman & Lois (2024).mp4"
+        let infuse = ExternalPlayer.infuse.launchURL(
+            for: stream,
+            filename: movieFilename,
+            position: 125.0
+        )
+        XCTAssertNotNil(infuse)
+        XCTAssertTrue(infuse!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
+        XCTAssertTrue(infuse!.absoluteString.contains("position=125"))
+
+        let outplayer = ExternalPlayer.outplayer.launchURL(
+            for: stream,
+            filename: movieFilename
+        )
+        XCTAssertNotNil(outplayer)
+        XCTAssertTrue(outplayer!.absoluteString.contains("outplayer://x-callback-url/play?url="))
+        XCTAssertTrue(outplayer!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
+
+        let vidhub = ExternalPlayer.vidhub.launchURL(
+            for: stream,
+            filename: movieFilename,
+            position: 45.0
+        )
+        XCTAssertNotNil(vidhub)
+        XCTAssertTrue(vidhub!.absoluteString.contains("vidhub://play?url="))
+        XCTAssertTrue(vidhub!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
+        XCTAssertTrue(vidhub!.absoluteString.contains("position=45"))
+
+        let senplayer = ExternalPlayer.senplayer.launchURL(
+            for: stream,
+            filename: movieFilename,
+            position: 60.0
+        )
+        XCTAssertNotNil(senplayer)
+        XCTAssertTrue(senplayer!.absoluteString.contains("senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(senplayer!.absoluteString.contains("filename=Superman%20%26%20Lois%20%282024%29.mp4"))
+        XCTAssertTrue(senplayer!.absoluteString.contains("position=60"))
+    }
+
+    func testSenPlayerXCallbacksArePercentEncoded() {
+        let stream = URL(string: "https://cdn.example/movie.mkv?token=a&b=c")!
+        let success = URL(string: "nuvio-tv://external-playback/ABC-123")!
+        let error = URL(string: "nuvio-tv://external-playback/error/ABC-123")!
+        let launch = ExternalPlayer.senplayer.launchURL(
+            for: stream,
+            successURL: success,
+            errorURL: error
+        )!
+
+        XCTAssertTrue(launch.absoluteString.starts(with: "senplayer://x-callback-url/play?url="))
+        XCTAssertTrue(launch.absoluteString.contains("x-success=nuvio-tv%3A%2F%2Fexternal-playback%2FABC-123"))
+        XCTAssertTrue(launch.absoluteString.contains("x-error=nuvio-tv%3A%2F%2Fexternal-playback%2Ferror%2FABC-123"))
+        XCTAssertFalse(launch.absoluteString.contains("x-success=nuvio-tv://"))
+    }
+
+    func testExternalPlayerSystemImagesAndLabels() {
+        for player in ExternalPlayer.allCases {
+            XCTAssertFalse(player.systemImage.isEmpty)
+            XCTAssertFalse(player.rawValue.isEmpty)
+            XCTAssertEqual(ExternalPlayer.from(player.rawValue), player)
+        }
+        XCTAssertEqual(ExternalPlayer.from("SenPlayer"), .senplayer)
+        XCTAssertEqual(ExternalPlayer.from("Unknown"), .builtIn)
+        XCTAssertEqual(ExternalPlayer.from(nil), .builtIn)
+    }
+}
+
+
 

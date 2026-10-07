@@ -262,6 +262,11 @@ struct PlayerSourcesPanel: View {
     @FocusState private var focusedID: String?
     @State private var visibleSourceLimit: Int = 20
     @State private var didSeedSourceFocus = false
+    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+
+    private var rowCornerRadius: CGFloat {
+        AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 18)
+    }
 
     private var targetSourceId: String? {
         if let current = viewModel.availableSources.first(where: { viewModel.isCurrentSource($0) }) {
@@ -298,16 +303,27 @@ struct PlayerSourcesPanel: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         if viewModel.isLoadingSources && sourcesToShow.isEmpty {
-                            HStack(spacing: 14) {
-                                ProgressView()
-                                    .progressViewStyle(.circular)
-                                    .tint(.white)
-                                Text(L10n.string("player_searching_sources", fallback: "Searching sources…"))
-                                    .font(.system(size: 22, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.8))
+                            Button {} label: {
+                                HStack(spacing: 14) {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .tint(focusedID == "loading" ? .black : .white)
+                                    Text(L10n.string("player_searching_sources", fallback: "Searching sources…"))
+                                        .font(.system(size: 22, weight: .medium))
+                                        .foregroundStyle(focusedID == "loading" ? .black : .white.opacity(0.8))
+                                }
+                                .padding(.horizontal, 22)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                                        .fill(focusedID == "loading" ? Color.white : Color.white.opacity(0.07))
+                                )
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 12)
+                            .buttonStyle(PosterCardButtonStyle())
+                            .focusEffectDisabledIfAvailable()
+                            .focused($focusedID, equals: "loading")
+                            .id("loading")
                         } else if viewModel.availableSources.isEmpty {
                             Button {} label: {
                                 PlayerPanelRow(
@@ -382,6 +398,9 @@ struct PlayerSourcesPanel: View {
                 .onAppear {
                     didSeedSourceFocus = false
                     viewModel.loadSourcesIfNeeded()
+                    if sourcesToShow.isEmpty && viewModel.isLoadingSources {
+                        focusedID = "loading"
+                    }
                     seedSourceFocus(proxy: proxy)
                 }
                 .onChange(of: viewModel.availableSources.map(\.id)) { _, sourceIDs in
@@ -393,7 +412,6 @@ struct PlayerSourcesPanel: View {
     }
 
     private func seedSourceFocus(proxy: ScrollViewProxy) {
-        guard !didSeedSourceFocus else { return }
         ensureTargetSourceVisible()
         guard targetSourceId != nil else { return }
         didSeedSourceFocus = true
