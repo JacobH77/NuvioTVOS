@@ -1736,6 +1736,8 @@ enum SelectedLibraryService {
             return SimklRuntimeSession.authenticatedState() != nil
         case .mdblist:
             return MdbListRuntimeSession.isAuthenticated()
+        case .wetrakr:
+            return WeTrakrRuntimeSession.isAuthenticated()
         }
     }
 
@@ -1749,6 +1751,8 @@ enum SelectedLibraryService {
             return await SimklLibraryService.setWatchlist(meta, isInWatchlist: isInWatchlist)
         case .mdblist:
             return await MdbListLibraryService.setWatchlist(meta, isInWatchlist: isInWatchlist)
+        case .wetrakr:
+            return await WeTrakrLibraryService.setWatchlist(meta, isInWatchlist: isInWatchlist)
         }
     }
 
@@ -1762,6 +1766,8 @@ enum SelectedLibraryService {
             return await SimklLibraryService.fetchLibrary(repository: repository)
         case .mdblist:
             return await MdbListLibraryService.fetchLibrary(repository: repository)
+        case .wetrakr:
+            return await WeTrakrLibraryService.fetchLibrary(repository: repository)
         }
     }
 }

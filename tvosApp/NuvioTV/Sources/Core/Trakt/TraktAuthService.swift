@@ -47,6 +47,7 @@ enum TraktWatchProgressSource: String, CaseIterable, Codable {
     case trakt = "TRAKT"
     case simkl = "SIMKL"
     case mdblist = "MDBLIST"
+    case wetrakr = "WETRAKR"
     case nuvioSync = "NUVIO_SYNC"
 
     var label: String {
@@ -54,6 +55,7 @@ enum TraktWatchProgressSource: String, CaseIterable, Codable {
         case .trakt: return "Trakt"
         case .simkl: return "Simkl"
         case .mdblist: return "MDBList"
+        case .wetrakr: return "WeTrakr"
         case .nuvioSync: return "Nuvio Sync"
         }
     }
@@ -63,6 +65,7 @@ enum TraktLibrarySourceMode: String, CaseIterable {
     case trakt = "TRAKT"
     case simkl = "SIMKL"
     case mdblist = "MDBLIST"
+    case wetrakr = "WETRAKR"
     case local = "LOCAL"
 
     var label: String {
@@ -70,6 +73,7 @@ enum TraktLibrarySourceMode: String, CaseIterable {
         case .trakt: return "Trakt"
         case .simkl: return "Simkl"
         case .mdblist: return "MDBList"
+        case .wetrakr: return "WeTrakr"
         case .local: return "Nuvio Library"
         }
     }
@@ -483,6 +487,9 @@ enum RemoteTrackingState {
         case .mdblist:
             return ProfileSettings.isActiveStore(store)
                 && MdbListRuntimeSession.isAuthenticated(in: store)
+        case .wetrakr:
+            return ProfileSettings.isActiveStore(store)
+                && WeTrakrRuntimeSession.authenticatedState(store: store) != nil
         }
     }
 
@@ -523,6 +530,9 @@ enum RemoteTrackingState {
         case .mdblist:
             return ProfileSettings.isActiveStore(store)
                 && MdbListRuntimeSession.isAuthenticated(in: store)
+        case .wetrakr:
+            return ProfileSettings.isActiveStore(store)
+                && WeTrakrRuntimeSession.authenticatedState(store: store) != nil
         }
     }
 
@@ -610,6 +620,9 @@ enum RemoteTrackingState {
         case .mdblist:
             return ProfileSettings.isActiveStore(store)
                 && MdbListRuntimeSession.isAuthenticated(in: store)
+        case .wetrakr:
+            return ProfileSettings.isActiveStore(store)
+                && WeTrakrRuntimeSession.authenticatedState(store: store) != nil
         }
     }
 
@@ -1343,6 +1356,20 @@ struct TraktProgressService {
             return resolvedItems
         }
 
+        if source == .wetrakr {
+            guard WeTrakrRuntimeSession.authenticatedState() != nil else { return [] }
+            guard let items = await WeTrakrProgressService.fetchContinueWatching(
+                repository: repository
+            ) else { return nil }
+            let resolvedItems = updateDisplayedSnapshot
+                ? mergingLocalPlaybackCheckpoints(into: items, source: source)
+                : items
+            if updateDisplayedSnapshot {
+                replaceContinueWatchingSnapshot(resolvedItems, source: source)
+            }
+            return resolvedItems
+        }
+
         guard source == .trakt,
               TraktAuthStore.isAuthenticated else {
             return []
@@ -1679,6 +1706,17 @@ struct TraktProgressService {
         }
         if source == .mdblist {
             return await MdbListProgressService.reportPlayback(
+                meta: meta,
+                position: position,
+                duration: duration,
+                season: season,
+                episode: episode,
+                action: action,
+                store: store
+            )
+        }
+        if source == .wetrakr {
+            return await WeTrakrProgressService.reportPlayback(
                 meta: meta,
                 position: position,
                 duration: duration,
