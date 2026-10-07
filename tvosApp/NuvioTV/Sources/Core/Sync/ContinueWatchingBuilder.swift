@@ -23,6 +23,9 @@ enum ContinueWatchingBuilder {
     /// Matches the persisted row cap, so the first page is exactly what a cold
     /// start shows before any scrolling.
     static let pageSize = 20
+    /// Initial resolution budget matching Android TV (HomeNextUpInitialResolutionLimit = 32)
+    /// to resolve series seeds and New Episode drops on cold start without requiring scroll.
+    static let initialResolutionLimit = 36
     private static let metadataConcurrency = 4
 
     private static var rebuildTask: Task<Void, Never>?
@@ -142,6 +145,7 @@ enum ContinueWatchingBuilder {
                 consumedEntries = 0
                 materializedProfileId = profileId
             }
+            ContinueWatchingStore.replaceAll([])
             return
         }
 
@@ -153,10 +157,11 @@ enum ContinueWatchingBuilder {
         let existingItems = ContinueWatchingStore.items()
         print("[ContinueWatchingBuilder] rebuild: plan count=\(currentPlan.count)")
 
+        let targetCount = min(max(currentPlan.count, pageSize), initialResolutionLimit)
         let page = await materializePage(
             from: currentPlan,
             startingAt: 0,
-            targetCount: pageSize,
+            targetCount: targetCount,
             existingItems: existingItems,
             generation: currentGeneration,
             profileId: profileId

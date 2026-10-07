@@ -1244,8 +1244,12 @@ final class NuvioSyncManager: ObservableObject {
                 try ensureStillSyncing(profileId: activeProfile.id)
                 // These rows are what the Nuvio account itself holds, so they
                 // are attributed to Nuvio Sync — not to whichever tracker
-                // happens to be selected right now.
-                WatchedStore.mergeRemote(remoteWatched.map { $0.adding(source: .nuvioSync) })
+                // happens to be selected right now. Remote deletions on Nuvio
+                // account are reconciled so deleted items don't resurrect.
+                WatchedStore.reconcileNuvioSnapshot(
+                    remoteWatched,
+                    syncStartedAt: progressPullStartedAt
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1694,6 +1698,11 @@ final class NuvioSyncManager: ObservableObject {
                 in: store,
                 profileScope: profileId
             )
+        case .wetrakr:
+            return !WeTrakrRuntimeSession.isAuthenticated(
+                in: store,
+                profileScope: profileId
+            )
         }
     }
 
@@ -1714,6 +1723,11 @@ final class NuvioSyncManager: ObservableObject {
             return !SimklAuthStore.state(in: store, profileScope: profileId).isAuthenticated(in: store)
         case .mdblist:
             return !MdbListRuntimeSession.isAuthenticated(
+                in: store,
+                profileScope: profileId
+            )
+        case .wetrakr:
+            return !WeTrakrRuntimeSession.isAuthenticated(
                 in: store,
                 profileScope: profileId
             )

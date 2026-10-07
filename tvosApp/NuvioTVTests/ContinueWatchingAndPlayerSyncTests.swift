@@ -621,6 +621,137 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         _ = WatchProgressLedger.upsert(newEpisodeRecord)
         XCTAssertTrue(WatchProgressLedger.continueWatchingCandidates().contains { $0.contentId == seriesMeta.id })
     }
+
+    // MARK: - Issue #138 Autoplay and Unmark Regressions
+
+    func testUnmarkingEpisodeRetiresCompletedLedgerRowsAndPreservesPartialResume() {
+        let seriesMeta = NuvioMeta(
+            id: "tt9999001",
+            name: "Unmark Series",
+            description: nil,
+            posterUrl: nil,
+            backgroundUrl: nil,
+            logoUrl: nil,
+            imdbId: "tt9999001",
+            tmdbId: 401,
+            type: "series",
+            year: 2024,
+            genres: nil,
+            rating: nil,
+            releaseInfo: nil,
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: nil,
+            videos: [
+                NuvioVideo(id: "tt9999001:1:1", title: "E1", season: 1, episode: 1),
+                NuvioVideo(id: "tt9999001:1:2", title: "E2", season: 1, episode: 2),
+                NuvioVideo(id: "tt9999001:1:3", title: "E3", season: 1, episode: 3)
+            ]
+        )
+
+        let ep1Key = WatchProgressLedger.progressKey(contentId: seriesMeta.id, season: 1, episode: 1)
+        let ep2Key = WatchProgressLedger.progressKey(contentId: seriesMeta.id, season: 1, episode: 2)
+
+        defer {
+            _ = WatchProgressLedger.remove(keys: [ep1Key, ep2Key])
+            _ = WatchedStore.removeEpisode(meta: seriesMeta, season: 1, episode: 1)
+            _ = WatchedStore.removeEpisode(meta: seriesMeta, season: 1, episode: 2)
+        }
+
+        // Ep 1 is completed (>= 90% progress)
+        let ep1CompletedRecord = WatchProgressRecord(
+            progressKey: ep1Key,
+            contentId: seriesMeta.id,
+            contentType: seriesMeta.type,
+            videoId: "tt9999001:1:1",
+            season: 1,
+            episode: 1,
+            position: 950,
+            duration: 1000,
+            lastWatchedAt: Date().addingTimeInterval(-100),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(ep1CompletedRecord)
+        XCTAssertTrue(WatchProgressLedger.isComplete(ep1CompletedRecord))
+
+        // Ep 2 is partial (< 90% progress)
+        let ep2PartialRecord = WatchProgressRecord(
+            progressKey: ep2Key,
+            contentId: seriesMeta.id,
+            contentType: seriesMeta.type,
+            videoId: "tt9999001:1:2",
+            season: 1,
+            episode: 2,
+            position: 300,
+            duration: 1000,
+            lastWatchedAt: Date().addingTimeInterval(-50),
+            isPendingPush: false
+        )
+        _ = WatchProgressLedger.upsert(ep2PartialRecord)
+        XCTAssertFalse(WatchProgressLedger.isComplete(ep2PartialRecord))
+
+        // Mark Ep 1 watched in WatchedStore
+        XCTAssertTrue(WatchedStore.markWatched(seriesMeta, season: 1, episode: 1))
+        XCTAssertTrue(WatchedStore.containsEpisode(meta: seriesMeta, season: 1, episode: 1))
+
+        // Ep 1 is a seed for Next Up
+        let seedsBefore = WatchProgressLedger.upNextSeeds()
+        XCTAssertTrue(seedsBefore.contains { $0.contentId == seriesMeta.id && $0.season == 1 && $0.episode == 1 })
+
+        // Now unmark Ep 1
+        XCTAssertTrue(WatchedStore.removeEpisode(meta: seriesMeta, season: 1, episode: 1))
+        XCTAssertFalse(WatchedStore.containsEpisode(meta: seriesMeta, season: 1, episode: 1))
+
+        // Ep 1's completed record should be retired from the ledger
+        let ep1RecordAfter = WatchProgressLedger.record(forKey: ep1Key)
+        XCTAssertNil(ep1RecordAfter, "Completed ledger row should be retired when unmarking episode")
+
+        // Ep 2's partial resume record must be preserved
+        let ep2RecordAfter = WatchProgressLedger.record(forKey: ep2Key)
+        XCTAssertNotNil(ep2RecordAfter, "Partial resume record must be preserved when unmarking episode")
+        XCTAssertEqual(ep2RecordAfter?.position, 300)
+
+        // Ep 1 should no longer be an upNextSeed
+        let seedsAfter = WatchProgressLedger.upNextSeeds()
+        XCTAssertFalse(seedsAfter.contains { $0.contentId == seriesMeta.id && $0.season == 1 && $0.episode == 1 }, "Unmarked episode must not remain an upNextSeed")
+    }
+
+    @MainActor
+    func testAetherPlaybackControllerAwaitingEngineLoadReportsZeroClockAndNoFirstFrame() {
+        guard let controller = AetherPlaybackController() else {
+            return
+        }
+        defer { controller.destroyPlayer() }
+
+        let request = PlaybackLoadRequest(
+            videoURL: URL(string: "http://example.com/video.mp4")!,
+            streamName: "Test Episode",
+            streamDescription: "S1:E2"
+        )
+
+        controller.load(request, generation: 1)
+
+        // Immediately after load() is initiated, controller must report loading with zero clock and no first frame
+        XCTAssertTrue(controller.isPlayerLoading)
+        XCTAssertFalse(controller.isPlayerEnded)
+        XCTAssertFalse(controller.isAtEndOfFile)
+        XCTAssertFalse(controller.hasFirstFrameReadyForDisplay)
+        XCTAssertFalse(controller.isTransportPlaying)
+        XCTAssertEqual(controller.positionMs, 0)
+        XCTAssertEqual(controller.durationMs, 0)
+        XCTAssertFalse(controller.hasCoherentTimeSample)
+
+        // refreshPlaybackState() while awaiting load must also keep loading and zero clock
+        controller.refreshPlaybackState()
+        XCTAssertTrue(controller.isPlayerLoading)
+        XCTAssertFalse(controller.isPlayerEnded)
+        XCTAssertFalse(controller.hasFirstFrameReadyForDisplay)
+        XCTAssertEqual(controller.positionMs, 0)
+    }
 }
 
 
