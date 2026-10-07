@@ -3672,10 +3672,10 @@ private struct IntegrationSettingsView: View {
                 )
 
                 SettingsTextFieldRow(
-                    title: "Trakt Client Secret",
+                    title: "Trakt Client Secret (optional)",
                     subtitle: L10n.string(
-                        "tvos_settings_stored_locally_on_this_apple_tv",
-                        fallback: "Stored locally on this Apple TV"
+                        "tvos_settings_trakt_secret_optional",
+                        fallback: "Leave blank for new (PKCE) Trakt apps — only legacy apps still use a secret"
                     ),
                     placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
                     text: $traktClientSecretDraft,
@@ -4094,8 +4094,8 @@ private struct IntegrationSettingsView: View {
     }
 
     private var traktCredentialsReady: Bool {
+        // Trakt deprecated the client secret (PKCE-only apps): a Client ID is enough.
         !traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var simklCredentialsReady: Bool {
@@ -5061,7 +5061,7 @@ private struct TraktConnectionSettingsCard: View {
                     title: viewModel.mode == .awaitingApproval ? L10n.string("tvos_settings_continue_trakt_login", fallback: "Continue Trakt Login") : L10n.string("tvos_settings_connect_with_trakt", fallback: "Connect with Trakt"),
                     subtitle: credentialsReady
                         ? L10n.string("tvos_settings_scan_qr_or_enter_code_trakt", fallback: "Scan the QR or enter the code at trakt.tv/activate")
-                        : L10n.string("tvos_settings_enter_trakt_credentials_first", fallback: "Enter your Trakt Client ID and Client Secret first"),
+                        : L10n.string("tvos_settings_enter_trakt_credentials_first", fallback: "Enter your Trakt Client ID first"),
                     value: viewModel.mode == .awaitingApproval ? L10n.string("tvos_settings_resume", fallback: "Resume") : L10n.string("tvos_settings_connect", fallback: "Connect"),
                     accentColor: accentColor
                 ) {

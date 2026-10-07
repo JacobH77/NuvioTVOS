@@ -3,6 +3,9 @@ import SwiftUI
 
 enum TraktConfig {
     static let apiBaseURL = "https://api.trakt.tv"
+    /// OAuth endpoints moved to the dedicated auth host; the data API stays on
+    /// `apiBaseURL`. (Trakt docs, 2026: "Use auth.trakt.tv for all OAuth requests.")
+    static let authBaseURL = "https://auth.trakt.tv"
     static let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
 
     static var clientID: String {
@@ -14,7 +17,7 @@ enum TraktConfig {
     }
 
     static var isConfigured: Bool {
-        !clientID.isEmpty && !clientSecret.isEmpty
+        isConfigured(in: ProfileSettings.current)
     }
 
     static func clientID(in store: UserDefaults) -> String {
@@ -28,7 +31,10 @@ enum TraktConfig {
     }
 
     static func isConfigured(in store: UserDefaults) -> Bool {
-        !clientID(in: store).isEmpty && !clientSecret(in: store).isEmpty
+        // Trakt deprecated the client secret (1-Oct-2026, trakt/trakt-api#974): a
+        // PKCE-only app is configured with just a Client ID. The secret stays
+        // optional for the legacy server-to-server apps that still have one.
+        !clientID(in: store).isEmpty
     }
 
     static var userAgent: String {
@@ -634,7 +640,9 @@ private struct TraktDeviceCodeRequest: Encodable {
 private struct TraktDeviceTokenRequest: Encodable {
     let code: String
     let clientID: String
-    let clientSecret: String
+    // Optional/deprecated: a PKCE-only app sends nil, which the synthesized
+    // Encodable omits (`encodeIfPresent`), so Trakt treats it as a public client.
+    let clientSecret: String?
     enum CodingKeys: String, CodingKey {
         case code
         case clientID = "client_id"
@@ -645,7 +653,7 @@ private struct TraktDeviceTokenRequest: Encodable {
 private struct TraktRefreshTokenRequest: Encodable {
     let refreshToken: String
     let clientID: String
-    let clientSecret: String
+    let clientSecret: String?
     let redirectURI: String
     let grantType = "refresh_token"
     enum CodingKeys: String, CodingKey {
@@ -660,7 +668,7 @@ private struct TraktRefreshTokenRequest: Encodable {
 private struct TraktRevokeRequest: Encodable {
     let token: String
     let clientID: String
-    let clientSecret: String
+    let clientSecret: String?
     enum CodingKeys: String, CodingKey {
         case token
         case clientID = "client_id"
@@ -749,7 +757,7 @@ final class TraktAuthService {
 
     func startDeviceAuth() async throws -> TraktDeviceCodeResponse {
         guard hasRequiredCredentials() else {
-            throw TraktServiceError.message("Enter your Trakt Client ID and Client Secret first.")
+            throw TraktServiceError.message("Enter your Trakt Client ID first.")
         }
 
         let state = currentState()
@@ -778,7 +786,7 @@ final class TraktAuthService {
 
     func pollDeviceToken() async -> TraktPollResult {
         guard hasRequiredCredentials() else {
-            return .failed("Enter your Trakt Client ID and Client Secret first.")
+            return .failed("Enter your Trakt Client ID first.")
         }
         let state = currentState()
         guard state.hasActiveDeviceFlow(in: store),
@@ -793,7 +801,7 @@ final class TraktAuthService {
                 body: TraktDeviceTokenRequest(
                     code: deviceCode,
                     clientID: clientID,
-                    clientSecret: clientSecret
+                    clientSecret: clientSecretOrNil
                 ),
                 authorized: false
             )
@@ -842,7 +850,7 @@ final class TraktAuthService {
                 body: TraktRefreshTokenRequest(
                     refreshToken: refreshToken,
                     clientID: clientID,
-                    clientSecret: clientSecret,
+                    clientSecret: clientSecretOrNil,
                     redirectURI: TraktConfig.redirectURI
                 ),
                 authorized: false
@@ -868,7 +876,7 @@ final class TraktAuthService {
                 body: TraktRevokeRequest(
                     token: accessToken,
                     clientID: clientID,
-                    clientSecret: clientSecret
+                    clientSecret: clientSecretOrNil
                 ),
                 authorized: false
             )
@@ -1001,7 +1009,10 @@ final class TraktAuthService {
     }
 
     private func baseRequest(path: String) -> URLRequest {
-        let normalizedBase = TraktConfig.apiBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // OAuth (`oauth/...`) goes to auth.trakt.tv; every data endpoint stays on
+        // the API host. No non-OAuth path begins with `oauth/`.
+        let host = path.hasPrefix("oauth/") ? TraktConfig.authBaseURL : TraktConfig.apiBaseURL
+        let normalizedBase = host.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let url = URL(string: "\(normalizedBase)/\(path)")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
@@ -1014,6 +1025,12 @@ final class TraktAuthService {
 
     private var clientID: String { TraktConfig.clientID(in: store) }
     private var clientSecret: String { TraktConfig.clientSecret(in: store) }
+    /// The legacy secret, or nil for a PKCE-only app so it is omitted from the
+    /// request body entirely (Trakt reads its absence as a public client).
+    private var clientSecretOrNil: String? {
+        let secret = clientSecret
+        return secret.isEmpty ? nil : secret
+    }
 
     private func isTokenExpiredOrExpiring(_ state: TraktAuthState) -> Bool {
         guard let createdAt = state.createdAt, let expiresIn = state.expiresIn else { return true }
@@ -3022,7 +3039,7 @@ final class TraktSettingsViewModel: ObservableObject {
     func connect() {
         guard !isLoading else { return }
         guard credentialsConfigured else {
-            errorMessage = "Enter your Trakt Client ID and Client Secret first."
+            errorMessage = "Enter your Trakt Client ID first."
             return
         }
         isLoading = true
