@@ -2574,7 +2574,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
         // Detached cleanup: producer waitForFinish must precede demuxer/cache/server close
         // (pump accesses them during unwind). ownedParams released last (pump read them).
         Task.detached {
-            _ = p?.waitForFinish(timeout: 3.0)
+            _ = p?.waitForFinish(timeout: 10.0)
             s?.stop()
             c?.close()
             ab?.close()

@@ -1,6 +1,8 @@
 import Foundation
 import CoreGraphics
 import Testing
+import AetherLibavcodec
+import AetherLibavutil
 @testable import AetherEngine
 
 /// #271: `$subtitleCues` published once per DECODED PACKET, each publication carrying the whole
@@ -66,6 +68,161 @@ struct Issue271DrainPublicationTests {
     func zeroCapIsUnbounded() {
         let pts: [Double] = [1, 2, 3]
         #expect(SubtitleOverlayDrainer.batchEnd(count: 3, cap: 0) { pts[$0] } == 3)
+    }
+
+    @Test("ASS rechecks its cursor PTS and admits a later packet there once")
+    func lateSamePTSPacketIsDrainedOnNextTick() {
+        let store = SubtitlePacketStore()
+        store.append(streamIndex: 3, ptsSeconds: 30, durationSeconds: 0, payload: Data("A".utf8))
+        let firstSnapshot = store.entries(streamIndex: 3, from: 30, through: 60)
+        #expect(firstSnapshot.map { String(decoding: $0.payload, as: UTF8.self) } == ["A"])
+        guard let firstSequence = SubtitleOverlayDrainer.maxSequence(at: 30, in: firstSnapshot) else {
+            Issue.record("expected the first packet at 30 s"); return
+        }
+        let cursor = SubtitleDrainCursor(lastDecodedPts: 30, lastDecodedSequence: firstSequence,
+                                         lastPlayhead: 0)
+
+        // The default plan remains exclusive for bitmap and other subtitle codecs.
+        let bitmapPlan = SubtitleOverlayDrainer.drainPlan(
+            cursor: cursor, playhead: 0, lead: 60, backscan: 15, jumpThreshold: 2.5)
+        guard case .decode(let bitmapFrom, _) = bitmapPlan else {
+            Issue.record("expected a steady bitmap decode, got \(bitmapPlan)"); return
+        }
+        #expect(bitmapFrom == 30.nextUp)
+
+        store.append(streamIndex: 3, ptsSeconds: 30, durationSeconds: 0, payload: Data("B".utf8))
+        let assPlan = SubtitleOverlayDrainer.drainPlan(
+            cursor: cursor, playhead: 0, lead: 60, backscan: 15, jumpThreshold: 2.5,
+            includeCursorPTS: true)
+        guard case .decode(let from, let through) = assPlan else {
+            Issue.record("expected an ASS steady decode, got \(assPlan)"); return
+        }
+        #expect(from == 30)
+
+        let snapshot = store.entries(streamIndex: 3, from: from, through: through)
+        let pending = SubtitleOverlayDrainer.excludingDecodedCursorPackets(snapshot, cursor: cursor)
+        #expect(pending.map { String(decoding: $0.payload, as: UTF8.self) } == ["B"])
+        #expect(SubtitleOverlayDrainer.harvestGapCut(
+            count: pending.count,
+            ptsAt: { pending[$0].ptsSeconds },
+            sequenceAt: { pending[$0].sequence },
+            resumeFrom: (cursor.lastDecodedPts, cursor.lastDecodedSequence),
+            notBefore: 0) == nil)
+        guard let nextSequence = SubtitleOverlayDrainer.maxSequence(at: 30, in: pending) else {
+            Issue.record("expected the late packet at 30 s to advance the cursor"); return
+        }
+        let advancedCursor = SubtitleDrainCursor(lastDecodedPts: 30, lastDecodedSequence: nextSequence,
+                                                 lastPlayhead: 0)
+
+        let thirdPlan = SubtitleOverlayDrainer.drainPlan(
+            cursor: advancedCursor, playhead: 0, lead: 60, backscan: 15, jumpThreshold: 2.5,
+            includeCursorPTS: true)
+        guard case .decode(let thirdFrom, let thirdThrough) = thirdPlan else {
+            Issue.record("expected a third steady scan, got \(thirdPlan)"); return
+        }
+        let thirdSnapshot = store.entries(streamIndex: 3, from: thirdFrom, through: thirdThrough)
+        #expect(SubtitleOverlayDrainer.excludingDecodedCursorPackets(thirdSnapshot,
+                                                                      cursor: advancedCursor).isEmpty)
+    }
+
+    @Test("a refreshed earlier packet carries the PTS run's maximum sequence and dedupes on replay")
+    func refreshedPacketKeepsBoundarySequenceAndDoesNotRepublish() {
+        let store = SubtitlePacketStore()
+        let packetA = Data("A".utf8)
+        store.append(streamIndex: 3, ptsSeconds: 30, durationSeconds: 0, payload: packetA)
+        store.append(streamIndex: 3, ptsSeconds: 30, durationSeconds: 0, payload: Data("B".utf8))
+        let beforeRefresh = store.entries(streamIndex: 3, from: 30, through: 30)
+        guard let oldMaximum = SubtitleOverlayDrainer.maxSequence(at: 30, in: beforeRefresh) else {
+            Issue.record("expected a stored same-PTS run"); return
+        }
+        let cursor = SubtitleDrainCursor(lastDecodedPts: 30, lastDecodedSequence: oldMaximum,
+                                         lastPlayhead: 0)
+
+        store.append(streamIndex: 3, ptsSeconds: 30, durationSeconds: 0, payload: packetA)
+        let refreshed = store.entries(streamIndex: 3, from: 30, through: 30)
+        #expect(refreshed.map(\.sequence) == refreshed.map(\.sequence).sorted(by: >))
+        let replay = SubtitleOverlayDrainer.excludingDecodedCursorPackets(refreshed, cursor: cursor)
+        #expect(replay.count == 1)
+        #expect(replay[0].payload == packetA)
+        #expect(SubtitleOverlayDrainer.maxSequence(at: 30, in: refreshed) == replay[0].sequence)
+
+        var cues: [SubtitleCue] = []
+        var nextID = 0
+        #expect(AetherEngine.insertCueSorted(textCue(id: 0, start: 30, end: 40, "line"),
+                                             into: &cues, nextID: &nextID))
+        #expect(!AetherEngine.insertCueSorted(textCue(id: 0, start: 30, end: 40, "line"),
+                                              into: &cues, nextID: &nextID))
+        #expect(cues.count == 1)
+        #expect(nextID == 1)
+    }
+
+    @MainActor
+    @Test("the prepared ASS snapshot admits a same-PTS append before the next finish")
+    func preparedASSDrainAdmitsLateSamePTSPacket() throws {
+        let data = try #require(Data(base64Encoded:
+            Issue587PreserveASSMarkupCodecGateTests.base64.joined()))
+        let demuxer = Demuxer()
+        try demuxer.open(reader: DataIOReader(data: data), formatHint: "matroska")
+        defer { demuxer.close() }
+        let streamIndex = Issue587PreserveASSMarkupCodecGateTests.assStreamIndex
+        let stream = try #require(demuxer.stream(at: streamIndex))
+
+        let store = SubtitlePacketStore()
+        let packetA = Data("0,0,Default,,0,0,0,,first".utf8)
+        let packetB = Data("1,0,Default,,0,0,0,,late".utf8)
+        store.append(streamIndex: streamIndex, ptsSeconds: 30, durationSeconds: 10, payload: packetA)
+
+        let engine = try AetherEngine()
+        engine.loadedURL = URL(string: "https://s/movie.mkv")!
+        engine.softwareSubtitlePacketStore = store
+        engine.isSubtitleActive = true
+        engine.subtitleTracks = [TrackInfo(id: Int(streamIndex), name: "ASS", codec: "ass",
+                                           language: nil, isDefault: false)]
+        engine.subtitleDrainTargets[.primary] = streamIndex
+        engine.subtitleDrainDecoderFactoryForTesting = { index in
+            guard index == streamIndex else { return nil }
+            return EmbeddedSubtitleDecoder(stream: stream, sourceVideoWidth: 16,
+                                           sourceVideoHeight: 16, preserveASSMarkup: true)
+        }
+        engine.clock.sourceTime = 0
+
+        // The drain owns this immutable snapshot after prepare. Appending B now reproduces a packet
+        // arriving while the first tick is decoding A.
+        let first = try #require(engine.prepareSubtitleDrainTick())
+        #expect(first.channels.count == 1)
+        #expect(first.channels[0].entries.map(\.payload) == [packetA])
+        store.append(streamIndex: streamIndex, ptsSeconds: 30, durationSeconds: 10, payload: packetB)
+        engine.finishSubtitleDrainTick(first, events: first.decodeHandoff.decode())
+        #expect(engine.subtitleCues.count == 1)
+
+        let second = try #require(engine.prepareSubtitleDrainTick())
+        #expect(second.channels[0].entries.map(\.payload) == [packetB])
+        engine.finishSubtitleDrainTick(second, events: second.decodeHandoff.decode())
+        #expect(engine.subtitleCues.count == 2)
+        let texts = engine.subtitleCues.compactMap { cue -> String? in
+            guard case .text(let text) = cue.body else { return nil }
+            return text
+        }
+        #expect(texts.contains { $0.contains("first") })
+        #expect(texts.contains { $0.contains("late") })
+
+        let third = try #require(engine.prepareSubtitleDrainTick())
+        #expect(third.channels[0].entries.isEmpty)
+        #expect(third.decodeHandoff.isEmpty)
+        engine.finishSubtitleDrainTick(third, events: third.decodeHandoff.decode())
+        #expect(engine.subtitleCues.count == 2)
+
+        // The store refreshes A in place. Its new sequence exceeds B's, although A remains first
+        // in array order; the cursor must use the run maximum so B does not re-enter the next scan.
+        store.append(streamIndex: streamIndex, ptsSeconds: 30, durationSeconds: 10, payload: packetA)
+        let refreshed = try #require(engine.prepareSubtitleDrainTick())
+        #expect(refreshed.channels[0].entries.map(\.payload) == [packetA])
+        engine.finishSubtitleDrainTick(refreshed, events: refreshed.decodeHandoff.decode())
+        #expect(engine.subtitleDrainCursors[.primary]?.lastDecodedSequence == 3)
+        #expect(engine.subtitleCues.count == 2)
+
+        let settled = try #require(engine.prepareSubtitleDrainTick())
+        #expect(settled.channels[0].entries.isEmpty)
     }
 
     // MARK: - A slow tick is not a seek

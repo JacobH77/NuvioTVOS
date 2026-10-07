@@ -98,6 +98,32 @@ struct Issue362HarvestHoleTests {
             resumeFrom: nil, notBefore: 231) == nil)
     }
 
+    @Test("sequence drops within one PTS run are ignored, while the run maximum still reveals a later hole")
+    func samePTSDropIsNotAHole() {
+        let samePTS = [30.0, 30.0]
+        let refreshedEarlierMember: [UInt64] = [10, 2]
+        #expect(SubtitleOverlayDrainer.harvestGapCut(
+            count: samePTS.count,
+            ptsAt: { samePTS[$0] },
+            sequenceAt: { refreshedEarlierMember[$0] },
+            resumeFrom: nil,
+            notBefore: 0) == nil)
+
+        // Reharvest refreshes the first member in place, so its sequence can exceed the next
+        // member's. Preserve that maximum when comparing the following, strictly later PTS.
+        let withLaterIsland = [30.0, 30.0, 40.0]
+        let sequences: [UInt64] = [10, 2, 5]
+        let cut = SubtitleOverlayDrainer.harvestGapCut(
+            count: withLaterIsland.count,
+            ptsAt: { withLaterIsland[$0] },
+            sequenceAt: { sequences[$0] },
+            resumeFrom: nil,
+            notBefore: 0)
+        #expect(cut?.index == 2)
+        #expect(cut?.at == 30)
+        #expect(cut?.sequence == 10)
+    }
+
     @Test("a hole behind the playhead is history and is decoded straight across")
     func holeBehindThePlayheadIsNotHeld() {
         // Waiting there delays the landing line for content the viewer has already passed, which is

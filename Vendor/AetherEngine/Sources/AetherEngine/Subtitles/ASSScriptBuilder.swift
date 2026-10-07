@@ -10,7 +10,7 @@ import Foundation
 public final class ASSScriptBuilder {
 
     private let header: String
-    private var events: [(start: Double, seq: Int, line: String)] = []
+    private var events: [(start: Double, end: Double, seq: Int, line: String)] = []
     /// Content keys (`start|end|raw line`) of everything in `events`.
     private var seen: Set<String> = []
 
@@ -36,6 +36,7 @@ public final class ASSScriptBuilder {
             let tail = fields[2...].joined(separator: ",")
             events.append((
                 start: start,
+                end: end,
                 seq: events.count,
                 line: "Dialogue: \(layer),\(Self.timestamp(start)),\(Self.timestamp(end)),\(tail)"
             ))
@@ -64,6 +65,14 @@ public final class ASSScriptBuilder {
         return lines.joined(separator: "\n")
     }
 
+    /// Identity of the exact generated Dialogue events, with times normalized
+    /// to the centiseconds that `script()` writes for libass.
+    public func eventIdentitySnapshot() -> [(start: Double, end: Double, identity: String)] {
+        events.sorted { ($0.start, $0.seq) < ($1.start, $1.seq) }.map { event in
+            (start: Self.scriptTime(event.start), end: Self.scriptTime(event.end), identity: event.line)
+        }
+    }
+
     /// Drop accumulated events. Header is PER-TRACK (`TrackInfo.assHeader` carries that track's `[V4+ Styles]`): on a track SWITCH build a NEW instance, not reset, else new events render against old styles. reset() is for same-track re-feeds only.
     public func reset() {
         events.removeAll(keepingCapacity: true)
@@ -82,5 +91,9 @@ public final class ASSScriptBuilder {
         let s = centis / 100
         centis %= 100
         return String(format: "%d:%02d:%02d.%02d", h, m, s, centis)
+    }
+
+    private static func scriptTime(_ seconds: Double) -> Double {
+        Double(Int((max(0, seconds) * 100).rounded())) / 100
     }
 }

@@ -356,14 +356,18 @@ extension AetherEngine {
         subtitleDrainLastTickUptime = tickUptime
         var work = SubtitleDrainTickWork(store: store, playhead: playhead)
         for (channel, streamIndex) in subtitleDrainTargets {
-            let hadCursor = subtitleDrainCursors[channel] != nil
+            let cursor = subtitleDrainCursors[channel]
+            let codec = subtitleTracks.first { $0.id == Int(streamIndex) }?.codec.lowercased()
+            let usesASSCursorReplay = codec == "ass" || codec == "ssa"
+            let hadCursor = cursor != nil
             let plan = SubtitleOverlayDrainer.drainPlan(
-                cursor: subtitleDrainCursors[channel],
+                cursor: cursor,
                 playhead: playhead,
                 lead: Self.subtitleDrainLeadSeconds,
                 backscan: Self.subtitleDrainBackscanSeconds,
                 jumpThreshold: Self.subtitleDrainJumpThresholdSeconds,
-                elapsedSinceLastPlan: elapsed)
+                elapsedSinceLastPlan: elapsed,
+                includeCursorPTS: usesASSCursorReplay)
             if Self.subtitleForwardPrefetchNeedsReanchor(plan: plan, hadCursor: hadCursor) {
                 work.prefetchNeedsReanchor = true
             }
@@ -424,8 +428,11 @@ extension AetherEngine {
                     tally: tally, isReset: isReset)
                 continue
             }
-            let entries = store.entries(streamIndex: streamIndex,
+            var entries = store.entries(streamIndex: streamIndex,
                                         from: window.from, through: window.through)
+            if !isReset, usesASSCursorReplay, let cursor {
+                entries = SubtitleOverlayDrainer.excludingDecodedCursorPackets(entries, cursor: cursor)
+            }
             // #271: bound the batch, on a PTS boundary. The window is bounded in seconds of
             // content, so on a dense track it is thousands of packets and this loop has no
             // suspension point.
@@ -471,6 +478,7 @@ extension AetherEngine {
             }
             work.channels.append(SubtitleDrainChannelWork(
                 channel: channel, streamIndex: streamIndex, plan: plan, isReset: isReset,
+                usesASSCursorReplay: usesASSCursorReplay,
                 window: window, coverageStart: coverageStart, retained: retained,
                 decoder: decoder, entries: entries, batchEnd: batchEnd, decodeEnd: decodeEnd,
                 gapHoldAt: gapHoldAt, gapHoldSequence: gapHoldSequence,
@@ -494,6 +502,7 @@ extension AetherEngine {
                   subtitleDrainDecoders[channel] === job.decoder else { continue }
             let plan = job.plan
             let isReset = job.isReset
+            let usesASSCursorReplay = job.usesASSCursorReplay
             let window = job.window
             let coverageStart = job.coverageStart
             let retained = job.retained
@@ -544,6 +553,11 @@ extension AetherEngine {
                 }
                 lastDecoded = entry.ptsSeconds
                 lastDecodedSequence = entry.sequence
+            }
+            if usesASSCursorReplay, decodeEnd > 0, let lastDecoded,
+               let maxSequence = SubtitleOverlayDrainer.maxSequence(
+                at: lastDecoded, in: entries[..<decodeEnd]) {
+                lastDecodedSequence = maxSequence
             }
             if case .resetAndDecode = plan, batchEnd == 0 {
                 // Fresh window with nothing stored yet: anchor just behind the window start so
@@ -2699,6 +2713,7 @@ struct SubtitleDrainChannelWork {
     let streamIndex: Int32
     let plan: SubtitleDrainPlan
     let isReset: Bool
+    let usesASSCursorReplay: Bool
     let window: (from: Double, through: Double)
     let coverageStart: Double?
     let retained: SubtitleResolutionStatement.Retention?

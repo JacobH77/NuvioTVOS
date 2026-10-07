@@ -92,6 +92,28 @@ struct ASSScriptBuilderTests {
         #expect(ASSScriptBuilder.timestamp(35999.999) == "10:00:00.00")
     }
 
+    @Test("Event identity snapshots include canonical timing and the full generated line")
+    func eventIdentitySnapshot() {
+        let b = ASSScriptBuilder(header: header)
+        #expect(b.add(rawEventText: "0,0,Default,,0,0,0,,Same text", start: 3.051, end: 5.004))
+        #expect(b.add(rawEventText: "1,0,AltStyle,,0,0,0,,Same text", start: 3.051, end: 5.004))
+
+        let snapshot = b.eventIdentitySnapshot()
+        #expect(snapshot.count == 2)
+        #expect(snapshot.map(\.start) == [3.05, 3.05])
+        #expect(snapshot.map(\.end) == [5.0, 5.0])
+        #expect(snapshot[0].identity.contains("Dialogue: 0,0:00:03.05,0:00:05.00,Default"))
+        #expect(snapshot[1].identity.contains("Dialogue: 0,0:00:03.05,0:00:05.00,AltStyle"))
+        #expect(snapshot[0].identity != snapshot[1].identity)
+
+        let clamped = ASSScriptBuilder(header: header)
+        #expect(clamped.add(rawEventText: "0,0,Default,,0,0,0,,Before zero", start: -0.004, end: 1.006))
+        let clampedEvent = clamped.eventIdentitySnapshot()[0]
+        #expect(clampedEvent.start == 0)
+        #expect(clampedEvent.end == 1.01)
+        #expect(clampedEvent.identity.contains("Dialogue: 0,0:00:00.00,0:00:01.01,Default"))
+    }
+
     @Test("Malformed lines are skipped, reset clears state")
     func malformedAndReset() {
         let b = ASSScriptBuilder(header: header)

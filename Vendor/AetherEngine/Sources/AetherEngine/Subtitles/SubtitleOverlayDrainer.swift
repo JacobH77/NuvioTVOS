@@ -34,7 +34,8 @@ struct SubtitleDrainCursor: Sendable {
 }
 
 enum SubtitleDrainPlan: Equatable, Sendable {
-    /// Continue decoding forward from the cursor (exclusive) through the lead edge.
+    /// Continue decoding forward from the cursor through the lead edge. ASS/SSA can include the
+    /// cursor PTS to admit payloads harvested there after the previous tick.
     case decode(from: Double, through: Double)
     /// Discontinuity: rebuild the decoder, then decode the window around the playhead.
     case resetAndDecode(from: Double, through: Double)
@@ -58,7 +59,8 @@ enum SubtitleOverlayDrainer {
     static func drainPlan(cursor: SubtitleDrainCursor?, playhead: Double,
                           lead: Double, backscan: Double,
                           jumpThreshold: Double,
-                          elapsedSinceLastPlan: Double = 0) -> SubtitleDrainPlan {
+                          elapsedSinceLastPlan: Double = 0,
+                          includeCursorPTS: Bool = false) -> SubtitleDrainPlan {
         let through = playhead + lead
         guard let cursor else {
             return .resetAndDecode(from: playhead - backscan, through: through)
@@ -71,7 +73,30 @@ enum SubtitleOverlayDrainer {
         guard through - cursor.lastDecodedPts >= minimumScanWindowSeconds else {
             return .idle
         }
-        return .decode(from: cursor.lastDecodedPts.nextUp, through: through)
+        return .decode(from: includeCursorPTS ? cursor.lastDecodedPts : cursor.lastDecodedPts.nextUp,
+                       through: through)
+    }
+
+    /// ASS/SSA packets may arrive later at the cursor's PTS. Revisit that timestamp and discard
+    /// observations the cursor has already decoded, while retaining newly harvested payloads.
+    static func excludingDecodedCursorPackets(_ entries: [StoredSubtitlePacket],
+                                              cursor: SubtitleDrainCursor) -> [StoredSubtitlePacket] {
+        guard cursor.lastDecodedSequence > 0 else { return entries }
+        return entries.filter {
+            $0.ptsSeconds != cursor.lastDecodedPts || $0.sequence > cursor.lastDecodedSequence
+        }
+    }
+
+    /// Reharvesting refreshes a duplicate packet's sequence in place, so sequence values within a
+    /// shared PTS run are not necessarily sorted. Keep the largest observation when the cursor
+    /// advances over that run.
+    static func maxSequence<C: Collection>(at pts: Double, in entries: C) -> UInt64?
+    where C.Element == StoredSubtitlePacket {
+        var maximum: UInt64?
+        for entry in entries where entry.ptsSeconds == pts {
+            maximum = max(maximum ?? 0, entry.sequence)
+        }
+        return maximum
     }
 
     /// #271: how far into a PTS-ordered store window one tick may decode. The window is bounded in
@@ -111,7 +136,7 @@ enum SubtitleOverlayDrainer {
     /// PGS set is separated from its own clear by its display duration, so a 3 s rule stopped the
     /// tick at every authored line and delivery fell to a sixth of the sets in a fixture run.
     /// **Harvest ORDER tells them apart.** A run reads a stream forwards, so its entries carry
-    /// ascending PTS and ascending sequence; where a PTS-ascending pair's sequence descends, the
+    /// ascending PTS and ascending sequence; where a strictly PTS-ascending pair's sequence descends, the
     /// far side was written by an EARLIER run, which means the run that wrote the near side has not
     /// reached the far side yet and the span between them is unread. An authored silence looks
     /// contiguous in sequence and never stops anything, however long it is.
@@ -135,11 +160,21 @@ enum SubtitleOverlayDrainer {
         guard count > 0 else { return nil }
         var previous = resumeFrom
         for index in 0..<count {
-            if let previous, previous.sequence > 0, sequenceAt(index) < previous.sequence,
+            let pts = ptsAt(index)
+            let sequence = sequenceAt(index)
+            if let previous, previous.sequence > 0, previous.pts < pts,
+               sequence < previous.sequence,
                previous.pts >= notBefore {
                 return (index, previous.pts, previous.sequence)
             }
-            previous = (ptsAt(index), sequenceAt(index))
+            if let prior = previous, prior.pts == pts {
+                // A duplicate reharvest refreshes sequence in place, so entries at one PTS can
+                // descend in sequence even though no temporal gap exists there. Carry the newest
+                // observation forward to compare against the next, strictly later PTS.
+                previous = (pts, max(prior.sequence, sequence))
+            } else {
+                previous = (pts, sequence)
+            }
         }
         return nil
     }

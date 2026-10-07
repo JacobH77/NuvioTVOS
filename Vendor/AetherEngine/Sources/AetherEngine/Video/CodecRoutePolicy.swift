@@ -599,7 +599,7 @@ extension HLSVideoEngine {
             // an AirPlay 2 television is that client. The gate that stood here was a real measurement
             // (f7e9f77f: black picture on an HDR10-only panel) from the same afternoon as the strip above,
             // and it does not reproduce on tvOS 26.6 either.
-            let supplemental: String? = "dvh1.08.\(dvLevelStr)/db1p"
+            let supplemental: String? = effectiveDvMode ? "dvh1.08.\(dvLevelStr)/db1p" : nil
             let doviConfig: MP4SegmentMuxer.DoviConfigPolicy =
                 needsCompatRewrite ? .rewriteToProfile81 : .keep
             if needsCompatRewrite {
@@ -622,15 +622,8 @@ extension HLSVideoEngine {
         case .profile84:
             // P8.4 (HLG-compat base). Mirrors P8.1 routing.
             // DV panel: hvc1 + dvvC + SUPPLEMENTAL dvh1.08.XX/db4h. db4h marks HLG-base for AVKit criteria.
-            // Non-DV panel: keep the dvvC, no SUPPLEMENTAL, for the reason written out on the P8.1 branch
-            //   above. The -11868 that both strips were built against was one panel on tvOS 26.0 and does
-            //   not reproduce on 26.6. P8.4 is measured separately from P8.1 rather than assumed: its base
-            //   layer is HLG, so the conversion AVPlayer performs on a panel that is not in HDR is a
-            //   different one, and the dvcC it would consult claims compat=4 rather than 1.
-            // Note: dvh1 sample entry is never valid for HLG-base (AVPlayer rejects it, DrHurt#4 Build 160),
-            //   so there is no P5-style masquerade here, only the record itself.
-            // Unconditional for the same reason as P8.1 above; db4h is the HLG-base brand.
-            let supplemental: String? = "dvh1.08.\(dvLevelStr)/db4h"
+            // Non-DV panel: keep the dvvC, no SUPPLEMENTAL, avoiding -11868 display rejection.
+            let supplemental: String? = effectiveDvMode ? "dvh1.08.\(dvLevelStr)/db4h" : nil
             let doviConfig: MP4SegmentMuxer.DoviConfigPolicy = .keep
             return CodecRoute(
                 codecTagOverride: "hvc1",
