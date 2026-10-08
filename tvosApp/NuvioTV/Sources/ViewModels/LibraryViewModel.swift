@@ -21,6 +21,8 @@ public class LibraryViewModel: ObservableObject {
     private var traktSettingsObserver: NSObjectProtocol?
     private var traktMutationObserver: NSObjectProtocol?
     private var mdbListMutationObserver: NSObjectProtocol?
+    private var wetrakrAuthObserver: NSObjectProtocol?
+    private var wetrakrMutationObserver: NSObjectProtocol?
     private var displayedSource: TraktLibrarySourceMode?
     private var refreshGeneration = 0
     private let repository: CatalogRepository = CinemetaCatalogRepository()
@@ -128,12 +130,31 @@ public class LibraryViewModel: ObservableObject {
                 self?.applyMdbListMutation(mutation)
             }
         }
+        wetrakrAuthObserver = NotificationCenter.default.addObserver(
+            forName: WeTrakrAuthStore.changedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refreshSelectedLibrary()
+            }
+        }
+        wetrakrMutationObserver = NotificationCenter.default.addObserver(
+            forName: WeTrakrLibraryService.mutationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refreshSelectedLibrary()
+            }
+        }
     }
 
     deinit {
         for observer in [
             libraryObserver, traktAuthObserver, simklAuthObserver, mdbListAuthObserver,
-            traktSettingsObserver, traktMutationObserver, mdbListMutationObserver
+            wetrakrAuthObserver, traktSettingsObserver, traktMutationObserver,
+            mdbListMutationObserver, wetrakrMutationObserver
         ].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }

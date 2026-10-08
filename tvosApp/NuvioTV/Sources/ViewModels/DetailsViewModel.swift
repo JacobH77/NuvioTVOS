@@ -184,6 +184,7 @@ class DetailsViewModel: ObservableObject {
             let isTraktAuth = TraktAuthStore.isAuthenticated
             let isSimklConfigured = SimklDetailsService.isConfigured
             let isMdbListMode = TraktSettingsStore.librarySourceMode == .mdblist && MdbListRuntimeSession.isAuthenticated()
+            let isWeTrakrMode = TraktSettingsStore.librarySourceMode == .wetrakr && WeTrakrRuntimeSession.isAuthenticated()
 
             await withTaskGroup(of: Void.self) { group in
                 // 1. TMDB Credits (Cast & Crew) - fast ~100ms
@@ -224,6 +225,17 @@ class DetailsViewModel: ObservableObject {
                 if isMdbListMode {
                     group.addTask {
                         if let isInWatchlist = await MdbListLibraryService.isInWatchlist(meta) {
+                            await MainActor.run { [weak self] in
+                                self?.applyMdbListWatchlistMembership(isInWatchlist, for: meta.id, generation: generation)
+                            }
+                        }
+                    }
+                }
+
+                // 5b. WeTrakr Watchlist
+                if isWeTrakrMode {
+                    group.addTask {
+                        if let isInWatchlist = await WeTrakrLibraryService.isInWatchlist(meta) {
                             await MainActor.run { [weak self] in
                                 self?.applyMdbListWatchlistMembership(isInWatchlist, for: meta.id, generation: generation)
                             }
