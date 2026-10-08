@@ -16562,6 +16562,8 @@
     "tvos_layout_hero": "Hero Section",
     "tvos_layout_hero_subtitle": "Show featured artwork above catalog rows",
     "tvos_layout_hide_unreleased": "Hide Unreleased Content",
+    "tvos_layout_grid_rows": "Grid Rows",
+    "tvos_layout_grid_rows_subtitle": "Number of movie and TV show rows displayed per catalog (1–10)",
     "tvos_layout_hide_unreleased_subtitle": "Filter titles before their known release date",
     "tvos_layout_home": "Home Layout",
     "tvos_layout_home_subtitle": "How the home screen presents rows and artwork",

@@ -31,7 +31,7 @@ struct NuvioTVApp: App {
         #if canImport(AetherEngine)
         // Asynchronously prewarm AetherEngine so hardware deinterlace pipeline setup (~800ms)
         // completes in the background before player appearance.
-        Task(priority: .utility) { @MainActor in
+        Task.detached(priority: .utility) {
             _ = try? AetherEngine()
         }
         #endif
@@ -175,7 +175,7 @@ enum TVHomeDebugTrace {
 
                 if isPingInFlight {
                     let elapsedMs = Double(current - pingDispatchedTime) / 1_000_000
-                    if elapsedMs >= 120.0 {
+                    if elapsedMs >= 250.0 {
                         if !isStallActive {
                             isStallActive = true
                             stallStartTime = pingDispatchedTime
@@ -215,8 +215,8 @@ enum TVHomeDebugTrace {
             }
             watchdogTimer = timer
             timer.resume()
-            print("[TVTrace] Main thread watchdog started (interval: 25ms, threshold: 120ms)")
-            logger.notice("Main thread watchdog started (interval: 25ms, threshold: 120ms)")
+            print("[TVTrace] Main thread watchdog started (interval: 25ms, threshold: 250ms)")
+            logger.notice("Main thread watchdog started (interval: 25ms, threshold: 250ms)")
         }
     }
 }
@@ -1394,6 +1394,7 @@ struct ContentView: View {
         // unless Simkl is the selected progress source.
         Task { await SimklProgressService.removePlayback(for: item) }
         Task { @MainActor in await MdbListProgressService.removePlayback(for: item) }
+        Task { @MainActor in await WeTrakrProgressService.removePlayback(for: item) }
 
         let keysArray = Array(keysToDelete)
         if !keysArray.isEmpty {
@@ -3553,6 +3554,7 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.gridRows) private var gridRows = TVHomeGridLayout.defaultRows
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
@@ -3603,6 +3605,7 @@ struct TVHomeView: View {
     @State private var continueWatchingRefreshGeneration = 0
     @State private var continueWatchingRefreshTask: Task<Void, Never>?
     @State private var traktWatchedHistorySyncTask: Task<Void, Never>?
+    @State private var pendingContinueWatchingRefreshAfterOverlay = false
     @State private var simklLoadingDebugInfo: String?
     @State private var simklLoadingTimeoutTask: Task<Void, Never>?
     @State private var simklLoadingStartedAt: Date?
@@ -3955,7 +3958,7 @@ struct TVHomeView: View {
                 // loaded, so this is the pass that recovers titles an earlier sync
                 // could not resolve. Mirrors the phone's
                 // `retryMetadataResolutionWhenAddonMetaProvidersReady`.
-                await ContinueWatchingBuilder.rebuild(reason: "home loaded")
+                ContinueWatchingBuilder.scheduleRebuild(reason: "home loaded")
                 await ContinueWatchingStore.refreshMissingEpisodeDetails()
             }
         }
@@ -4006,7 +4009,11 @@ struct TVHomeView: View {
         // changes (progress saved during playback, item finished/removed).
         .onReceive(NotificationCenter.default.publisher(for: ContinueWatchingStore.changedNotification)
             .debounce(for: .milliseconds(30), scheduler: RunLoop.main)) { _ in
-            guard isActive && !isFullScreenOverlayPresented else { return }
+            guard isActive else { return }
+            if isFullScreenOverlayPresented {
+                pendingContinueWatchingRefreshAfterOverlay = true
+                return
+            }
             refreshContinueWatching()
         }
         // A removal has to leave the row immediately, including under Trakt/Simkl
@@ -4026,7 +4033,11 @@ struct TVHomeView: View {
             scheduleTraktWatchedHistorySync()
         }
         .onReceive(NotificationCenter.default.publisher(for: TraktSettingsStore.continueWatchingChangedNotification).receive(on: RunLoop.main)) { _ in
-            guard isActive && !isFullScreenOverlayPresented else { return }
+            guard isActive else { return }
+            if isFullScreenOverlayPresented {
+                pendingContinueWatchingRefreshAfterOverlay = true
+                return
+            }
             scheduleContinueWatchingRefresh()
             scheduleTraktWatchedHistorySync()
         }
@@ -4121,20 +4132,14 @@ struct TVHomeView: View {
             if usesRemoteProgress {
                 scheduleContinueWatchingRefresh()
             } else {
-                Task { @MainActor in
-                    await ContinueWatchingBuilder.rebuild(reason: "unaired preference changed")
-                    refreshContinueWatching()
-                }
+                ContinueWatchingBuilder.scheduleRebuild(reason: "unaired preference changed", delayMs: 0)
             }
         }
         .onChange(of: upNextFromFurthestEpisode) { _, _ in
             if usesRemoteProgress {
                 scheduleContinueWatchingRefresh()
             } else {
-                Task { @MainActor in
-                    await ContinueWatchingBuilder.rebuild(reason: "up next episode preference changed")
-                    refreshContinueWatching()
-                }
+                ContinueWatchingBuilder.scheduleRebuild(reason: "up next episode preference changed", delayMs: 0)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
@@ -4259,6 +4264,14 @@ struct TVHomeView: View {
         .onChange(of: isFullScreenOverlayPresented) { oldVal, isPresented in
             if oldVal && !isPresented && isActive {
                 checkAndTriggerAutoRefresh()
+                pendingContinueWatchingRefreshAfterOverlay = false
+                if usesRemoteProgress {
+                    scheduleContinueWatchingRefresh()
+                    scheduleTraktWatchedHistorySync()
+                } else {
+                    refreshContinueWatching()
+                    refreshWatchedTitles()
+                }
             }
         }
         .onChange(of: isActive) { oldVal, active in
@@ -4269,6 +4282,14 @@ struct TVHomeView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 checkAndTriggerAutoRefresh()
+                if isActive && !isFullScreenOverlayPresented {
+                    if usesRemoteProgress {
+                        scheduleContinueWatchingRefresh()
+                        scheduleTraktWatchedHistorySync()
+                    } else {
+                        refreshContinueWatching()
+                    }
+                }
             }
         }
         .onChange(of: focusedPosterBackdropEnabled) { _, enabled in
@@ -4341,6 +4362,14 @@ struct TVHomeView: View {
         }
         .onChange(of: detailsDidDisappearGeneration) { _, generation in
             guard !isFullScreenOverlayPresented, isActive else { return }
+            pendingContinueWatchingRefreshAfterOverlay = false
+            if usesRemoteProgress {
+                scheduleContinueWatchingRefresh()
+                scheduleTraktWatchedHistorySync()
+            } else {
+                refreshContinueWatching()
+                refreshWatchedTitles()
+            }
             let savedTarget = overlayRestoreCardID
                 ?? focusWork.pendingOverlayRestoreCardID
                 ?? store.lastFocusedCardID
@@ -4666,7 +4695,7 @@ struct TVHomeView: View {
             } else if homeLayout == "Grid View",
                       section.id != TVHomeSection.continueWatchingId,
                       section.id != TVHomeSection.upcomingId {
-                keys = section.items.prefix(TVHomeGridLayout.previewItemCount).map {
+                keys = section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows)).map {
                     TVHomeCardIdentity.key(rowID: section.id, item: $0)
                 } + ["\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"]
             } else {
@@ -5636,7 +5665,7 @@ struct TVHomeView: View {
                section.collectionFolders.isEmpty,
                section.id != TVHomeSection.continueWatchingId,
                section.id != TVHomeSection.upcomingId {
-                let previewItems = section.items.prefix(TVHomeGridLayout.previewItemCount)
+                let previewItems = section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows))
                 if let cardIndex = previewItems.firstIndex(where: {
                     TVHomeCardIdentity.key(rowID: section.id, item: $0) == focusKey
                 }) {
@@ -5667,7 +5696,7 @@ struct TVHomeView: View {
                 TVHomeCardIdentity.key(rowID: section.id, item: $0) == focusKey
             }
             guard let matchingIndex,
-                  matchingIndex >= TVHomeGridLayout.previewItemCount else {
+                  matchingIndex >= TVHomeGridLayout.previewItemCount(rows: gridRows) else {
                 continue
             }
             guard let target = validRestoreTarget(focusKey) else { return }
@@ -6072,11 +6101,7 @@ struct TVHomeView: View {
         let isMetaVisible = isVisible(item.meta)
         let isAiredAllowed = showUnairedNextUp || !item.isUpNextEntry || item.hasAired || item.isAiringToday
         let notDismissed = !ContinueWatchingDismissStore.isDismissed(item)
-        let shouldDisplay = isNextUpAllowed && isMetaVisible && isAiredAllowed && notDismissed
-        if !shouldDisplay {
-            print("[ContinueWatching][Home] shouldDisplayContinueWatchingItem=false for \(item.meta.id) (title: \(item.meta.name)) - isNextUpAllowed=\(isNextUpAllowed), isMetaVisible=\(isMetaVisible), isAiredAllowed=\(isAiredAllowed), notDismissed=\(notDismissed)")
-        }
-        return shouldDisplay
+        return isNextUpAllowed && isMetaVisible && isAiredAllowed && notDismissed
     }
 
     private func requestLoadingFocus() {
@@ -6171,8 +6196,6 @@ struct TVHomeView: View {
         // `initialFocusCardKey`, which restores the row/scroll position too.
         if !forceReload, store.isLoaded(for: identity) {
             isLoading = false
-            refreshContinueWatching()
-            refreshWatchedTitles()
             return
         }
 
@@ -7176,7 +7199,7 @@ struct TVHomeView: View {
                 let items = orderedItems.map { $0.item }
                 return items.filter(shouldDisplayContinueWatchingItem)
             }
-            print("[ContinueWatching][Home] refreshContinueWatching: paged=\(ContinueWatchingBuilder.pagedItems.count), stored=\(storedItems.count), merged=\(byId.count), visible=\(visibleItems.count) (\(visibleItems.map { "\($0.meta.id) (pos=\($0.position)/\($0.duration), upNext=\($0.isUpNextEntry))" }))")
+            print("[ContinueWatching][Home] refreshContinueWatching: paged=\(ContinueWatchingBuilder.pagedItems.count), stored=\(storedItems.count), merged=\(byId.count), visible=\(visibleItems.count)")
             setContinueWatching(visibleItems)
             displayedProgressSource = .nuvioSync
             #if DEBUG
@@ -7327,8 +7350,12 @@ struct TVHomeView: View {
         // watched snapshots; Trakt is refreshed independently above so its
         // history remains available even when another provider owns resume.
         switch source {
-        case .nuvioSync, .trakt, .wetrakr:
+        case .nuvioSync, .trakt:
             break
+        case .wetrakr:
+            Task.detached(priority: .utility) {
+                _ = await WeTrakrProgressService.syncWatchedHistory()
+            }
         case .simkl:
             Task.detached(priority: .utility) {
                 _ = await SimklHistoryService.syncWatchedHistory()
@@ -7929,6 +7956,40 @@ enum TVHomeCatalogOrder {
         }
     }
 
+    /// Batches multiple add-on snapshot row updates into a single snapshot write,
+    /// avoiding repeated disk writes, settings version bumps, and sync pushes.
+    static func batchReplaceSnapshotRows(
+        _ updates: [(addonID: String, addonName: String, additions: [SnapshotRow])]
+    ) {
+        guard !updates.isEmpty else { return }
+        let current = snapshotRows()
+        let deleted = deletedCatalogKeys()
+        func isDeleted(_ row: SnapshotRow) -> Bool {
+            deleted.contains(row.id)
+                || (row.settingsKey != nil && deleted.contains(row.settingsKey!))
+                || deleted.contains(sectionOrderKey(row.id))
+        }
+
+        var rows = current
+        for update in updates {
+            let normalizedName = normalizedAddonSourceName(update.addonName)
+            func belongsToSource(_ row: SnapshotRow) -> Bool {
+                if row.addonId == update.addonID { return true }
+                guard row.addonId == nil, let rowName = row.addonName else { return false }
+                return normalizedAddonSourceName(rowName) == normalizedName
+            }
+
+            let insertionIndex = rows.firstIndex(where: belongsToSource) ?? rows.count
+            rows = rows.filter { !belongsToSource($0) && !isDeleted($0) }
+            var seen = Set<String>()
+            let uniqueAdditions = update.additions.filter { !isDeleted($0) && seen.insert($0.id).inserted }
+            rows.insert(contentsOf: uniqueAdditions, at: min(insertionIndex, rows.count))
+        }
+
+        guard rows != current else { return }
+        writeSnapshotRows(rows)
+    }
+
     /// Replaces one add-on's rows with the catalogs that actually returned
     /// content. Dynamic manifests rotate candidates, so merging would retain
     /// stale recommendations that no longer exist on Home.
@@ -7937,27 +7998,7 @@ enum TVHomeCatalogOrder {
         addonName: String,
         with additions: [SnapshotRow]
     ) {
-        let current = snapshotRows()
-        let normalizedName = normalizedAddonSourceName(addonName)
-        let deleted = deletedCatalogKeys()
-        func isDeleted(_ row: SnapshotRow) -> Bool {
-            deleted.contains(row.id)
-                || (row.settingsKey != nil && deleted.contains(row.settingsKey!))
-                || deleted.contains(sectionOrderKey(row.id))
-        }
-        func belongsToSource(_ row: SnapshotRow) -> Bool {
-            if row.addonId == addonID { return true }
-            guard row.addonId == nil, let rowName = row.addonName else { return false }
-            return normalizedAddonSourceName(rowName) == normalizedName
-        }
-
-        let insertionIndex = current.firstIndex(where: belongsToSource) ?? current.count
-        var rows = current.filter { !belongsToSource($0) && !isDeleted($0) }
-        var seen = Set<String>()
-        let uniqueAdditions = additions.filter { !isDeleted($0) && seen.insert($0.id).inserted }
-        rows.insert(contentsOf: uniqueAdditions, at: min(insertionIndex, rows.count))
-        guard rows != current else { return }
-        writeSnapshotRows(rows)
+        batchReplaceSnapshotRows([(addonID: addonID, addonName: addonName, additions: additions)])
     }
 
     static func writeSnapshotRows(_ rows: [SnapshotRow], in settings: UserDefaults = ProfileSettings.current) {

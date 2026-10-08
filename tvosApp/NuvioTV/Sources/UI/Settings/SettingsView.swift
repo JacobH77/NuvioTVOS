@@ -122,6 +122,7 @@ enum SettingsKey {
     static let reduceMotion = "nuvio.tv.settings.appearance.reduceMotion"
 
     static let homeLayout = "nuvio.tv.settings.layout.homeLayout"
+    static let gridRows = "nuvio.tv.settings.layout.gridRows"
     static let catalogAutoRefreshInterval = "nuvio.tv.settings.layout.catalogAutoRefreshInterval"
     /// JSON `[String]` of home section ids in the user's preferred order.
     static let homeCatalogOrder = "nuvio.tv.settings.layout.homeCatalogOrder"
@@ -329,7 +330,7 @@ enum SettingsKey {
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
-        homeLayout, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, landscapePosters, discoverLocation,
+        homeLayout, gridRows, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, landscapePosters, discoverLocation,
         searchStyle,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards,
@@ -2467,6 +2468,7 @@ private struct HomeLayoutLivePreview: View {
     let posterLabels: Bool
     let catalogAddonNames: Bool
     var landscapePosters: Bool = false
+    var gridRows: Int = TVHomeGridLayout.defaultRows
     let accentColor: Color
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadius = AppCardStyle.defaultCornerRadiusRaw
@@ -2827,13 +2829,14 @@ private struct HomeLayoutLivePreview: View {
 
     private var gridViewSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            rowHeader(title: "All Catalogs Grid", addon: "7 × 3 Grid")
+            rowHeader(title: "All Catalogs Grid", addon: "7 × \(gridRows) Grid")
 
             LazyVGrid(
                 columns: Array(repeating: GridItem(.fixed(75), spacing: 10), count: 7),
                 spacing: 6
             ) {
-                ForEach(0..<(heroEnabled ? 7 : 14), id: \.self) { idx in
+                let previewCount = heroEnabled ? min(7, gridRows * 7) : min(14, gridRows * 7)
+                ForEach(0..<previewCount, id: \.self) { idx in
                     let item = movies[idx % movies.count]
                     miniPortraitCard(width: 75, height: heroEnabled ? 80 : 92, item: item, isFocused: idx == 0)
                 }
@@ -2963,6 +2966,7 @@ private struct LayoutDiscoverySettingsView: View {
     let accentColor: Color
 
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.gridRows) private var gridRows = TVHomeGridLayout.defaultRows
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
@@ -3006,6 +3010,7 @@ private struct LayoutDiscoverySettingsView: View {
                     posterLabels: posterLabels,
                     catalogAddonNames: catalogAddonNames,
                     landscapePosters: landscapePosters,
+                    gridRows: gridRows,
                     accentColor: accentColor
                 )
 
@@ -3013,7 +3018,7 @@ private struct LayoutDiscoverySettingsView: View {
                     title: L10n.string("tvos_layout_layout", fallback: "Layout"),
                     subtitle: L10n.string(
                         "tvos_layout_layout_subtitle",
-                        fallback: "Modern and Compact use rows; Grid View shows each catalog in a 7 by 3 poster grid"
+                        fallback: "Modern and Compact use rows; Grid View shows each catalog in a poster grid"
                     ),
                     selection: $homeLayout,
                     options: layouts,
@@ -3037,6 +3042,23 @@ private struct LayoutDiscoverySettingsView: View {
                 if homeLayout == "Grid View" {
                     HeroCatalogSelectionRow(
                         selectionData: $heroCatalogsData,
+                        accentColor: accentColor
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+
+                    SettingsStepperRow(
+                        title: L10n.string(
+                            "tvos_layout_grid_rows",
+                            fallback: "Grid Rows"
+                        ),
+                        subtitle: L10n.string(
+                            "tvos_layout_grid_rows_subtitle",
+                            fallback: "Number of movie and TV show rows displayed per catalog (1–10)"
+                        ),
+                        value: $gridRows,
+                        range: TVHomeGridLayout.minRows...TVHomeGridLayout.maxRows,
+                        step: 1,
+                        suffix: gridRows == 1 ? " row" : " rows",
                         accentColor: accentColor
                     )
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -5268,109 +5290,147 @@ private struct TraktConnectedSettingsSheet: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
-                    header
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Trakt")
+                                .font(.system(size: 36, weight: .bold))
+                                .foregroundColor(.white)
 
-                    SettingsGroup(title: L10n.string("account_login", fallback: "Account Login"), subtitle: tokenRefreshLabel) {
-                        SettingsActionRow(
-                            title: L10n.string("debrid_disconnect", fallback: "Disconnect"),
-                            subtitle: L10n.string(
-                                "tvos_settings_remove_this_profile_s_trakt_tokens_from__60ff1f28",
-                                fallback: "Remove this profile's Trakt tokens from this Apple TV"
-                            ),
-                            value: L10n.string("debrid_disconnect", fallback: "Disconnect"),
-                            accentColor: accentColor
-                        ) {
-                            showingDisconnectConfirmation = true
+                            Text(connectedUsername.isEmpty == false
+                                ? L10n.format("tvos_settings_simkl_manage_user_desc", fallback: "Connected as %@. Manage sync, metadata, and account options.", connectedUsername)
+                                : L10n.string("tvos_settings_simkl_manage_desc", fallback: "Manage Trakt sync, metadata, and account options."))
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
                         }
-                    }
 
-                    SettingsGroup(
-                        title: L10n.string("tvos_settings_watch_stats", fallback: "Watch Stats"),
-                        subtitle: L10n.string("tvos_settings_trakt_watch_stats_subtitle", fallback: "Watched activity returned from your Trakt account")
-                    ) {
-                        TraktConnectedStatsStrip(
-                            stats: viewModel.connectedStats,
-                            isLoading: viewModel.isStatsLoading
-                        )
-
-                        SettingsActionRow(
-                            title: L10n.string("tvos_settings_sync_now", fallback: "Sync Now"),
-                            subtitle: L10n.string(
-                                "tvos_settings_refresh_trakt_user_info_and_cached_stats",
-                                fallback: "Refresh Trakt watch progress, account information, and watch stats"
-                            ),
-                            value: viewModel.isLoading
-                                ? L10n.string("tvos_settings_syncing", fallback: "Syncing")
-                                : L10n.string("tvos_settings_refresh", fallback: "Refresh"),
-                            accentColor: accentColor
+                        SettingsGroup(
+                            title: L10n.string("account_title", fallback: "Account"),
+                            subtitle: L10n.string("tvos_settings_trakt_account_info_subtitle", fallback: "Account information returned by Trakt")
                         ) {
-                            viewModel.refreshNow()
+                            if let username = viewModel.username, !username.isEmpty {
+                                SettingsInfoRow(title: L10n.string("account_username", fallback: "Username"), value: username)
+                            }
+                            SettingsInfoRow(
+                                title: "Auth Protocol",
+                                value: "OAuth 2.0 (Device Flow)"
+                            )
+                            if let expiresAt = viewModel.tokenExpiresAtMillis {
+                                let seconds = max(Int((expiresAt - now.timeIntervalSince1970 * 1000) / 1000), 0)
+                                let label = seconds == 0
+                                    ? "Access token refresh is due"
+                                    : "Access token refreshes in \(durationLabel(seconds: seconds))"
+                                SettingsInfoRow(title: "Token Status", value: label)
+                            }
                         }
-                        .disabled(viewModel.isLoading)
-                    }
 
-                    SettingsGroup(
-                        title: L10n.string("tvos_settings_trakt_features", fallback: "Trakt Features"),
-                        subtitle: L10n.string("tvos_settings_trakt_features_subtitle", fallback: "Choose how Trakt is used throughout Nuvio")
-                    ) {
-                        SettingsChoiceRow(
-                            title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
-                            subtitle: L10n.string("tvos_settings_trakt_library_source_subtitle", fallback: "Choose which library to use for saving and viewing your collection"),
-                            selection: librarySourceSelection,
-                            options: RemoteTrackingState.availableLibrarySources().map(\.label),
-                            accentColor: accentColor
-                        )
+                        SettingsGroup(
+                            title: L10n.string("tvos_settings_watch_stats", fallback: "Watch Stats"),
+                            subtitle: L10n.string("tvos_settings_trakt_watch_stats_subtitle", fallback: "Watched activity returned from your Trakt account")
+                        ) {
+                            TraktConnectedStatsStrip(
+                                stats: viewModel.connectedStats,
+                                isLoading: viewModel.isStatsLoading
+                            )
 
-                        SettingsChoiceRow(
-                            title: L10n.string("trakt_watch_progress_dialog_title", fallback: "Watch Progress"),
-                            subtitle: L10n.string(
-                                "tvos_settings_choose_the_source_for_resume_and_continu_53af657c",
-                                fallback: "Choose the source for Resume, Continue Watching, and watched updates"
-                            ),
-                            selection: watchProgressSelection,
-                            options: RemoteTrackingState.availableProgressSources().map(\.label),
-                            accentColor: accentColor
-                        )
-
-                        SettingsChoiceRow(
-                            title: L10n.string("trakt_continue_watching_window", fallback: "Continue Watching Window"),
-                            subtitle: L10n.string("tvos_settings_trakt_continue_watching_window_subtitle", fallback: "Choose how much Trakt activity appears in Continue Watching"),
-                            selection: continueWatchingSelection,
-                            options: continueWatchingOptions.map(continueWatchingLabel),
-                            accentColor: accentColor
-                        )
-
-                        SettingsChoiceRow(
-                            title: L10n.string("trakt_comments_dialog_title", fallback: "Comments"),
-                            subtitle: L10n.string(
-                                "tvos_settings_show_trakt_reviews_on_metadata_screens",
-                                fallback: "Show Trakt reviews on metadata screens"
-                            ),
-                            selection: commentsSelection,
-                            options: [onLabel, offLabel],
-                            accentColor: accentColor
-                        )
-
-                        if !RemoteTrackingState.availableMoreLikeThisSources().isEmpty {
-                            SettingsChoiceRow(
-                                title: L10n.string("tmdb_more_like_this_title", fallback: "More Like This"),
+                            SettingsActionRow(
+                                title: L10n.string("tvos_settings_sync_now", fallback: "Sync Now"),
                                 subtitle: L10n.string(
-                                    "tvos_settings_recommendation_source_for_related_titles",
-                                    fallback: "Choose where recommendations come from on detail pages"
+                                    "tvos_settings_refresh_trakt_user_info_and_cached_stats",
+                                    fallback: "Refresh Trakt watch progress, account information, and watch stats"
                                 ),
-                                selection: moreLikeThisSelection,
-                                options: RemoteTrackingState.availableMoreLikeThisSources().map(\.label),
+                                value: viewModel.isLoading
+                                    ? L10n.string("tvos_settings_syncing", fallback: "Syncing")
+                                    : L10n.string("tvos_settings_refresh", fallback: "Refresh"),
+                                accentColor: accentColor
+                            ) {
+                                viewModel.refreshNow()
+                            }
+                            .disabled(viewModel.isLoading)
+                        }
+
+                        SettingsGroup(
+                            title: L10n.string("tvos_settings_trakt_features", fallback: "Trakt Features"),
+                            subtitle: L10n.string("tvos_settings_trakt_features_subtitle", fallback: "Choose how Trakt is used throughout Nuvio")
+                        ) {
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
+                                subtitle: L10n.string("tvos_settings_trakt_library_source_subtitle", fallback: "Choose which library to use for saving and viewing your collection"),
+                                selection: librarySourceSelection,
+                                options: RemoteTrackingState.availableLibrarySources().map(\.label),
                                 accentColor: accentColor
                             )
+
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_watch_progress_dialog_title", fallback: "Watch Progress"),
+                                subtitle: L10n.string(
+                                    "tvos_settings_choose_the_source_for_resume_and_continu_53af657c",
+                                    fallback: "Choose the source for Resume, Continue Watching, and watched updates"
+                                ),
+                                selection: watchProgressSelection,
+                                options: RemoteTrackingState.availableProgressSources().map(\.label),
+                                accentColor: accentColor
+                            )
+
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_continue_watching_window", fallback: "Continue Watching Window"),
+                                subtitle: L10n.string("tvos_settings_trakt_continue_watching_window_subtitle", fallback: "Choose how much Trakt activity appears in Continue Watching"),
+                                selection: continueWatchingSelection,
+                                options: continueWatchingOptions.map(continueWatchingLabel),
+                                accentColor: accentColor
+                            )
+
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_comments_dialog_title", fallback: "Comments"),
+                                subtitle: L10n.string(
+                                    "tvos_settings_show_trakt_reviews_on_metadata_screens",
+                                    fallback: "Show Trakt reviews on metadata screens"
+                                ),
+                                selection: commentsSelection,
+                                options: [onLabel, offLabel],
+                                accentColor: accentColor
+                            )
+
+                            if !RemoteTrackingState.availableMoreLikeThisSources().isEmpty {
+                                SettingsChoiceRow(
+                                    title: L10n.string("tmdb_more_like_this_title", fallback: "More Like This"),
+                                    subtitle: L10n.string(
+                                        "tvos_settings_recommendation_source_for_related_titles",
+                                        fallback: "Choose where recommendations come from on detail pages"
+                                    ),
+                                    selection: moreLikeThisSelection,
+                                    options: RemoteTrackingState.availableMoreLikeThisSources().map(\.label),
+                                    accentColor: accentColor
+                                )
+                            }
                         }
-                    }
 
-                    if let message = viewModel.statusMessage, !message.isEmpty {
-                        Text(message)
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white.opacity(0.62))
-                    }
+                        SettingsGroup(
+                            title: L10n.string("account_login", fallback: "Account Login"),
+                            subtitle: L10n.string("tvos_settings_trakt_account_login_subtitle", fallback: "Manage the Trakt connection for this Nuvio profile")
+                        ) {
+                            SettingsActionRow(
+                                title: L10n.string("debrid_disconnect", fallback: "Disconnect"),
+                                subtitle: L10n.string(
+                                    "tvos_settings_remove_this_profile_s_trakt_tokens_from__60ff1f28",
+                                    fallback: "Remove this profile's Trakt tokens from this Apple TV"
+                                ),
+                                value: L10n.string("debrid_disconnect", fallback: "Disconnect"),
+                                accentColor: accentColor
+                            ) {
+                                showingDisconnectConfirmation = true
+                            }
+                            .disabled(viewModel.isLoading)
+                        }
 
+                        if let message = viewModel.statusMessage, !message.isEmpty {
+                            Text(message)
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
+                        }
+                        if let error = viewModel.errorMessage, !error.isEmpty {
+                            Text(error)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.red.opacity(0.9))
+                        }
                     }
                     .frame(width: 1_000, alignment: .leading)
                     .padding(.horizontal, 52)
@@ -5405,27 +5465,6 @@ private struct TraktConnectedSettingsSheet: View {
             }
             Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Trakt")
-                .font(.system(size: 36, weight: .bold))
-                .foregroundColor(.white)
-            Text("Connected as \(connectedUsername). Manage sync, metadata, and account options.")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(.white.opacity(0.62))
-        }
-    }
-
-    private var tokenRefreshLabel: String {
-        guard let expiresAt = viewModel.tokenExpiresAtMillis else {
-            return "Trakt access token refresh time is unavailable"
-        }
-        let seconds = max(Int((expiresAt - now.timeIntervalSince1970 * 1000) / 1000), 0)
-        return seconds == 0
-            ? "Trakt access token refresh is due"
-            : "Trakt access token refreshes in \(durationLabel(seconds: seconds))"
     }
 
     private var connectedUsername: String {
@@ -5561,7 +5600,7 @@ private struct MdbListConnectedStatsStrip: View {
             divider
             stat(
                 text: stats?.totalWatchedHours.map { "\($0)h" },
-                label: L10n.string("tvos_settings_hours", fallback: "Hours")
+                label: L10n.string("tvos_settings_hours", fallback: "Watched Hours")
             )
         }
         .padding(.vertical, 18)
@@ -5964,93 +6003,115 @@ private struct MdbListConnectedSettingsSheet: View {
             Color.nuvioBackground(amoled: amoled, body: bodyColor)
                 .ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("MDBList")
-                            .font(.system(size: 36, weight: .bold))
-                            .foregroundColor(.white)
-                        Text("Connected as \(connectedUsername). Manage remote playback and watched history.")
-                            .font(.system(size: 20, weight: .medium))
-                            .foregroundColor(.white.opacity(0.62))
-                    }
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("MDBList")
+                                .font(.system(size: 36, weight: .bold))
+                                .foregroundColor(.white)
 
-                    SettingsGroup(
-                        title: "Account",
-                        subtitle: "This profile's MDBList connection"
-                    ) {
-                        SettingsInfoRow(title: "Name", value: connectedUsername)
-                        if let accountID = viewModel.accountID, !accountID.isEmpty {
-                            SettingsInfoRow(title: "Account ID", value: accountID)
+                            Text(connectedUsername.isEmpty == false
+                                ? L10n.format("tvos_settings_simkl_manage_user_desc", fallback: "Connected as %@. Manage sync and account options.", connectedUsername)
+                                : L10n.string("tvos_settings_simkl_manage_desc", fallback: "Manage MDBList sync and account options."))
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
                         }
-                        SettingsActionRow(
-                            title: "Disconnect",
-                            subtitle: "Remove this profile's MDBList tokens from this Apple TV",
-                            value: "Disconnect",
-                            accentColor: accentColor
+
+                        SettingsGroup(
+                            title: L10n.string("account_title", fallback: "Account"),
+                            subtitle: L10n.string("tvos_settings_mdblist_account_info_subtitle", fallback: "Account information returned by MDBList")
                         ) {
-                            showingDisconnectConfirmation = true
+                            if let username = viewModel.username, !username.isEmpty {
+                                SettingsInfoRow(title: L10n.string("account_username", fallback: "Username"), value: username)
+                            }
+                            if let displayName = viewModel.displayName, !displayName.isEmpty, displayName != viewModel.username {
+                                SettingsInfoRow(title: "Display Name", value: displayName)
+                            }
+                            if let accountID = viewModel.accountID, !accountID.isEmpty {
+                                SettingsInfoRow(title: L10n.string("account_id", fallback: "Account ID"), value: accountID)
+                            }
+                            SettingsInfoRow(
+                                title: "Auth Protocol",
+                                value: viewModel.hasAPIKey && viewModel.mode != .connected ? "API Key" : "OAuth 2.0 (Device Flow)"
+                            )
                         }
-                    }
 
-                    SettingsGroup(
-                        title: "Watch Stats",
-                        subtitle: "Watched activity returned from your MDBList account"
-                    ) {
-                        MdbListConnectedStatsStrip(
-                            stats: viewModel.connectedStats,
-                            isLoading: viewModel.isStatsLoading
-                        )
-
-                        SettingsActionRow(
-                            title: "Sync Now",
-                            subtitle: "Refresh MDBList watch progress, account information, and watch stats",
-                            value: (viewModel.isLoading || viewModel.isStatsLoading) ? "Syncing" : "Refresh",
-                            accentColor: accentColor
+                        SettingsGroup(
+                            title: L10n.string("tvos_settings_watch_stats", fallback: "Watch Stats"),
+                            subtitle: L10n.string("tvos_settings_mdblist_watch_stats_subtitle", fallback: "Watched activity returned from your MDBList account")
                         ) {
-                            viewModel.refreshNow()
+                            MdbListConnectedStatsStrip(
+                                stats: viewModel.connectedStats,
+                                isLoading: viewModel.isStatsLoading
+                            )
+
+                            SettingsActionRow(
+                                title: L10n.string("tvos_settings_sync_now", fallback: "Sync Now"),
+                                subtitle: L10n.string("tvos_settings_mdblist_sync_watch_stats_subtitle", fallback: "Refresh MDBList watch progress, account information, and watch stats"),
+                                value: (viewModel.isLoading || viewModel.isStatsLoading)
+                                    ? L10n.string("tvos_settings_syncing", fallback: "Syncing")
+                                    : L10n.string("tvos_settings_refresh", fallback: "Refresh"),
+                                accentColor: accentColor
+                            ) {
+                                viewModel.refreshNow()
+                            }
+                            .disabled(viewModel.isLoading || viewModel.isStatsLoading)
                         }
-                        .disabled(viewModel.isLoading || viewModel.isStatsLoading)
-                    }
 
-                    SettingsGroup(
-                        title: "MDBList Features",
-                        subtitle: "Choose where playback, watched updates, and the Library are stored"
-                    ) {
-                        SettingsChoiceRow(
-                            title: "Watch Progress",
-                            subtitle: "Use MDBList for remote playback progress and watched updates",
-                            selection: watchProgressSelection,
-                            options: RemoteTrackingState.availableProgressSources().map(\.label),
-                            accentColor: accentColor
-                        )
+                        SettingsGroup(
+                            title: L10n.string("tvos_settings_mdblist_features", fallback: "MDBList Features"),
+                            subtitle: L10n.string("tvos_settings_mdblist_features_subtitle", fallback: "Choose where playback, watched updates, and the Library are stored")
+                        ) {
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
+                                subtitle: L10n.string("tvos_settings_mdblist_library_source_subtitle", fallback: "Use MDBList collection and watchlist as your Nuvio library"),
+                                selection: librarySourceSelection,
+                                options: RemoteTrackingState.availableLibrarySources().map(\.label),
+                                accentColor: accentColor
+                            )
 
-                        SettingsChoiceRow(
-                            title: "Library Source",
-                            subtitle: "Use MDBList collection and watchlist as your Nuvio library",
-                            selection: librarySourceSelection,
-                            options: RemoteTrackingState.availableLibrarySources().map(\.label),
-                            accentColor: accentColor
-                        )
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_watch_progress_dialog_title", fallback: "Watch Progress"),
+                                subtitle: L10n.string("tvos_settings_mdblist_watch_progress_subtitle", fallback: "Use MDBList for remote playback progress and watched updates"),
+                                selection: watchProgressSelection,
+                                options: RemoteTrackingState.availableProgressSources().map(\.label),
+                                accentColor: accentColor
+                            )
+                        }
 
-                    }
+                        SettingsGroup(
+                            title: L10n.string("account_login", fallback: "Account Login"),
+                            subtitle: L10n.string("tvos_settings_mdblist_account_login_subtitle", fallback: "Manage the MDBList connection for this Nuvio profile")
+                        ) {
+                            SettingsActionRow(
+                                title: L10n.string("debrid_disconnect", fallback: "Disconnect"),
+                                subtitle: L10n.string("tvos_settings_mdblist_disconnect_subtitle", fallback: "Remove this profile's MDBList tokens from this Apple TV"),
+                                value: L10n.string("debrid_disconnect", fallback: "Disconnect"),
+                                accentColor: accentColor
+                            ) {
+                                showingDisconnectConfirmation = true
+                            }
+                            .disabled(viewModel.isLoading || viewModel.isStatsLoading)
+                        }
 
-                    if let message = viewModel.statusMessage, !message.isEmpty {
-                        Text(message)
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white.opacity(0.62))
+                        if let message = viewModel.statusMessage, !message.isEmpty {
+                            Text(message)
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.62))
+                        }
+                        if let error = viewModel.errorMessage, !error.isEmpty {
+                            Text(error)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.red.opacity(0.9))
+                        }
                     }
-                    if let error = viewModel.errorMessage, !error.isEmpty {
-                        Text(error)
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.red.opacity(0.9))
-                    }
+                    .frame(width: 1_000, alignment: .leading)
+                    .padding(.horizontal, 52)
+                    .padding(.vertical, 38)
                 }
-                .frame(width: 1_000, alignment: .leading)
-                .padding(.horizontal, 52)
-                .padding(.vertical, 38)
+                .focusSection()
             }
-            .focusSection()
         }
         .onExitCommand { dismiss() }
         .task {
@@ -6065,7 +6126,7 @@ private struct MdbListConnectedSettingsSheet: View {
             isPresented: $showingDisconnectConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Disconnect", role: .destructive) {
+            Button(L10n.string("debrid_disconnect", fallback: "Disconnect"), role: .destructive) {
                 viewModel.disconnect()
             }
             Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
@@ -7159,67 +7220,91 @@ private struct WeTrakrConnectedSettingsSheet: View {
                                 .font(.system(size: 36, weight: .bold))
                                 .foregroundColor(.white)
 
-                            Text(connectedSubtitle)
+                            Text(viewModel.username?.isEmpty == false
+                                ? L10n.format("tvos_settings_simkl_manage_user_desc", fallback: "Connected as %@. Manage sync and account options.", viewModel.displayName ?? viewModel.username ?? "WeTrakr User")
+                                : L10n.string("tvos_settings_simkl_manage_desc", fallback: "Manage WeTrakr sync and account options."))
                                 .font(.system(size: 20, weight: .medium))
                                 .foregroundColor(.white.opacity(0.62))
                         }
 
                         SettingsGroup(
-                            title: "Account",
-                            subtitle: "Account information returned by WeTrakr"
+                            title: L10n.string("account_title", fallback: "Account"),
+                            subtitle: L10n.string("tvos_settings_wetrakr_account_info_subtitle", fallback: "Account information returned by WeTrakr")
                         ) {
                             if let username = viewModel.username, !username.isEmpty {
-                                SettingsInfoRow(title: "Username", value: username)
+                                SettingsInfoRow(title: L10n.string("account_username", fallback: "Username"), value: username)
                             }
                             if let displayName = viewModel.displayName, !displayName.isEmpty {
                                 SettingsInfoRow(title: "Display Name", value: displayName)
                             }
                             if let plan = viewModel.accountPlan, !plan.isEmpty {
-                                SettingsInfoRow(title: "Plan", value: plan.uppercased())
+                                SettingsInfoRow(title: L10n.string("account_plan", fallback: "Plan"), value: plan.uppercased())
                             }
                             if let accountID = viewModel.accountID, !accountID.isEmpty {
-                                SettingsInfoRow(title: "Account ID", value: accountID)
+                                SettingsInfoRow(title: L10n.string("account_id", fallback: "Account ID"), value: accountID)
                             }
-                            SettingsInfoRow(title: "Auth Protocol", value: "OAuth 2.0 (Device Flow)")
-                            SettingsActionRow(
-                                title: "Disconnect",
-                                subtitle: "Remove this profile's WeTrakr tokens from this Apple TV",
-                                value: "Disconnect",
-                                accentColor: accentColor
-                            ) {
-                                showingDisconnectConfirmation = true
-                            }
+                            SettingsInfoRow(
+                                title: "Auth Protocol",
+                                value: "OAuth 2.0 (Device Flow)"
+                            )
                         }
 
                         SettingsGroup(
-                            title: "WeTrakr Features",
-                            subtitle: "Choose how WeTrakr is used throughout Nuvio"
+                            title: L10n.string("tvos_settings_watch_stats", fallback: "Watch Stats"),
+                            subtitle: L10n.string("tvos_settings_wetrakr_watch_stats_subtitle", fallback: "Watched activity returned from your WeTrakr account")
                         ) {
-                            SettingsChoiceRow(
-                                title: "Watch Progress",
-                                subtitle: "Use WeTrakr for Resume, Continue Watching, and scrobbling",
-                                selection: watchProgressSelection,
-                                options: RemoteTrackingState.availableProgressSources().map(\.label),
-                                accentColor: accentColor
+                            WeTrakrConnectedStatsStrip(
+                                stats: viewModel.connectedStats,
+                                isLoading: viewModel.isStatsLoading
                             )
 
+                            SettingsActionRow(
+                                title: L10n.string("tvos_settings_sync_now", fallback: "Sync Now"),
+                                subtitle: L10n.string("tvos_settings_wetrakr_sync_watch_stats_subtitle", fallback: "Refresh WeTrakr watch progress, account information, and watch stats"),
+                                value: viewModel.isLoading
+                                    ? L10n.string("tvos_settings_syncing", fallback: "Syncing")
+                                    : L10n.string("tvos_settings_refresh", fallback: "Refresh"),
+                                accentColor: accentColor
+                            ) {
+                                viewModel.refreshNow()
+                            }
+                            .disabled(viewModel.isLoading)
+                        }
+
+                        SettingsGroup(
+                            title: L10n.string("tvos_settings_wetrakr_features", fallback: "WeTrakr Features"),
+                            subtitle: L10n.string("tvos_settings_wetrakr_features_subtitle", fallback: "Choose how WeTrakr is used throughout Nuvio")
+                        ) {
                             SettingsChoiceRow(
-                                title: "Library Source",
-                                subtitle: "Use WeTrakr tracking lists as your Nuvio library",
+                                title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
+                                subtitle: L10n.string("tvos_settings_wetrakr_library_source_subtitle", fallback: "Use WeTrakr tracking lists as your Nuvio library"),
                                 selection: librarySourceSelection,
                                 options: RemoteTrackingState.availableLibrarySources().map(\.label),
                                 accentColor: accentColor
                             )
 
+                            SettingsChoiceRow(
+                                title: L10n.string("trakt_watch_progress_dialog_title", fallback: "Watch Progress"),
+                                subtitle: L10n.string("tvos_settings_wetrakr_watch_progress_subtitle", fallback: "Use WeTrakr for Resume, Continue Watching, and scrobbling"),
+                                selection: watchProgressSelection,
+                                options: RemoteTrackingState.availableProgressSources().map(\.label),
+                                accentColor: accentColor
+                            )
+                        }
+
+                        SettingsGroup(
+                            title: L10n.string("account_login", fallback: "Account Login"),
+                            subtitle: L10n.string("tvos_settings_wetrakr_account_login_subtitle", fallback: "Manage the WeTrakr connection for this Nuvio profile")
+                        ) {
                             SettingsActionRow(
-                                title: "Sync Now",
-                                subtitle: "Refresh WeTrakr watch progress, account data, and tracking items",
-                                value: (viewModel.isLoading || viewModel.isStatsLoading) ? "Syncing" : "Refresh",
+                                title: L10n.string("debrid_disconnect", fallback: "Disconnect"),
+                                subtitle: L10n.string("tvos_settings_wetrakr_disconnect_subtitle", fallback: "Remove this profile's WeTrakr token from this Apple TV"),
+                                value: L10n.string("debrid_disconnect", fallback: "Disconnect"),
                                 accentColor: accentColor
                             ) {
-                                viewModel.refreshNow()
+                                showingDisconnectConfirmation = true
                             }
-                            .disabled(viewModel.isLoading || viewModel.isStatsLoading)
+                            .disabled(viewModel.isLoading)
                         }
 
                         if let message = viewModel.statusMessage, !message.isEmpty {
@@ -7253,16 +7338,11 @@ private struct WeTrakrConnectedSettingsSheet: View {
             isPresented: $showingDisconnectConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Disconnect", role: .destructive) {
+            Button(L10n.string("debrid_disconnect", fallback: "Disconnect"), role: .destructive) {
                 viewModel.disconnect()
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
         }
-    }
-
-    private var connectedSubtitle: String {
-        let name = (viewModel.displayName ?? viewModel.username ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "Manage WeTrakr sync and account options." : "Connected as \(name). Manage sync and account options."
     }
 
     private var watchProgressSelection: Binding<String> {
@@ -7284,6 +7364,53 @@ private struct WeTrakrConnectedSettingsSheet: View {
                     TraktLibrarySourceMode.allCases.first { $0.label == label } ?? .local
             }
         )
+    }
+}
+
+private struct WeTrakrConnectedStatsStrip: View {
+    let stats: WeTrakrCachedStats?
+    let isLoading: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            stat(value: stats?.moviesWatched, label: L10n.string("nav_movies", fallback: "Movies"))
+            divider
+            stat(value: stats?.showsWatched, label: L10n.string("trakt_stat_shows", fallback: "Shows"))
+            divider
+            stat(value: stats?.episodesWatched, label: L10n.string("tmdb_episodes_title", fallback: "Episodes"))
+            divider
+            stat(
+                text: stats?.totalWatchedHours.map { "\($0)h" },
+                label: L10n.string("tvos_settings_hours", fallback: "Watched Hours")
+            )
+        }
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .top) { Divider().overlay(Color.white.opacity(0.16)) }
+        .overlay(alignment: .bottom) { Divider().overlay(Color.white.opacity(0.16)) }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.16))
+            .frame(width: 1, height: 72)
+    }
+
+    private func stat(value: Int?, label: String) -> some View {
+        stat(text: value.map(String.init), label: label)
+    }
+
+    private func stat(text: String?, label: String) -> some View {
+        VStack(spacing: 7) {
+            Text(text ?? (isLoading ? "..." : "-"))
+                .font(.system(size: 27, weight: .semibold))
+                .foregroundColor(.white)
+            Text(label)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(.white.opacity(0.62))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -10188,6 +10315,8 @@ private struct AddonsSettingsSection: View {
         syncedAddons = resolved
         addons = Self.initialLocalAddons()
 
+        var pendingRowUpdates: [(addonID: String, addonName: String, additions: [TVHomeCatalogOrder.SnapshotRow])] = []
+
         for index in resolved.indices {
             guard !Task.isCancelled else { return }
             let manifest = await StremioManifest.fetch(from: resolved[index].url)
@@ -10206,12 +10335,12 @@ private struct AddonsSettingsSection: View {
                     addonID: addonID,
                     addonName: resolved[index].name
                 )
-                TVHomeCatalogOrder.replaceSnapshotRows(
-                    forAddonID: addonID,
-                    addonName: resolved[index].name,
-                    with: rows
-                )
+                pendingRowUpdates.append((addonID: addonID, addonName: resolved[index].name, additions: rows))
             }
+        }
+
+        if !pendingRowUpdates.isEmpty, !Task.isCancelled, ProfileSettings.activeProfileID == activeProfileID {
+            TVHomeCatalogOrder.batchReplaceSnapshotRows(pendingRowUpdates)
         }
     }
 
