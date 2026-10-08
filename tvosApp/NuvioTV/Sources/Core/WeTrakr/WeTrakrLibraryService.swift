@@ -4,25 +4,29 @@ import Foundation
 enum WeTrakrLibraryService {
     static let mutationNotification = Notification.Name("nuvio.tv.wetrakr.library.mutation")
     private static let client = WeTrakrAPIClient()
+    private static var cachedLibraryItems: [LibraryStoreItem]?
 
     static func fetchLibrary(
-        repository: CatalogRepository,
+        repository: CatalogRepository? = nil,
         store: UserDefaults = ProfileSettings.current
     ) async -> [LibraryStoreItem]? {
         guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
               !token.isEmpty else { return nil }
         let clientID = WeTrakrConfig.clientID(in: store)
 
-        let extendedQuery = [URLQueryItem(name: "extended", value: "show_level_1,movie_level_1")]
+        let extendedQuery = [
+            URLQueryItem(name: "extended", value: "show_level_1,movie_level_1"),
+            URLQueryItem(name: "limit", value: "100")
+        ]
 
         async let moviesResult: WeTrakrHTTPResult<[WeTrakrTrackingPlayingItemDTO]> = client.get(
-            path: "/sync/tracking/movies",
+            path: "/sync/tracking/planning/movies",
             accessToken: token,
             clientID: clientID,
             queryItems: extendedQuery
         )
         async let showsResult: WeTrakrHTTPResult<[WeTrakrTrackingPlayingItemDTO]> = client.get(
-            path: "/sync/tracking/shows",
+            path: "/sync/tracking/planning/shows",
             accessToken: token,
             clientID: clientID,
             queryItems: extendedQuery
@@ -50,6 +54,7 @@ enum WeTrakrLibraryService {
             }
         }
 
+        cachedLibraryItems = items
         return items
     }
 
@@ -64,14 +69,13 @@ enum WeTrakrLibraryService {
         let ids = WeTrakrProgressService.wetrakrIDs(for: meta)
         guard ids.hasUsableIdentifier else { return false }
 
-        let mediaPayload = WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids)
+        let mediaPayload = WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids, status: "planning")
 
         do {
             if isInWatchlist {
                 let payload = WeTrakrTrackingAddPayload(
-                    status: "plan_to_watch",
                     movies: meta.isSeries ? nil : [mediaPayload],
-                    shows: meta.isSeries ? [WeTrakrShowTrackingPayload(title: meta.name, year: meta.year, ids: ids, seasons: nil)] : nil
+                    shows: meta.isSeries ? [WeTrakrShowTrackingPayload(title: meta.name, year: meta.year, ids: ids, status: "planning", seasons: nil)] : nil
                 )
                 let result: WeTrakrHTTPResult<Data> = try await client.postRaw(
                     path: "/sync/tracking",
@@ -80,10 +84,17 @@ enum WeTrakrLibraryService {
                     clientID: clientID
                 )
                 _ = try result.valueOrThrow()
+
+                if var current = cachedLibraryItems {
+                    if !current.contains(where: { $0.meta.id == meta.id || WatchedStore.sameContent($0.meta, meta) }) {
+                        current.insert(LibraryStoreItem(meta: meta, addedAt: Date()), at: 0)
+                        cachedLibraryItems = current
+                    }
+                }
             } else {
                 let payload = WeTrakrTrackingRemovePayload(
                     movies: meta.isSeries ? nil : [mediaPayload],
-                    shows: meta.isSeries ? [WeTrakrShowTrackingPayload(title: meta.name, year: meta.year, ids: ids, seasons: nil)] : nil
+                    shows: meta.isSeries ? [WeTrakrShowTrackingPayload(title: meta.name, year: meta.year, ids: ids, status: "planning", seasons: nil)] : nil
                 )
                 let result: WeTrakrHTTPResult<Data> = try await client.postRaw(
                     path: "/sync/tracking/remove",
@@ -92,11 +103,21 @@ enum WeTrakrLibraryService {
                     clientID: clientID
                 )
                 _ = try result.valueOrThrow()
+
+                if var current = cachedLibraryItems {
+                    current.removeAll(where: { $0.meta.id == meta.id || WatchedStore.sameContent($0.meta, meta) })
+                    cachedLibraryItems = current
+                }
             }
 
+            NotificationCenter.default.post(
+                name: TraktLibraryService.mutationNotification,
+                object: TraktLibraryMutation(meta: meta, isInWatchlist: isInWatchlist)
+            )
             NotificationCenter.default.post(name: mutationNotification, object: nil)
             return true
         } catch {
+            print("[WeTrakrLibraryService] setWatchlist failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -107,6 +128,13 @@ enum WeTrakrLibraryService {
     ) async -> Bool? {
         guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
               !token.isEmpty else { return nil }
+        if let cached = cachedLibraryItems {
+            return cached.contains { $0.meta.id == meta.id || WatchedStore.sameContent($0.meta, meta) }
+        }
+        let fetched = await fetchLibrary(repository: nil, store: store)
+        if let fetched {
+            return fetched.contains { $0.meta.id == meta.id || WatchedStore.sameContent($0.meta, meta) }
+        }
         return nil
     }
 }
