@@ -2344,7 +2344,6 @@ enum ContinueWatchingStore {
         seedSeason: Int? = nil
     ) {
         print("[ContinueWatching][Store] saveUpNext: meta=\(meta.id), S\(season)E\(episode), dur=\(duration)")
-        ContinueWatchingDismissStore.clear(contentId: meta.id)
         let item = ContinueWatchingItem(
             meta: meta,
             streamUrl: "",
@@ -3098,11 +3097,15 @@ enum ContinueWatchingDismissStore {
     static let changedNotification = Notification.Name("nuvio.tv.continueWatching.dismissed")
 
     private static let baseKey = "nuvio.tv.continueWatching.dismissedKeys"
+    private static let pendingDismissedKeysBaseKey = "nuvio.tv.continueWatching.pendingDismissedKeys"
+    private static let resumedContentIDsBaseKey = "nuvio.tv.continueWatching.resumedContentIDs"
     private static let separator = "|"
     private static let legacySeparator = "\u{1f}"
 
     private static let cacheLock = NSRecursiveLock()
     private static var cache: [String: Set<String>] = [:]
+    private static var pendingDismissedKeysCache: [String: Set<String>] = [:]
+    private static var resumedContentIDsCache: [String: Set<String>] = [:]
     private static var _activeProfileId: String?
 
     static var activeProfileId: String? {
@@ -3124,19 +3127,104 @@ enum ContinueWatchingDismissStore {
         return "\(baseKey).\(id)"
     }
 
-    private static var storageKey: String {
-        storageKey(for: activeProfileId)
+    private static func resumedContentIDsStorageKey(for profileId: String?) -> String {
+        guard let id = profileId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else {
+            return resumedContentIDsBaseKey
+        }
+        return "\(resumedContentIDsBaseKey).\(id)"
+    }
+
+    private static func pendingDismissedKeysStorageKey(for profileId: String?) -> String {
+        guard let id = profileId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else {
+            return pendingDismissedKeysBaseKey
+        }
+        return "\(pendingDismissedKeysBaseKey).\(id)"
+    }
+
+    private static func dismissalKeysLocked(for key: String) -> Set<String> {
+        if let cached = cache[key] { return cached }
+        let loaded = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        cache[key] = loaded
+        return loaded
+    }
+
+    private static func resumedContentIDsLocked(for key: String) -> Set<String> {
+        if let cached = resumedContentIDsCache[key] { return cached }
+        let loaded = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let normalized = Set(loaded)
+        resumedContentIDsCache[key] = normalized
+        return normalized
+    }
+
+    private static func pendingDismissedKeysLocked(for key: String) -> Set<String> {
+        if let cached = pendingDismissedKeysCache[key] { return cached }
+        let loaded = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        pendingDismissedKeysCache[key] = loaded
+        return loaded
+    }
+
+    private static func setDismissalKeysLocked(_ keys: Set<String>, for key: String) {
+        cache[key] = keys
+        if keys.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(Array(keys), forKey: key)
+        }
+    }
+
+    private static func setResumedContentIDsLocked(_ ids: Set<String>, for key: String) {
+        resumedContentIDsCache[key] = ids
+        if ids.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(Array(ids), forKey: key)
+        }
+    }
+
+    private static func setPendingDismissedKeysLocked(_ keys: Set<String>, for key: String) {
+        pendingDismissedKeysCache[key] = keys
+        if keys.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(Array(keys), forKey: key)
+        }
+    }
+
+    private static func contentID(fromDismissalKey key: String) -> String {
+        if let delimiter = key.firstIndex(of: Character(separator)) {
+            return String(key[..<delimiter]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let delimiter = key.firstIndex(of: Character(legacySeparator)) {
+            return String(key[..<delimiter]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return key.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isContentWideDismissal(_ key: String, for contentId: String) -> Bool {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedKey == contentId
+            || normalizedKey == "\(contentId)\(separator)-1\(separator)-1"
+            || normalizedKey == "\(contentId)\(legacySeparator)-1\(legacySeparator)-1"
     }
 
     /// Scoped counterpart to ``eraseAllProfiles()`` — see
     /// ``WatchedStore/eraseProfile(_:)``.
     static func eraseProfile(_ profileId: String) {
         let key = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let resumedKey = resumedContentIDsStorageKey(for: profileId)
         cacheLock.lock()
         cache.removeValue(forKey: key)
-        cacheLock.unlock()
+        pendingDismissedKeysCache.removeValue(forKey: pendingKey)
+        resumedContentIDsCache.removeValue(forKey: resumedKey)
         UserDefaults.standard.removeObject(forKey: key)
-        postChangedNotification()
+        UserDefaults.standard.removeObject(forKey: pendingKey)
+        UserDefaults.standard.removeObject(forKey: resumedKey)
+        let shouldNotify = _activeProfileId == profileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
     }
 
     static func key(for item: ContinueWatchingItem) -> String {
@@ -3155,23 +3243,32 @@ enum ContinueWatchingDismissStore {
     }
 
     static func keys() -> Set<String> {
-        keys(profileId: activeProfileId)
+        cacheLock.lock()
+        let key = storageKey(for: _activeProfileId)
+        let result = dismissalKeysLocked(for: key)
+        cacheLock.unlock()
+        return result
     }
 
     static func keys(profileId: String?) -> Set<String> {
+        cacheLock.lock()
         let targetKey = storageKey(for: profileId)
-        cacheLock.lock()
-        if let cached = cache[targetKey] {
-            cacheLock.unlock()
-            return cached
-        }
-        cacheLock.unlock()
-
-        let loaded = Set(UserDefaults.standard.stringArray(forKey: targetKey) ?? [])
-        cacheLock.lock()
-        cache[targetKey] = loaded
+        let loaded = dismissalKeysLocked(for: targetKey)
         cacheLock.unlock()
         return loaded
+    }
+
+    /// Keys safe to send to another device. A stale settings pull can race a
+    /// locally resumed title, so exports apply the persisted resume markers too.
+    static func keysForExport(profileId: String?) -> Set<String> {
+        cacheLock.lock()
+        let targetKey = storageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        let keys = dismissalKeysLocked(for: targetKey)
+        let resumedIDs = resumedContentIDsLocked(for: markerKey)
+        let filtered = Set(keys.filter { !resumedIDs.contains(contentID(fromDismissalKey: $0)) })
+        cacheLock.unlock()
+        return filtered
     }
 
     static func isDismissed(_ item: ContinueWatchingItem) -> Bool {
@@ -3183,59 +3280,186 @@ enum ContinueWatchingDismissStore {
         let wildcard = "\(id)\(separator)-1\(separator)-1"
         let legacyExact = legacyKey(contentId: id, season: numbers?.season, episode: numbers?.episode)
         let legacyWildcard = "\(id)\(legacySeparator)-1\(legacySeparator)-1"
-        return current.contains(exact) || current.contains(wildcard) || current.contains(legacyExact) || current.contains(legacyWildcard)
+        return current.contains(id)
+            || current.contains(exact)
+            || current.contains(wildcard)
+            || current.contains(legacyExact)
+            || current.contains(legacyWildcard)
     }
 
     static func dismiss(_ item: ContinueWatchingItem) {
-        var current = keys()
+        let id = item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
         let numbers = item.episodeNumbers
-        let specificKey = key(contentId: item.meta.id, season: numbers?.season, episode: numbers?.episode)
+        let specificKey = key(contentId: id, season: numbers?.season, episode: numbers?.episode)
+        cacheLock.lock()
+        let profileId = _activeProfileId
+        let targetKey = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        var resumedIDs = resumedContentIDsLocked(for: markerKey)
+        if resumedIDs.remove(id) != nil {
+            setResumedContentIDsLocked(resumedIDs, for: markerKey)
+        }
+        var current = dismissalKeysLocked(for: targetKey)
         current.insert(specificKey)
         if numbers == nil {
-            current.insert("\(item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines))\(separator)-1\(separator)-1")
+            current.insert("\(id)\(separator)-1\(separator)-1")
         }
+        var pendingKeys = pendingDismissedKeysLocked(for: pendingKey)
+        pendingKeys.insert(specificKey)
+        if numbers == nil {
+            pendingKeys.insert("\(id)\(separator)-1\(separator)-1")
+        }
+        setDismissalKeysLocked(current, for: targetKey)
+        setPendingDismissedKeysLocked(pendingKeys, for: pendingKey)
+        cacheLock.unlock()
         print("[ContinueWatchingDismissStore] dismiss: item \(item.meta.id), inserted \(specificKey), total keys=\(current.count)")
-        persist(current)
+        postChangedNotification()
     }
 
     static func dismiss(contentId: String) {
-        var current = keys()
         let id = contentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
         let wildcard = "\(id)\(separator)-1\(separator)-1"
+        cacheLock.lock()
+        let profileId = _activeProfileId
+        let targetKey = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        var resumedIDs = resumedContentIDsLocked(for: markerKey)
+        if resumedIDs.remove(id) != nil {
+            setResumedContentIDsLocked(resumedIDs, for: markerKey)
+        }
+        var current = dismissalKeysLocked(for: targetKey)
         current.insert(wildcard)
+        var pendingKeys = pendingDismissedKeysLocked(for: pendingKey)
+        pendingKeys.insert(wildcard)
+        setDismissalKeysLocked(current, for: targetKey)
+        setPendingDismissedKeysLocked(pendingKeys, for: pendingKey)
+        cacheLock.unlock()
         print("[ContinueWatchingDismissStore] dismiss: contentId \(contentId), inserted \(wildcard), total keys=\(current.count)")
-        persist(current)
+        postChangedNotification()
     }
 
     /// Retires every removal recorded for a title.
     static func clear(contentId: String) {
-        let current = keys()
-        guard !current.isEmpty else { return }
         let id = contentId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix1 = "\(id)\(separator)"
-        let prefix2 = "\(id)\(legacySeparator)"
-        let remaining = current.filter { !$0.hasPrefix(prefix1) && !$0.hasPrefix(prefix2) && $0 != id }
-        guard remaining.count != current.count else { return }
+        guard !id.isEmpty else { return }
+        cacheLock.lock()
+        let profileId = _activeProfileId
+        let targetKey = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        let current = dismissalKeysLocked(for: targetKey)
+        let remaining = Set(current.filter { contentID(fromDismissalKey: $0) != id })
+        let currentPending = pendingDismissedKeysLocked(for: pendingKey)
+        let remainingPending = Set(currentPending.filter { contentID(fromDismissalKey: $0) != id })
+        var resumedIDs = resumedContentIDsLocked(for: markerKey)
+        let markerInserted = resumedIDs.insert(id).inserted
+        if remaining != current {
+            setDismissalKeysLocked(remaining, for: targetKey)
+        }
+        if remainingPending != currentPending {
+            setPendingDismissedKeysLocked(remainingPending, for: pendingKey)
+        }
+        if markerInserted {
+            setResumedContentIDsLocked(resumedIDs, for: markerKey)
+        }
+        cacheLock.unlock()
+        guard remaining != current || remainingPending != currentPending || markerInserted else { return }
         print("[ContinueWatchingDismissStore] clear: cleared dismissals for \(contentId) (from \(current.count) -> \(remaining.count) keys)")
-        persist(remaining)
+        postChangedNotification()
     }
 
     static func replaceKeys(_ keys: Set<String>, profileId: String?) {
-        print("[ContinueWatchingDismissStore] replaceKeys: replacing keys with \(keys.count) items for profile=\(profileId ?? "nil")")
-        persist(keys, profileId: profileId)
+        cacheLock.lock()
+        let targetKey = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        let resumedIDs = resumedContentIDsLocked(for: markerKey)
+        let filtered = Set(keys.filter { !resumedIDs.contains(contentID(fromDismissalKey: $0)) })
+        setDismissalKeysLocked(filtered, for: targetKey)
+        setPendingDismissedKeysLocked([], for: pendingKey)
+        let shouldNotify = profileId == _activeProfileId
+        cacheLock.unlock()
+        print("[ContinueWatchingDismissStore] replaceKeys: replacing keys with \(filtered.count) items for profile=\(profileId ?? "nil")")
+        if shouldNotify { postChangedNotification() }
     }
 
-    private static func persist(_ keys: Set<String>, profileId: String? = activeProfileId) {
-        let targetKey = storageKey(for: profileId)
+    static func reconcileRemoteKeys(_ remoteKeys: Set<String>, profileId: String?) {
         cacheLock.lock()
-        cache[targetKey] = keys
-        cacheLock.unlock()
-        if keys.isEmpty {
-            UserDefaults.standard.removeObject(forKey: targetKey)
-        } else {
-            UserDefaults.standard.set(Array(keys), forKey: targetKey)
+        let targetKey = storageKey(for: profileId)
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        let currentKeys = dismissalKeysLocked(for: targetKey)
+        let currentPending = pendingDismissedKeysLocked(for: pendingKey)
+        let currentResumedIDs = resumedContentIDsLocked(for: markerKey)
+
+        let remoteContentIDs = Set(remoteKeys.map(contentID(fromDismissalKey:)))
+        let remoteContentWideIDs = Set(remoteKeys.compactMap { key -> String? in
+            let id = contentID(fromDismissalKey: key)
+            return isContentWideDismissal(key, for: id) ? id : nil
+        })
+        let remainingResumedIDs = Set(currentResumedIDs.filter { remoteContentIDs.contains($0) })
+        var reconciledKeys = Set(remoteKeys.filter {
+            !remainingResumedIDs.contains(contentID(fromDismissalKey: $0))
+        })
+        var remainingPending = currentPending
+        for key in currentPending {
+            let contentId = contentID(fromDismissalKey: key)
+            if remoteKeys.contains(key)
+                || remoteContentWideIDs.contains(contentId)
+                || remainingResumedIDs.contains(contentId) {
+                remainingPending.remove(key)
+            } else {
+                reconciledKeys.insert(key)
+            }
         }
-        postChangedNotification()
+
+        if reconciledKeys != currentKeys {
+            setDismissalKeysLocked(reconciledKeys, for: targetKey)
+        }
+        if remainingPending != currentPending {
+            setPendingDismissedKeysLocked(remainingPending, for: pendingKey)
+        }
+        if remainingResumedIDs != currentResumedIDs {
+            setResumedContentIDsLocked(remainingResumedIDs, for: markerKey)
+        }
+        let shouldNotify = reconciledKeys != currentKeys && profileId == _activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
+    }
+
+    static func acknowledgePushedKeys(_ sentKeys: Set<String>, profileId: String?) {
+        cacheLock.lock()
+        let pendingKey = pendingDismissedKeysStorageKey(for: profileId)
+        let markerKey = resumedContentIDsStorageKey(for: profileId)
+        let currentPending = pendingDismissedKeysLocked(for: pendingKey)
+        let currentResumedIDs = resumedContentIDsLocked(for: markerKey)
+
+        let sentContentIDs = Set(sentKeys.map(contentID(fromDismissalKey:)))
+        let sentContentWideIDs = Set(sentKeys.compactMap { key -> String? in
+            let id = contentID(fromDismissalKey: key)
+            return isContentWideDismissal(key, for: id) ? id : nil
+        })
+        let remainingPending = Set(currentPending.filter { key in
+            let id = contentID(fromDismissalKey: key)
+            return !sentKeys.contains(key) && !sentContentWideIDs.contains(id)
+        })
+        let remainingResumedIDs = Set(currentResumedIDs.filter { sentContentIDs.contains($0) })
+        guard remainingPending != currentPending || remainingResumedIDs != currentResumedIDs else {
+            cacheLock.unlock()
+            return
+        }
+
+        if remainingPending != currentPending {
+            setPendingDismissedKeysLocked(remainingPending, for: pendingKey)
+        }
+        if remainingResumedIDs != currentResumedIDs {
+            setResumedContentIDsLocked(remainingResumedIDs, for: markerKey)
+        }
+        cacheLock.unlock()
     }
 
     private static func postChangedNotification() {
@@ -3252,11 +3476,17 @@ enum ContinueWatchingDismissStore {
     static func eraseAllProfiles() {
         cacheLock.lock()
         cache.removeAll()
-        cacheLock.unlock()
+        pendingDismissedKeysCache.removeAll()
+        resumedContentIDsCache.removeAll()
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
-            .filter { $0.hasPrefix(baseKey) }
+            .filter {
+                $0.hasPrefix(baseKey)
+                    || $0.hasPrefix(pendingDismissedKeysBaseKey)
+                    || $0.hasPrefix(resumedContentIDsBaseKey)
+            }
             .forEach { defaults.removeObject(forKey: $0) }
+        cacheLock.unlock()
         postChangedNotification()
     }
 }
@@ -3291,8 +3521,31 @@ enum LibraryStore {
     private static let storageDirectoryName = "LibraryStore"
     private(set) static var activeProfileId: String?
 
+    private struct Mutation: Codable, Equatable, Sendable {
+        let token: UUID
+        let item: LibraryStoreItem?
+        var acknowledgedGeneration: Int64?
+    }
+
+    private struct Envelope: Codable, Equatable, Sendable {
+        var items: [LibraryStoreItem]
+        var acknowledgmentGeneration: Int64
+        var mutations: [String: Mutation]
+    }
+
+    struct PullContext: Sendable {
+        let profileId: String
+        let acknowledgmentGeneration: Int64
+    }
+
+    struct PushSnapshot: Sendable {
+        let profileId: String
+        let items: [LibraryStoreItem]
+        let pendingMutationTokens: [String: UUID]
+    }
+
     private static let cacheLock = NSRecursiveLock()
-    private static var cachedItems: [LibraryStoreItem]?
+    private static var cachedEnvelope: Envelope?
     private static var cachedKey: String?
     private static var cachedItemKeys: Set<String>?
 
@@ -3301,7 +3554,7 @@ enum LibraryStore {
         let changed = (activeProfileId != profileId)
         activeProfileId = profileId
         if changed {
-            cachedItems = nil
+            cachedEnvelope = nil
             cachedKey = nil
             cachedItemKeys = nil
         }
@@ -3353,131 +3606,289 @@ enum LibraryStore {
     static func items() -> [LibraryStoreItem] {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-
-        let key = storageKey
-        if cachedKey == key, let cached = cachedItems {
-            return cached
-        }
-
-        guard let data = readData(forKey: key) else {
-            cachedItems = []
-            cachedKey = key
-            cachedItemKeys = []
-            return []
-        }
-        guard let decoded = try? JSONDecoder().decode([LibraryStoreItem].self, from: data) else {
-            LargePayloadStore.remove(key: key, directory: storageDirectoryName)
-            cachedItems = []
-            cachedKey = key
-            cachedItemKeys = []
-            return []
-        }
-
-        let sorted = decoded.sorted { $0.addedAt > $1.addedAt }
-        cachedItems = sorted
-        cachedKey = key
-        cachedItemKeys = Set(sorted.map { "\($0.meta.type.lowercased()):\($0.meta.id)" })
-        return sorted
+        return readEnvelopeLocked(forProfileId: activeProfileId).items
     }
 
     static func contains(metaId: String, type: String) -> Bool {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-
-        let key = storageKey
-        if cachedKey != key || cachedItemKeys == nil {
-            _ = items()
+        let key = itemKey(type: type, id: metaId)
+        let activeKey = storageKey(for: activeProfileId)
+        if cachedKey == activeKey, let cachedItemKeys {
+            return cachedItemKeys.contains(key)
         }
-        return cachedItemKeys?.contains("\(type.lowercased()):\(metaId)") ?? false
+        return readEnvelopeLocked(forProfileId: activeProfileId).items.contains {
+            itemKey($0) == key
+        }
     }
 
     @discardableResult
     static func toggle(meta: NuvioMeta) -> Bool {
-        if contains(metaId: meta.id, type: meta.type) {
-            remove(metaId: meta.id, type: meta.type)
-            return false
+        let key = itemKey(meta)
+        cacheLock.lock()
+        let profileId = activeProfileId
+        var envelope = readEnvelopeLocked(forProfileId: profileId)
+        let previousEnvelope = envelope
+        let wasPresent = envelope.items.contains { itemKey($0) == key }
+        if wasPresent {
+            envelope.items.removeAll { itemKey($0) == key }
+            envelope.mutations[key] = Mutation(token: UUID(), item: nil, acknowledgedGeneration: nil)
+        } else {
+            let item = LibraryStoreItem(meta: meta, addedAt: Date())
+            envelope.items = upserting(item, into: envelope.items)
+            envelope.mutations[key] = Mutation(token: UUID(), item: item, acknowledgedGeneration: nil)
         }
-
-        add(meta)
-        return true
+        let didPersist = persistEnvelopeLocked(envelope, forProfileId: profileId)
+        let shouldNotify = didPersist && previousEnvelope != envelope && profileId == activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
+        return didPersist ? !wasPresent : wasPresent
     }
 
     static func add(_ meta: NuvioMeta) {
         let item = LibraryStoreItem(meta: meta, addedAt: Date())
-        let updated = [item] + items().filter {
-            !($0.meta.id == meta.id && $0.meta.type.caseInsensitiveCompare(meta.type) == .orderedSame)
-        }
-        persist(updated)
+        let key = itemKey(item)
+        cacheLock.lock()
+        let profileId = activeProfileId
+        var envelope = readEnvelopeLocked(forProfileId: profileId)
+        let previousEnvelope = envelope
+        envelope.items = upserting(item, into: envelope.items)
+        envelope.mutations[key] = Mutation(token: UUID(), item: item, acknowledgedGeneration: nil)
+        let didPersist = persistEnvelopeLocked(envelope, forProfileId: profileId)
+        let shouldNotify = didPersist && previousEnvelope != envelope && profileId == activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
     }
 
     static func remove(metaId: String, type: String) {
-        persist(items().filter {
-            !($0.meta.id == metaId && $0.meta.type.caseInsensitiveCompare(type) == .orderedSame)
-        })
-    }
-
-    static func mergeRemote(_ remoteItems: [LibraryStoreItem]) {
-        guard !remoteItems.isEmpty else { return }
-        var byKey: [String: LibraryStoreItem] = [:]
-        let current = items()
-        (current + remoteItems).forEach { item in
-            let key = "\(item.meta.type.lowercased()):\(item.meta.id)"
-            let existing = byKey[key]
-            if existing == nil || item.addedAt > existing!.addedAt {
-                byKey[key] = item
-            }
-        }
-        let merged = Array(byKey.values).sorted { $0.addedAt > $1.addedAt }
-        guard merged != current else { return }
-        persist(merged)
+        let key = itemKey(type: type, id: metaId)
+        cacheLock.lock()
+        let profileId = activeProfileId
+        var envelope = readEnvelopeLocked(forProfileId: profileId)
+        let previousEnvelope = envelope
+        envelope.items.removeAll { itemKey($0) == key }
+        envelope.mutations[key] = Mutation(token: UUID(), item: nil, acknowledgedGeneration: nil)
+        let didPersist = persistEnvelopeLocked(envelope, forProfileId: profileId)
+        let shouldNotify = didPersist && previousEnvelope != envelope && profileId == activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
     }
 
     static func replaceAll(_ newItems: [LibraryStoreItem]) {
-        persist(newItems.sorted { $0.addedAt > $1.addedAt })
+        cacheLock.lock()
+        let profileId = activeProfileId
+        var envelope = readEnvelopeLocked(forProfileId: profileId)
+        let previousEnvelope = envelope
+        envelope.items = sortedUnique(newItems)
+        envelope.mutations = [:]
+        let didPersist = persistEnvelopeLocked(envelope, forProfileId: profileId)
+        let shouldNotify = didPersist && previousEnvelope != envelope && profileId == activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
     }
 
-    private static func persist(_ items: [LibraryStoreItem]) {
-        let key = storageKey
+    static func capturePullContext(profileId: String) -> PullContext {
         cacheLock.lock()
-        cachedItems = items
-        cachedKey = key
-        cachedItemKeys = Set(items.map { "\($0.meta.type.lowercased()):\($0.meta.id)" })
+        let envelope = readEnvelopeLocked(forProfileId: profileId)
         cacheLock.unlock()
+        return PullContext(
+            profileId: profileId,
+            acknowledgmentGeneration: envelope.acknowledgmentGeneration
+        )
+    }
 
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        _ = writeData(data, forKey: key)
-        postChangedNotification()
+    @discardableResult
+    static func reconcileRemote(_ remoteItems: [LibraryStoreItem], context: PullContext) -> Bool {
+        cacheLock.lock()
+        let current = readEnvelopeLocked(forProfileId: context.profileId)
+        var visibleByKey = Dictionary(
+            uniqueKeysWithValues: sortedUnique(remoteItems).map { (itemKey($0), $0) }
+        )
+        var survivingMutations: [String: Mutation] = [:]
+
+        for (key, mutation) in current.mutations {
+            if let acknowledgedGeneration = mutation.acknowledgedGeneration,
+               acknowledgedGeneration <= context.acknowledgmentGeneration {
+                continue
+            }
+            survivingMutations[key] = mutation
+            if let item = mutation.item {
+                visibleByKey[key] = item
+            } else {
+                visibleByKey.removeValue(forKey: key)
+            }
+        }
+
+        let reconciledItems = sortedUnique(Array(visibleByKey.values))
+        let reconciled = Envelope(
+            items: reconciledItems,
+            acknowledgmentGeneration: current.acknowledgmentGeneration,
+            mutations: survivingMutations
+        )
+        guard reconciled != current else {
+            cacheLock.unlock()
+            return true
+        }
+
+        let visibleChanged = reconciled.items != current.items
+        let didPersist = persistEnvelopeLocked(reconciled, forProfileId: context.profileId)
+        let shouldNotify = didPersist && visibleChanged && context.profileId == activeProfileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
+        return didPersist
+    }
+
+    static func capturePushSnapshot(profileId: String) -> PushSnapshot {
+        cacheLock.lock()
+        let envelope = readEnvelopeLocked(forProfileId: profileId)
+        let pendingMutationTokens = envelope.mutations.reduce(into: [String: UUID]()) { result, entry in
+            if entry.value.acknowledgedGeneration == nil {
+                result[entry.key] = entry.value.token
+            }
+        }
+        cacheLock.unlock()
+        return PushSnapshot(
+            profileId: profileId,
+            items: envelope.items,
+            pendingMutationTokens: pendingMutationTokens
+        )
+    }
+
+    @discardableResult
+    static func acknowledgePush(_ snapshot: PushSnapshot) -> Bool {
+        guard !snapshot.pendingMutationTokens.isEmpty else { return false }
+        cacheLock.lock()
+        var envelope = readEnvelopeLocked(forProfileId: snapshot.profileId)
+        let matchingKeys = snapshot.pendingMutationTokens.compactMap { entry -> String? in
+            guard let mutation = envelope.mutations[entry.key],
+                  mutation.token == entry.value,
+                  mutation.acknowledgedGeneration == nil else { return nil }
+            return entry.key
+        }
+        guard !matchingKeys.isEmpty else {
+            cacheLock.unlock()
+            return false
+        }
+
+        envelope.acknowledgmentGeneration &+= 1
+        let generation = envelope.acknowledgmentGeneration
+        for key in matchingKeys {
+            envelope.mutations[key]?.acknowledgedGeneration = generation
+        }
+        let didPersist = persistEnvelopeLocked(envelope, forProfileId: snapshot.profileId)
+        cacheLock.unlock()
+        return didPersist
+    }
+
+    private static func readEnvelopeLocked(forProfileId profileId: String?) -> Envelope {
+        let key = storageKey(for: profileId)
+        if profileId == activeProfileId, cachedKey == key, let cachedEnvelope {
+            return cachedEnvelope
+        }
+
+        let envelope: Envelope
+        if let data = readData(forKey: key) {
+            if let decoded = try? JSONDecoder().decode(Envelope.self, from: data) {
+                envelope = Envelope(
+                    items: sortedUnique(decoded.items),
+                    acknowledgmentGeneration: decoded.acknowledgmentGeneration,
+                    mutations: decoded.mutations
+                )
+            } else if let legacyItems = try? JSONDecoder().decode([LibraryStoreItem].self, from: data) {
+                envelope = Envelope(
+                    items: sortedUnique(legacyItems),
+                    acknowledgmentGeneration: 0,
+                    mutations: [:]
+                )
+            } else {
+                LargePayloadStore.remove(key: key, directory: storageDirectoryName)
+                envelope = Envelope(items: [], acknowledgmentGeneration: 0, mutations: [:])
+            }
+        } else {
+            envelope = Envelope(items: [], acknowledgmentGeneration: 0, mutations: [:])
+        }
+        cacheEnvelopeLocked(envelope, forProfileId: profileId)
+        return envelope
+    }
+
+    private static func persistEnvelopeLocked(_ envelope: Envelope, forProfileId profileId: String?) -> Bool {
+        let normalized = Envelope(
+            items: sortedUnique(envelope.items),
+            acknowledgmentGeneration: envelope.acknowledgmentGeneration,
+            mutations: envelope.mutations
+        )
+        guard let data = try? JSONEncoder().encode(normalized),
+              writeData(data, forKey: storageKey(for: profileId)) else { return false }
+        cacheEnvelopeLocked(normalized, forProfileId: profileId)
+        return true
+    }
+
+    private static func cacheEnvelopeLocked(_ envelope: Envelope, forProfileId profileId: String?) {
+        guard profileId == activeProfileId else { return }
+        cachedEnvelope = envelope
+        cachedKey = storageKey(for: profileId)
+        cachedItemKeys = Set(envelope.items.map(itemKey))
+    }
+
+    private static func itemKey(_ item: LibraryStoreItem) -> String {
+        itemKey(type: item.meta.type, id: item.meta.id)
+    }
+
+    private static func itemKey(_ meta: NuvioMeta) -> String {
+        itemKey(type: meta.type, id: meta.id)
+    }
+
+    private static func itemKey(type: String, id: String) -> String {
+        let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(normalizedType):\(normalizedID)"
+    }
+
+    private static func upserting(_ item: LibraryStoreItem, into items: [LibraryStoreItem]) -> [LibraryStoreItem] {
+        sortedUnique(items.filter { itemKey($0) != itemKey(item) } + [item])
+    }
+
+    private static func sortedUnique(_ items: [LibraryStoreItem]) -> [LibraryStoreItem] {
+        var byKey: [String: LibraryStoreItem] = [:]
+        for item in items {
+            let key = itemKey(item)
+            if let existing = byKey[key], existing.addedAt >= item.addedAt { continue }
+            byKey[key] = item
+        }
+        return byKey.values.sorted {
+            if $0.addedAt != $1.addedAt { return $0.addedAt > $1.addedAt }
+            return itemKey($0) < itemKey($1)
+        }
     }
 
     /// Deletes one profile's library, leaving every other profile alone.
     static func eraseProfile(_ profileId: String) {
         cacheLock.lock()
         if activeProfileId == profileId {
-            cachedItems = nil
+            cachedEnvelope = nil
             cachedKey = nil
             cachedItemKeys = nil
         }
-        cacheLock.unlock()
-
         let key = storageKey(for: profileId)
         UserDefaults.standard.removeObject(forKey: key)
         LargePayloadStore.remove(key: key, directory: storageDirectoryName)
-        postChangedNotification()
+        let shouldNotify = activeProfileId == profileId
+        cacheLock.unlock()
+        if shouldNotify { postChangedNotification() }
     }
 
     /// Deletes every profile's library (and the legacy shared one) on sign-out.
     static func eraseAllProfiles() {
         cacheLock.lock()
-        cachedItems = nil
+        cachedEnvelope = nil
         cachedKey = nil
         cachedItemKeys = nil
-        cacheLock.unlock()
-
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
             .filter { $0.hasPrefix(baseKey) }
             .forEach { defaults.removeObject(forKey: $0) }
         LargePayloadStore.removeDirectory(storageDirectoryName)
+        cacheLock.unlock()
         postChangedNotification()
     }
 }

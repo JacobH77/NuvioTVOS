@@ -3463,10 +3463,9 @@ final class EpisodeResumeIsolationTests: XCTestCase {
         )
     }
 
-    /// A zero-row response is indistinguishable from a transient backend or
-    /// profile-routing failure. Preserve the durable local ledger rather than
-    /// making Continue Watching disappear after the delayed account pull.
-    func testEmptyAccountSnapshotKeepsServerKnownRows() {
+    /// An empty successful account snapshot means every server-known row was
+    /// removed elsewhere, including the final Continue Watching row.
+    func testEmptyAccountSnapshotRemovesLastServerKnownRow() {
         let synced = WatchProgressRecord(
             progressKey: "tt-test_s1e1",
             contentId: "tt-test",
@@ -3482,8 +3481,64 @@ final class EpisodeResumeIsolationTests: XCTestCase {
 
         let outcome = WatchProgressLedger.reconcileRemote([], syncStartedAt: Date())
         XCTAssertTrue(outcome.saved)
-        XCTAssertTrue(outcome.removedKeys.isEmpty)
-        XCTAssertNotNil(WatchProgressLedger.record(forKey: "tt-test_s1e1"))
+        XCTAssertEqual(outcome.removedKeys, ["tt-test_s1e1"])
+        XCTAssertTrue(outcome.didChange)
+        XCTAssertNil(WatchProgressLedger.record(forKey: "tt-test_s1e1"))
+        XCTAssertTrue(WatchProgressLedger.continueWatchingCandidates().isEmpty)
+
+        let repeatedOutcome = WatchProgressLedger.reconcileRemote([], syncStartedAt: Date())
+        XCTAssertTrue(repeatedOutcome.saved)
+        XCTAssertTrue(repeatedOutcome.removedKeys.isEmpty)
+        XCTAssertFalse(repeatedOutcome.didChange)
+    }
+
+    func testEmptyAccountSnapshotRemovesOnlyAcknowledgedRowsOlderThanPull() {
+        let syncStartedAt = Date()
+        let acknowledged = WatchProgressRecord(
+            progressKey: "tt-test_s1e1",
+            contentId: "tt-test",
+            contentType: "series",
+            videoId: "tt-test:1:1",
+            season: 1,
+            episode: 1,
+            position: 300,
+            duration: 3_000,
+            lastWatchedAt: syncStartedAt.addingTimeInterval(-7_200)
+        )
+        let pending = WatchProgressRecord(
+            progressKey: "tt-test_s1e2",
+            contentId: "tt-test",
+            contentType: "series",
+            videoId: "tt-test:1:2",
+            season: 1,
+            episode: 2,
+            position: 300,
+            duration: 3_000,
+            lastWatchedAt: syncStartedAt.addingTimeInterval(-60),
+            isPendingPush: true
+        )
+        let writtenDuringPull = WatchProgressRecord(
+            progressKey: "tt-test_s1e3",
+            contentId: "tt-test",
+            contentType: "series",
+            videoId: "tt-test:1:3",
+            season: 1,
+            episode: 3,
+            position: 300,
+            duration: 3_000,
+            lastWatchedAt: syncStartedAt.addingTimeInterval(1)
+        )
+        XCTAssertTrue(WatchProgressLedger.mergeRemote([acknowledged]))
+        XCTAssertTrue(WatchProgressLedger.upsert(pending))
+        XCTAssertTrue(WatchProgressLedger.upsert(writtenDuringPull))
+
+        let outcome = WatchProgressLedger.reconcileRemote([], syncStartedAt: syncStartedAt)
+        XCTAssertTrue(outcome.saved)
+        XCTAssertEqual(outcome.removedKeys, ["tt-test_s1e1"])
+        XCTAssertTrue(outcome.didChange)
+        XCTAssertNil(WatchProgressLedger.record(forKey: "tt-test_s1e1"))
+        XCTAssertEqual(WatchProgressLedger.record(forKey: "tt-test_s1e2"), pending)
+        XCTAssertEqual(WatchProgressLedger.record(forKey: "tt-test_s1e3"), writtenDuringPull)
     }
 
     private func makeSeries() -> NuvioMeta {
@@ -3553,6 +3608,47 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
         XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
     }
 
+    func testUpNextSuggestionsDoNotRetireDismissalsWithoutPlayback() throws {
+        let meta = makeSeries()
+        let removedEpisode = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.dismiss(removedEpisode)
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+        let dismissalKeys = ContinueWatchingDismissStore.keys()
+        XCTAssertEqual(
+            dismissalKeys,
+            [
+                ContinueWatchingDismissStore.key(contentId: meta.id, season: 1, episode: 1),
+                ContinueWatchingDismissStore.key(contentId: meta.id, season: nil, episode: nil)
+            ]
+        )
+
+        ContinueWatchingStore.saveUpNext(
+            meta: meta,
+            duration: 3_000,
+            season: 1,
+            episode: 1
+        )
+        let sameEpisodeSuggestion = try XCTUnwrap(ContinueWatchingStore.items().first)
+        XCTAssertEqual(sameEpisodeSuggestion.episode, 1)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(sameEpisodeSuggestion))
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), dismissalKeys)
+
+        ContinueWatchingStore.saveUpNext(
+            meta: meta,
+            duration: 3_000,
+            season: 1,
+            episode: 2
+        )
+        let nextEpisodeSuggestion = try XCTUnwrap(ContinueWatchingStore.items().first)
+        XCTAssertEqual(nextEpisodeSuggestion.episode, 2)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(nextEpisodeSuggestion))
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), dismissalKeys)
+        XCTAssertTrue(
+            WatchProgressLedger.records().isEmpty,
+            "saving a display-only suggestion must not create playback progress"
+        )
+    }
+
     func testFreshProgressRetiresTheRemoval() {
         let meta = makeSeries()
         let item = makeItem(meta: meta, season: 1, episode: 1)
@@ -3572,6 +3668,229 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
             ContinueWatchingDismissStore.isDismissed(item),
             "watching a removed title again must bring its card back"
         )
+    }
+
+    func testLocalDismissalSurvivesEmptyRemoteImportAndProfileReload() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+        let localKeys = ContinueWatchingDismissStore.keys()
+
+        ContinueWatchingStore.setActiveProfile("\(profileId)-other")
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().isEmpty)
+        ContinueWatchingStore.setActiveProfile(profileId)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), localKeys)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testLocalResumeClearBlocksStaleRemoteDismissal() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys(
+            [ContinueWatchingDismissStore.key(contentId: meta.id, season: 1, episode: 1)],
+            profileId: profileId
+        )
+
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().isEmpty)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testConfirmedRemoteAbsenceRetiresResumeClearForFutureDismissals() {
+        let meta = makeSeries()
+        ContinueWatchingDismissStore.dismiss(makeItem(meta: meta, season: 1, episode: 1))
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+        let laterRemoteKey = ContinueWatchingDismissStore.key(
+            contentId: meta.id,
+            season: 1,
+            episode: 2
+        )
+        ContinueWatchingDismissStore.reconcileRemoteKeys([laterRemoteKey], profileId: profileId)
+
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), [laterRemoteKey])
+        XCTAssertTrue(
+            ContinueWatchingDismissStore.isDismissed(
+                makeItem(meta: meta, season: 1, episode: 2)
+            )
+        )
+    }
+
+    func testConfirmedRemoteDismissalCanLaterBeRemovedRemotely() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        let key = ContinueWatchingDismissStore.key(for: item)
+        ContinueWatchingDismissStore.dismiss(item)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([key], profileId: profileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), [key])
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().isEmpty)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testRemoteContentWideDismissalConfirmsEpisodeAndWildcardOverrides() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        let wildcard = ContinueWatchingDismissStore.key(contentId: meta.id, season: nil, episode: nil)
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([wildcard], profileId: profileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), [wildcard])
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().isEmpty)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testExactRemoteDismissalDoesNotConfirmPendingContentWildcard() {
+        let meta = makeSeries()
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+        let wildcard = ContinueWatchingDismissStore.key(contentId: meta.id, season: nil, episode: nil)
+        let exact = ContinueWatchingDismissStore.key(contentId: meta.id, season: 1, episode: 1)
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([exact], profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().contains(wildcard))
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(), [wildcard])
+        XCTAssertTrue(
+            ContinueWatchingDismissStore.isDismissed(makeItem(meta: meta, season: 1, episode: 2))
+        )
+    }
+
+    func testBareAndroidContentIDDismissesEveryEpisode() {
+        let meta = makeSeries()
+        ContinueWatchingDismissStore.reconcileRemoteKeys([meta.id], profileId: profileId)
+
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(makeItem(meta: meta, season: 1, episode: 1)))
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(makeItem(meta: meta, season: 1, episode: 2)))
+    }
+
+    func testFreshPlaybackClearsAndroidImportedDismissalAndBlocksStaleReimport() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.reconcileRemoteKeys([meta.id], profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
+
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+
+        ContinueWatchingDismissStore.reconcileRemoteKeys([meta.id], profileId: profileId)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testPushedEmptySetAcknowledgesPlaybackClearForLaterAndroidDismissal() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.reconcileRemoteKeys([meta.id], profileId: profileId)
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
+        let sentKeys = exportedAndroidDismissalKeys()
+        XCTAssertTrue(sentKeys.isEmpty)
+
+        ContinueWatchingDismissStore.acknowledgePushedKeys(sentKeys, profileId: profileId)
+        let markerStorageKey = "nuvio.tv.continueWatching.resumedContentIDs.\(profileId)"
+        XCTAssertNil(UserDefaults.standard.object(forKey: markerStorageKey))
+
+        let laterAndroidDismissal = ContinueWatchingDismissStore.key(
+            contentId: meta.id,
+            season: nil,
+            episode: nil
+        )
+        ContinueWatchingDismissStore.reconcileRemoteKeys([laterAndroidDismissal], profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testPushedPositiveSetAcknowledgesDismissalForLaterRemoteRemoval() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+        let sentKeys = exportedAndroidDismissalKeys()
+        XCTAssertEqual(sentKeys, [
+            ContinueWatchingDismissStore.key(contentId: meta.id, season: nil, episode: nil)
+        ])
+
+        ContinueWatchingDismissStore.acknowledgePushedKeys(sentKeys, profileId: profileId)
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+
+        XCTAssertTrue(ContinueWatchingDismissStore.keys().isEmpty)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+    }
+
+    func testPushedDismissalAcknowledgementPreservesOppositeEditsDuringRequest() {
+        let clearedMeta = makeSeries()
+        ContinueWatchingDismissStore.dismiss(contentId: clearedMeta.id)
+        let sentPositiveKeys = exportedAndroidDismissalKeys()
+        ContinueWatchingDismissStore.clear(contentId: clearedMeta.id)
+        ContinueWatchingDismissStore.acknowledgePushedKeys(sentPositiveKeys, profileId: profileId)
+        let stalePositiveKey = ContinueWatchingDismissStore.key(
+            contentId: clearedMeta.id,
+            season: nil,
+            episode: nil
+        )
+        ContinueWatchingDismissStore.reconcileRemoteKeys([stalePositiveKey], profileId: profileId)
+        XCTAssertFalse(
+            ContinueWatchingDismissStore.isDismissed(
+                makeItem(meta: clearedMeta, season: 1, episode: 1)
+            )
+        )
+
+        let newlyDismissedMeta = NuvioMeta(
+            id: "tt-dismiss-after-empty-push",
+            name: "New dismissal",
+            type: "series"
+        )
+        ContinueWatchingDismissStore.clear(contentId: newlyDismissedMeta.id)
+        let sentEmptyKeys = exportedAndroidDismissalKeys()
+        XCTAssertTrue(sentEmptyKeys.isEmpty)
+        ContinueWatchingDismissStore.dismiss(contentId: newlyDismissedMeta.id)
+        ContinueWatchingDismissStore.acknowledgePushedKeys(sentEmptyKeys, profileId: profileId)
+        ContinueWatchingDismissStore.reconcileRemoteKeys([], profileId: profileId)
+
+        XCTAssertTrue(
+            ContinueWatchingDismissStore.isDismissed(
+                makeItem(meta: newlyDismissedMeta, season: 1, episode: 1)
+            )
+        )
+    }
+
+    func testLatePushAcknowledgementAfterProfileEraseDoesNotRecreateDismissalState() {
+        let meta = makeSeries()
+        let item = makeItem(meta: meta, season: 1, episode: 1)
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.dismiss(contentId: meta.id)
+        let sentKeys = exportedAndroidDismissalKeys()
+        ContinueWatchingDismissStore.clear(contentId: meta.id)
+        ContinueWatchingDismissStore.eraseProfile(profileId)
+
+        ContinueWatchingDismissStore.acknowledgePushedKeys(sentKeys, profileId: profileId)
+
+        for storageKey in [
+            "nuvio.tv.continueWatching.dismissedKeys.\(profileId)",
+            "nuvio.tv.continueWatching.pendingDismissedKeys.\(profileId)",
+            "nuvio.tv.continueWatching.resumedContentIDs.\(profileId)"
+        ] {
+            XCTAssertNil(UserDefaults.standard.object(forKey: storageKey))
+        }
+    }
+
+    private func exportedAndroidDismissalKeys() -> Set<String> {
+        let feature = ContinueWatchingSyncMapper.exportAndroidTraktFeature(
+            existing: nil,
+            dismissedKeys: ContinueWatchingDismissStore.keysForExport(profileId: profileId)
+        )
+        return ContinueWatchingSyncMapper.androidDismissalKeys(from: feature).keys ?? []
     }
 
     func testRemovalsAreScopedToTheActiveProfile() {
@@ -4378,5 +4697,194 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
         // 4. Trailer uses movie poster/backdrop
         let trailerArtwork = model.resolveArtworkURL(for: movie, episode: nil, isTrailer: true)
         XCTAssertEqual(trailerArtwork, URL(string: "https://image.tmdb.org/t/p/w500/poster.jpg"))
+    }
+}
+
+final class LibraryStoreSyncTests: XCTestCase {
+    private let profileId = "library-store-sync-\(UUID().uuidString)"
+    private var previousActiveProfileId: String?
+    private var additionalProfileIds: [String] = []
+
+    override func setUp() {
+        super.setUp()
+        previousActiveProfileId = LibraryStore.activeProfileId
+        LibraryStore.setActiveProfile(profileId)
+        LibraryStore.eraseProfile(profileId)
+    }
+
+    override func tearDown() {
+        for profileId in additionalProfileIds {
+            LibraryStore.eraseProfile(profileId)
+        }
+        LibraryStore.eraseProfile(profileId)
+        LibraryStore.setActiveProfile(previousActiveProfileId)
+        super.tearDown()
+    }
+
+    func testLastLocalRemovalPushesAnEmptySnapshotAndSurvivesStalePull() {
+        let removed = makeItem("tt-library-removed")
+        LibraryStore.replaceAll([removed])
+        let stalePullContext = LibraryStore.capturePullContext(profileId: profileId)
+
+        LibraryStore.remove(metaId: removed.meta.id, type: removed.meta.type)
+
+        let push = LibraryStore.capturePushSnapshot(profileId: profileId)
+        XCTAssertTrue(push.items.isEmpty)
+        XCTAssertNotNil(push.pendingMutationTokens["movie:tt-library-removed"])
+        XCTAssertTrue(LibraryStore.reconcileRemote([removed], context: stalePullContext))
+        XCTAssertTrue(
+            LibraryStore.items().isEmpty,
+            "a stale full snapshot must not restore a locally removed title"
+        )
+    }
+
+    func testRemoteSnapshotDeletesRowsAndAnEmptySnapshotClearsLastRow() {
+        let first = makeItem("tt-library-first")
+        let second = makeItem("tt-library-second")
+        LibraryStore.replaceAll([first, second])
+
+        let partialContext = LibraryStore.capturePullContext(profileId: profileId)
+        XCTAssertTrue(LibraryStore.reconcileRemote([second], context: partialContext))
+        XCTAssertEqual(LibraryStore.items().map(\.meta.id), [second.meta.id])
+
+        let emptyContext = LibraryStore.capturePullContext(profileId: profileId)
+        XCTAssertTrue(LibraryStore.reconcileRemote([], context: emptyContext))
+        XCTAssertTrue(LibraryStore.items().isEmpty)
+    }
+
+    func testPendingLocalAddSurvivesAnEmptyRemoteSnapshot() {
+        let pullContext = LibraryStore.capturePullContext(profileId: profileId)
+        let added = makeMeta("tt-library-pending")
+        LibraryStore.add(added)
+
+        XCTAssertTrue(LibraryStore.reconcileRemote([], context: pullContext))
+        XCTAssertEqual(LibraryStore.items().map(\.meta.id), [added.id])
+        XCTAssertNotNil(
+            LibraryStore.capturePushSnapshot(profileId: profileId)
+                .pendingMutationTokens["movie:tt-library-pending"]
+        )
+    }
+
+    func testLegacyRawArrayLoadsAsBaselineAndAcceptsAuthoritativeEmptySnapshot() throws {
+        let legacyItem = makeItem("tt-library-legacy")
+        let legacyData = try JSONEncoder().encode([legacyItem])
+        XCTAssertTrue(
+            LargePayloadStore.write(
+                legacyData,
+                key: "nuvio.tv.library.items.\(profileId)",
+                directory: "LibraryStore"
+            )
+        )
+        XCTAssertEqual(LibraryStore.items().map(\.meta.id), [legacyItem.meta.id])
+
+        let pullContext = LibraryStore.capturePullContext(profileId: profileId)
+        XCTAssertEqual(pullContext.acknowledgmentGeneration, 0)
+        XCTAssertTrue(LibraryStore.reconcileRemote([], context: pullContext))
+        XCTAssertTrue(LibraryStore.items().isEmpty)
+    }
+
+    func testPendingMutationSurvivesProfileSwitchAndReload() {
+        let added = makeMeta("tt-library-persisted")
+        LibraryStore.add(added)
+        let pendingToken = LibraryStore.capturePushSnapshot(profileId: profileId)
+            .pendingMutationTokens["movie:tt-library-persisted"]
+        let otherProfileId = makeOtherProfileId()
+
+        LibraryStore.setActiveProfile(otherProfileId)
+        XCTAssertTrue(LibraryStore.items().isEmpty)
+        LibraryStore.add(makeMeta("tt-library-other-profile"))
+
+        LibraryStore.setActiveProfile(profileId)
+        XCTAssertEqual(LibraryStore.items().map(\.meta.id), [added.id])
+        XCTAssertEqual(
+            LibraryStore.capturePushSnapshot(profileId: profileId)
+                .pendingMutationTokens["movie:tt-library-persisted"],
+            pendingToken
+        )
+    }
+
+    func testAcknowledgedPushAllowsTheNextPullToApplyRemoteDeletion() {
+        let added = makeMeta("tt-library-acknowledged")
+        LibraryStore.add(added)
+        let pushed = LibraryStore.capturePushSnapshot(profileId: profileId)
+        XCTAssertTrue(LibraryStore.acknowledgePush(pushed))
+        XCTAssertTrue(
+            LibraryStore.capturePushSnapshot(profileId: profileId)
+                .pendingMutationTokens.isEmpty
+        )
+
+        let postAckContext = LibraryStore.capturePullContext(profileId: profileId)
+        XCTAssertGreaterThan(postAckContext.acknowledgmentGeneration, 0)
+        XCTAssertTrue(LibraryStore.reconcileRemote([], context: postAckContext))
+        XCTAssertTrue(LibraryStore.items().isEmpty)
+    }
+
+    func testEditDuringPushKeepsTheNewMutationPending() {
+        let original = makeMeta("tt-library-edited", name: "Original")
+        LibraryStore.add(original)
+        let oldPush = LibraryStore.capturePushSnapshot(profileId: profileId)
+        let oldToken = oldPush.pendingMutationTokens["movie:tt-library-edited"]
+
+        LibraryStore.add(makeMeta("tt-library-edited", name: "Updated"))
+
+        XCTAssertFalse(
+            LibraryStore.acknowledgePush(oldPush),
+            "a completed older push must not acknowledge a newer edit"
+        )
+        let retry = LibraryStore.capturePushSnapshot(profileId: profileId)
+        XCTAssertNotEqual(retry.pendingMutationTokens["movie:tt-library-edited"], oldToken)
+        XCTAssertEqual(LibraryStore.items().first?.meta.name, "Updated")
+    }
+
+    func testPreAckPullCannotResurrectAnAcknowledgedRemoval() {
+        let removed = makeItem("tt-library-inflight")
+        LibraryStore.replaceAll([removed])
+        let oldPullContext = LibraryStore.capturePullContext(profileId: profileId)
+
+        LibraryStore.remove(metaId: removed.meta.id, type: removed.meta.type)
+        let push = LibraryStore.capturePushSnapshot(profileId: profileId)
+        XCTAssertTrue(push.items.isEmpty)
+        XCTAssertTrue(LibraryStore.acknowledgePush(push))
+
+        XCTAssertTrue(LibraryStore.reconcileRemote([removed], context: oldPullContext))
+        XCTAssertTrue(
+            LibraryStore.items().isEmpty,
+            "a pull started before the push acknowledgement must preserve its removal"
+        )
+    }
+
+    func testPushAcknowledgementForInactiveProfileDoesNotChangeActiveProfile() {
+        let activeItem = makeItem("tt-library-active")
+        LibraryStore.replaceAll([activeItem])
+        let otherProfileId = makeOtherProfileId()
+        LibraryStore.setActiveProfile(otherProfileId)
+        LibraryStore.eraseProfile(otherProfileId)
+        LibraryStore.add(makeMeta("tt-library-inactive"))
+        let inactivePush = LibraryStore.capturePushSnapshot(profileId: otherProfileId)
+
+        LibraryStore.setActiveProfile(profileId)
+        XCTAssertTrue(LibraryStore.acknowledgePush(inactivePush))
+        XCTAssertEqual(LibraryStore.activeProfileId, profileId)
+        XCTAssertEqual(LibraryStore.items().map(\.meta.id), [activeItem.meta.id])
+
+        LibraryStore.setActiveProfile(otherProfileId)
+        XCTAssertTrue(
+            LibraryStore.capturePushSnapshot(profileId: otherProfileId)
+                .pendingMutationTokens.isEmpty
+        )
+    }
+
+    private func makeOtherProfileId() -> String {
+        let id = "\(profileId)-other-\(UUID().uuidString)"
+        additionalProfileIds.append(id)
+        return id
+    }
+
+    private func makeItem(_ id: String) -> LibraryStoreItem {
+        LibraryStoreItem(meta: makeMeta(id), addedAt: Date(timeIntervalSince1970: 1_700_000_000))
+    }
+
+    private func makeMeta(_ id: String, name: String? = nil) -> NuvioMeta {
+        NuvioMeta(id: id, name: name ?? id, type: "movie")
     }
 }
