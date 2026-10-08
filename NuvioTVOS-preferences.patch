@@ -59,48 +59,8 @@ index f2d90e8..dca871d 100644
 +                if removed, activeProfileId == profileID {
 +                    NotificationCenter.default.post(name: TraktSettingsStore.libraryChangedNotification, object: nil)
 +                }
-diff --git a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-index 256aafe..3f8aa36 100644
---- a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-+++ b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-@@ -368,10 +368,9 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
-     /// canonical backdrop when the catalog supplied artwork for another title.
-     func mergingHomeHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
-         let merged = fillingMissingHeroMetadata(from: fullMeta)
--        let canonicalBackdrop = fullMeta.backgroundUrl?
--            .trimmingCharacters(in: .whitespacesAndNewlines)
--            .nonEmpty
--        guard let canonicalBackdrop else { return merged }
-+        guard let canonicalBackdrop = fullMeta.backgroundUrl?
-+            .trimmingCharacters(in: .whitespacesAndNewlines),
-+              !canonicalBackdrop.isEmpty else { return merged }
-         return merged.withBackgroundURL(canonicalBackdrop)
-     }
- 
-diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index 7070e7a..853e55c 100644
---- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-+++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-@@ -9235,12 +9235,13 @@ private struct TVGridHeroSlideshowView: View {
-             let nearby = (0..<min(2, items.count)).map { offset in
-                 items[(index + offset) % items.count]
-             }
--            let urls = Array(Set(nearby.flatMap { item in
--                [item.backgroundUrl, item.posterUrl].compactMap { rawURL in
--                    guard let rawURL, let url = URL(string: rawURL) else { return nil }
--                    return url
-+            var urls = Set<URL>()
-+            for item in nearby {
-+                for rawURL in [item.backgroundUrl, item.posterUrl].compactMap({ $0 }) {
-+                    guard let url = URL(string: rawURL) else { continue }
-+                    urls.insert(url)
-                 }
--            }))
 +            }
-             await withTaskGroup(of: Void.self) { group in
-                 for url in urls {
-                     group.addTask {
-+            }
+
 +        }
 +    }
 +
