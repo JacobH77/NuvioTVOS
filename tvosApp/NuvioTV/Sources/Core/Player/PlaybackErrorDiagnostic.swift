@@ -80,9 +80,10 @@ struct PlaybackErrorDiagnostic: Equatable {
                 badgeText: "DNS / HOST UNRESOLVED",
                 badgeIconName: "antenna.radiowaves.left.and.right.slash",
                 title: L10n.string("error_host_unresolved_title", fallback: "Cannot Resolve Stream Host"),
-                message: L10n.string(
+                message: L10n.format(
                     "error_host_unresolved_msg",
-                    fallback: "Your Apple TV could not find the stream server\(hostLabel). Check your DNS settings, VPN/ad-blocker, or choose another stream."
+                    fallback: "Your Apple TV could not find the stream server%@. Check your DNS settings, VPN/ad-blocker, or choose another stream.",
+                    hostLabel
                 ),
                 suggestedAction: L10n.string("error_host_unresolved_action", fallback: "Verify DNS configuration or try selecting another stream source."),
                 technicalDetails: formatTechnicalLine(host: host, code: "-1003 (Cannot Find Host)", raw: rawError),
@@ -104,9 +105,10 @@ struct PlaybackErrorDiagnostic: Equatable {
                 badgeText: "STREAM HOST OFFLINE",
                 badgeIconName: "server.rack",
                 title: L10n.string("error_host_unreachable_title", fallback: "Stream Host Unavailable"),
-                message: L10n.string(
+                message: L10n.format(
                     "error_host_unreachable_msg",
-                    fallback: "The remote hosting server\(hostLabel) refused the connection or is offline."
+                    fallback: "The remote hosting server%@ refused the connection or is offline.",
+                    hostLabel
                 ),
                 suggestedAction: L10n.string("error_host_unreachable_action", fallback: "Try selecting a different stream source or Debrid provider."),
                 technicalDetails: formatTechnicalLine(host: host, code: "-1004 (Connection Refused)", raw: rawError),
@@ -143,9 +145,10 @@ struct PlaybackErrorDiagnostic: Equatable {
                 badgeText: "RATE LIMITED (429)",
                 badgeIconName: "exclamationmark.triangle.fill",
                 title: L10n.string("error_rate_limited_title", fallback: "Stream Host Rate Limited"),
-                message: L10n.string(
+                message: L10n.format(
                     "error_rate_limited_msg",
-                    fallback: "The remote hosting server\(hostLabel) temporarily blocked requests (HTTP 429 Too Many Requests)."
+                    fallback: "The remote hosting server%@ temporarily blocked requests (HTTP 429 Too Many Requests).",
+                    hostLabel
                 ),
                 suggestedAction: L10n.string(
                     "error_rate_limited_action",
@@ -227,9 +230,10 @@ struct PlaybackErrorDiagnostic: Equatable {
                 badgeText: "STREAM UNAVAILABLE",
                 badgeIconName: "tray.and.arrow.down.fill",
                 title: L10n.string("error_invalid_stream_title", fallback: "Stream Source Invalid"),
-                message: L10n.string(
+                message: L10n.format(
                     "error_invalid_stream_msg",
-                    fallback: "The remote hosting server\(hostLabel) returned an empty or invalid stream response."
+                    fallback: "The remote hosting server%@ returned an empty or invalid stream response.",
+                    hostLabel
                 ),
                 suggestedAction: L10n.string("error_invalid_stream_action", fallback: "Select a different stream source."),
                 technicalDetails: formatTechnicalLine(host: host, code: "Demux / Format Error", raw: rawError),

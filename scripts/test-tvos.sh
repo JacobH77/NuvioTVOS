@@ -13,8 +13,8 @@ test -f tvosApp/NuvioTV.xcworkspace/contents.xcworkspacedata || {
 }
 
 test_artifacts="${NUVIO_TEST_ARTIFACTS:-$(mktemp -d "${TMPDIR:-/tmp}/nuvio-tests.XXXXXX")}"
-derived_data="${NUVIO_DERIVED_DATA:-$test_artifacts/DerivedData}"
-mkdir -p "$test_artifacts"
+derived_data="${NUVIO_DERIVED_DATA:-${TMPDIR:-/tmp}/NuvioTV-TestDerivedData}"
+mkdir -p "$test_artifacts" "$derived_data"
 test ! -e "$test_artifacts/Tests.xcresult" || {
   echo 'Choose a new NUVIO_TEST_ARTIFACTS directory; Tests.xcresult already exists.' >&2
   exit 1

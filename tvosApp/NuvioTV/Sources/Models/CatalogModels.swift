@@ -5004,26 +5004,40 @@ enum HomeCatalogPayloadStore {
         in settings: UserDefaults = ProfileSettings.current,
         profileID: String? = nil
     ) -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
+        var legacyToRemove: String?
+        var scopeForInvalidation: String?
+        let result: Data? = {
+            lock.lock()
+            defer { lock.unlock() }
 
-        let scope = profileScope(in: settings, profileID: profileID)
-        var snapshot = loadSnapshot(for: scope)
-        let stored = snapshot.values[key]
-        if let legacy = settings.data(forKey: key) {
-            if stored != legacy {
-                snapshot.values[key] = legacy
-                if writeSnapshot(snapshot, for: scope) {
-                    settings.removeObject(forKey: key)
-                    invalidateCustomTitlesCache(for: key, scope: scope)
+            let scope = profileScope(in: settings, profileID: profileID)
+            var snapshot = loadSnapshot(for: scope)
+            let stored = snapshot.values[key]
+            if let legacy = settings.data(forKey: key) {
+                if stored != legacy {
+                    snapshot.values[key] = legacy
+                    if writeSnapshot(snapshot, for: scope) {
+                        legacyToRemove = key
+                        scopeForInvalidation = scope
+                    }
+                    return legacy
                 }
+                legacyToRemove = key
                 return legacy
             }
-            settings.removeObject(forKey: key)
-            return legacy
-        }
 
-        return stored
+            return stored
+        }()
+
+        if let keyToRemove = legacyToRemove {
+            settings.removeObject(forKey: keyToRemove)
+            if let scope = scopeForInvalidation {
+                lock.lock()
+                invalidateCustomTitlesCache(for: keyToRemove, scope: scope)
+                lock.unlock()
+            }
+        }
+        return result
     }
 
     /// Returns true when the value is already durable or the new bytes reached disk.
@@ -5034,22 +5048,27 @@ enum HomeCatalogPayloadStore {
         in settings: UserDefaults = ProfileSettings.current,
         profileID: String? = nil
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        let (success, shouldRemove) = { () -> (Bool, Bool) in
+            lock.lock()
+            defer { lock.unlock() }
 
-        let scope = profileScope(in: settings, profileID: profileID)
-        var snapshot = loadSnapshot(for: scope)
-        let legacy = settings.data(forKey: key)
-        if snapshot.values[key] == data, (legacy == nil || legacy == data) {
+            let scope = profileScope(in: settings, profileID: profileID)
+            var snapshot = loadSnapshot(for: scope)
+            let legacy = settings.data(forKey: key)
+            if snapshot.values[key] == data, (legacy == nil || legacy == data) {
+                return (true, legacy != nil)
+            }
+
+            snapshot.values[key] = data
+            guard writeSnapshot(snapshot, for: scope) else { return (false, false) }
+            invalidateCustomTitlesCache(for: key, scope: scope)
+            return (true, true)
+        }()
+
+        if shouldRemove {
             settings.removeObject(forKey: key)
-            return true
         }
-
-        snapshot.values[key] = data
-        guard writeSnapshot(snapshot, for: scope) else { return false }
-        settings.removeObject(forKey: key)
-        invalidateCustomTitlesCache(for: key, scope: scope)
-        return true
+        return success
     }
 
     /// Writes related catalog blobs as one atomic file replacement.
@@ -5059,28 +5078,36 @@ enum HomeCatalogPayloadStore {
         in settings: UserDefaults = ProfileSettings.current,
         profileID: String? = nil
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        let (success, keysToRemove) = { () -> (Bool, [String]) in
+            lock.lock()
+            defer { lock.unlock() }
 
-        let scope = profileScope(in: settings, profileID: profileID)
-        var snapshot = loadSnapshot(for: scope)
-        let didChange = values.contains { entry in
-            let legacy = settings.data(forKey: entry.key)
-            return snapshot.values[entry.key] != entry.value
-                || (legacy != nil && legacy != entry.value)
-        }
-        if didChange {
-            for (key, value) in values {
-                snapshot.values[key] = value
+            let scope = profileScope(in: settings, profileID: profileID)
+            var snapshot = loadSnapshot(for: scope)
+            let didChange = values.contains { entry in
+                let legacy = settings.data(forKey: entry.key)
+                return snapshot.values[entry.key] != entry.value
+                    || (legacy != nil && legacy != entry.value)
             }
-            guard writeSnapshot(snapshot, for: scope) else { return false }
-        }
+            if didChange {
+                for (key, value) in values {
+                    snapshot.values[key] = value
+                }
+                guard writeSnapshot(snapshot, for: scope) else { return (false, []) }
+            }
 
-        for key in values.keys {
-            settings.removeObject(forKey: key)
-            invalidateCustomTitlesCache(for: key, scope: scope)
+            for key in values.keys {
+                invalidateCustomTitlesCache(for: key, scope: scope)
+            }
+            return (true, Array(values.keys))
+        }()
+
+        if success {
+            for key in keysToRemove {
+                settings.removeObject(forKey: key)
+            }
         }
-        return true
+        return success
     }
 
     static func remove(
@@ -5088,45 +5115,59 @@ enum HomeCatalogPayloadStore {
         in settings: UserDefaults = ProfileSettings.current,
         profileID: String? = nil
     ) {
-        lock.lock()
-        defer { lock.unlock() }
+        let shouldRemoveLegacy = { () -> Bool in
+            lock.lock()
+            defer { lock.unlock() }
 
-        let scope = profileScope(in: settings, profileID: profileID)
-        var snapshot = loadSnapshot(for: scope)
-        if snapshot.values.removeValue(forKey: key) != nil,
-           !writeSnapshot(snapshot, for: scope) {
-            return
+            let scope = profileScope(in: settings, profileID: profileID)
+            var snapshot = loadSnapshot(for: scope)
+            if snapshot.values.removeValue(forKey: key) != nil,
+               !writeSnapshot(snapshot, for: scope) {
+                return false
+            }
+            invalidateCustomTitlesCache(for: key, scope: scope)
+            return true
+        }()
+
+        if shouldRemoveLegacy {
+            settings.removeObject(forKey: key)
         }
-        settings.removeObject(forKey: key)
-        invalidateCustomTitlesCache(for: key, scope: scope)
     }
 
     @discardableResult
     static func migrateLegacyPreferences(in settings: UserDefaults, profileID: String? = nil) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        let (success, keysToClean) = { () -> (Bool, [String]) in
+            lock.lock()
+            defer { lock.unlock() }
 
-        let scope = profileScope(in: settings, profileID: profileID)
-        var snapshot = loadSnapshot(for: scope)
-        var migratedKeys: [String] = []
-        var didChange = false
-        for key in payloadKeys where settings.data(forKey: key) != nil {
-            if let legacy = settings.data(forKey: key), snapshot.values[key] != legacy {
-                snapshot.values[key] = legacy
-                didChange = true
+            let scope = profileScope(in: settings, profileID: profileID)
+            var snapshot = loadSnapshot(for: scope)
+            var migratedKeys: [String] = []
+            var didChange = false
+            for key in payloadKeys where settings.data(forKey: key) != nil {
+                if let legacy = settings.data(forKey: key), snapshot.values[key] != legacy {
+                    snapshot.values[key] = legacy
+                    didChange = true
+                }
+                migratedKeys.append(key)
             }
-            migratedKeys.append(key)
-        }
 
-        guard !migratedKeys.isEmpty else { return true }
-        let hasFileCopy = migratedKeys.allSatisfy { snapshot.values[$0] != nil }
-        guard hasFileCopy else { return false }
-        if didChange && !writeSnapshot(snapshot, for: scope) { return false }
-        for key in migratedKeys {
-            settings.removeObject(forKey: key)
-            invalidateCustomTitlesCache(for: key, scope: scope)
+            guard !migratedKeys.isEmpty else { return (true, []) }
+            let hasFileCopy = migratedKeys.allSatisfy { snapshot.values[$0] != nil }
+            guard hasFileCopy else { return (false, []) }
+            if didChange && !writeSnapshot(snapshot, for: scope) { return (false, []) }
+            for key in migratedKeys {
+                invalidateCustomTitlesCache(for: key, scope: scope)
+            }
+            return (true, migratedKeys)
+        }()
+
+        if success {
+            for key in keysToClean {
+                settings.removeObject(forKey: key)
+            }
         }
-        return true
+        return success
     }
 
     static func migrateAllKnownPreferences() -> Bool {
@@ -5142,12 +5183,12 @@ enum HomeCatalogPayloadStore {
 
     static func removeAll(in settings: UserDefaults, profileID: String? = nil) {
         lock.lock()
-        defer { lock.unlock() }
-
         let scope = profileScope(in: settings, profileID: profileID)
         LargePayloadStore.remove(key: snapshotKey(for: scope), directory: directoryName)
         snapshots[scope] = Snapshot()
         customTitlesByProfile.removeValue(forKey: scope)
+        lock.unlock()
+
         for key in payloadKeys {
             settings.removeObject(forKey: key)
         }
@@ -6897,10 +6938,21 @@ enum WatchedStore {
         return !changed || persist(updated)
     }
 
+    private static func hasStandardMediaID(for meta: NuvioMeta) -> Bool {
+        contentIdentityKeys(for: meta).contains {
+            $0.hasPrefix("imdb:") || $0.hasPrefix("tmdb:")
+        }
+    }
+
     static func sameContent(_ lhs: NuvioMeta, _ rhs: NuvioMeta) -> Bool {
         guard normalizedType(lhs.canonicalType) == normalizedType(rhs.canonicalType) else { return false }
-        if !contentIdentityKeys(for: lhs).isDisjoint(with: contentIdentityKeys(for: rhs)) {
+        let leftKeys = contentIdentityKeys(for: lhs)
+        let rightKeys = contentIdentityKeys(for: rhs)
+        if !leftKeys.isDisjoint(with: rightKeys) {
             return true
+        }
+        if hasStandardMediaID(for: lhs) && hasStandardMediaID(for: rhs) {
+            return false
         }
         if sameCatalogSeriesTitle(lhs, rhs) {
             return true
@@ -6919,6 +6971,11 @@ enum WatchedStore {
     }
 
     static func sameCatalogSeriesTitle(_ lhs: NuvioMeta, _ rhs: NuvioMeta) -> Bool {
+        if hasStandardMediaID(for: lhs) && hasStandardMediaID(for: rhs) {
+            guard !contentIdentityKeys(for: lhs).isDisjoint(with: contentIdentityKeys(for: rhs)) else {
+                return false
+            }
+        }
         guard normalizedType(lhs.canonicalType) == "series",
               normalizedType(rhs.canonicalType) == "series",
               normalizedCatalogTitle(lhs.name) == normalizedCatalogTitle(rhs.name),
