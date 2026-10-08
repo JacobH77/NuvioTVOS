@@ -75,7 +75,7 @@ index f2d90e8..dca871d 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..c1d68f2 100644
+index b6c20d9..749e5cb 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -216,10 +216,10 @@ index b6c20d9..c1d68f2 100644
                      // Android uses a LazyColumn of LazyRows: only viewport rows
                      // and cards own render work. Keep the vertical Home strip
                      // lazy as well; rows retain their horizontal position in
-@@ -4386,6 +4407,24 @@ struct TVHomeView: View {
-     ///   screen edges; every row below re-applies it so the posters keep the
-     ///   gutter the rest of Home uses.
-     @ViewBuilder
+@@ -4381,6 +4402,24 @@ struct TVHomeView: View {
+         .onExitCommand(perform: canHandleExitCommand ? handleBackCommand : nil)
+     }
+ 
 +    @ViewBuilder
 +    private var featuredHeroHeader: some View {
 +        if heroEnabled && homeLayout != "Grid View" && !gridHeroItems.isEmpty {
@@ -238,9 +238,9 @@ index b6c20d9..c1d68f2 100644
 +        }
 +    }
 +
-     private func homeGrid(sections: [TVHomeSection], heroBleed: CGFloat) -> some View {
-         let heroItems = heroEnabled ? gridHeroItems : []
-         ScrollViewReader { verticalScrollProxy in
+     /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
+     ///   The scroll view gives it back so the hero backdrop runs to the physical
+     ///   screen edges; every row below re-applies it so the posters keep the
 @@ -4416,6 +4455,7 @@ struct TVHomeView: View {
                                  didRequestInitialCardFocus = true
                              },
