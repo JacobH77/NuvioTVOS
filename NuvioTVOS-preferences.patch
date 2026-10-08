@@ -60,7 +60,6 @@ index f2d90e8..dca871d 100644
 +                    NotificationCenter.default.post(name: TraktSettingsStore.libraryChangedNotification, object: nil)
 +                }
 +            }
-
 +        }
 +    }
 +
@@ -1421,9 +1420,13 @@ index 8e1d2a3..e2416dc 100644
  
  // MARK: - Project-level settings
 
+diff --git a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
+index dca871d..3f8aa36 100644
 --- a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
 +++ b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-@@ -305,2 +305,11 @@
+@@ -303,6 +303,15 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
+         return !hasRuntime || (isSeries && !hasStatus) || !hasLogo || !hasBackdrop
+     }
  
 +    /// Home can refresh artwork from Cinemeta for standard provider IDs. Add-on
 +    /// catalog backdrops are sometimes attached to the wrong title, so Home
@@ -1435,27 +1438,29 @@ index 8e1d2a3..e2416dc 100644
 +    }
 +
      /// Search records also need both external identifiers so watched-state
-@@ -357,2 +366,13 @@
+     /// matching can resolve the same title as Discovery.
+     var needsSearchMetadataEnrichment: Bool {
+@@ -355,6 +364,16 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
+         )
+     }
  
 +    /// Merge the usual missing Home metadata, while preferring a refreshed
 +    /// canonical backdrop when the catalog supplied artwork for another title.
 +    func mergingHomeHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
 +        let merged = fillingMissingHeroMetadata(from: fullMeta)
-+        let canonicalBackdrop = fullMeta.backgroundUrl?
-+            .trimmingCharacters(in: .whitespacesAndNewlines)
-+            .nonEmpty
-+        guard let canonicalBackdrop else { return merged }
++        guard let canonicalBackdrop = fullMeta.backgroundUrl?
++            .trimmingCharacters(in: .whitespacesAndNewlines),
++              !canonicalBackdrop.isEmpty else { return merged }
 +        return merged.withBackgroundURL(canonicalBackdrop)
 +    }
 +
      /// Search-specific merge for a compact result and its refreshed `/meta`
-@@ -508,2 +528,33 @@
-             trailerYtIds: trailerYtIds,
-+            externalRatings: externalRatings,
-+            posterShape: posterShape
-+        )
-+    }
-+
+     /// record. Search artwork can be stale even when it is present, so the
+     /// refreshed poster, backdrop, and logo win; compact artwork is used only
+@@ -511,6 +530,37 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
+         )
+     }
+ 
 +    private func withBackgroundURL(_ backgroundURL: String) -> NuvioMeta {
 +        NuvioMeta(
 +            id: id,
@@ -1482,26 +1487,48 @@ index 8e1d2a3..e2416dc 100644
 +            status: status,
 +            videos: videos,
 +            trailerYtIds: trailerYtIds,
-             externalRatings: externalRatings,
++            externalRatings: externalRatings,
++            posterShape: posterShape
++        )
++    }
++
+     init(
+         id: String,
+         name: String,
+diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
+index ee140d5..853e55c 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-@@ -2732,2 +2732,5 @@
+@@ -2730,13 +2730,16 @@ private struct ProfileScopedRootBackground: View {
+ private struct CrossfadingBackdrop: View {
+     let url: String?
      let placeholder: Color
 +    /// Stable media identity prevents a previous title's decoded art from
 +    /// lingering under a newly focused title while its URL is loading.
 +    var contentIdentity: String? = nil
      /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
-@@ -2738,3 +2741,3 @@
+     /// (Android `Alignment.TopEnd`); title posters keep center.
+     var alignment: Alignment = .center
+     var fallbackURL: String? = nil
+ 
      @State private var image: UIImage?
 -    @State private var loadedURL: String?
 +    @State private var loadedRequestKey: String?
      @State private var outgoingImage: UIImage?
-@@ -2754,3 +2757,3 @@
+     @State private var outgoingOpacity = 0.0
+     @State private var imageOpacity = 1.0
+@@ -2752,7 +2755,7 @@ private struct CrossfadingBackdrop: View {
+                 if let image {
+                     backdropImage(image, size: proxy.size)
                          .opacity(imageOpacity)
 -                        .id(loadedURL)
 +                        .id(loadedRequestKey)
                  }
-@@ -2762,6 +2765,6 @@
+             }
+             // Portrait poster fallbacks must be cropped inside the screen, not
+@@ -2760,15 +2763,27 @@ private struct CrossfadingBackdrop: View {
+             .frame(width: proxy.size.width, height: proxy.size.height)
+             .clipped()
          }
 -        .task(id: "\(url ?? "")|\(fallbackURL ?? "")") {
 +        .task(id: "\(contentIdentity ?? "")|\(url ?? "")|\(fallbackURL ?? "")") {
@@ -1510,7 +1537,8 @@ index 8e1d2a3..e2416dc 100644
 -                loadedURL = nil
 +                loadedRequestKey = nil
                  outgoingImage = nil
-@@ -2770,3 +2773,15 @@
+                 outgoingOpacity = 0
+                 return
              }
 -            guard url != loadedURL, let imageURL = URL(string: url) else {
 +            let requestKey = "\(contentIdentity ?? "")\u{1f}\(url)"
@@ -1527,42 +1555,70 @@ index 8e1d2a3..e2416dc 100644
 +            }
 +            guard requestKey != loadedRequestKey, let imageURL = URL(string: url) else {
                  outgoingImage = nil
-@@ -2784,4 +2799,4 @@
+                 outgoingOpacity = 0
+                 return
+@@ -2782,8 +2797,8 @@ private struct CrossfadingBackdrop: View {
+             // Some catalog add-ons (including BetterPosters) only provide a
+             // poster URL. PosterCard uses that same image for its landscape
              // state, so allow the full-screen aspect-fill to use it as well.
 -            // `.task(id:)` cancels when `url` changes, so reaching here means this
 -            // URL is still the focused one. Cancellation leaves the old image up.
 +            // `.task(id:)` cancels when the title or URL changes, so reaching
 +            // here means this request is still the one the view wants.
              guard !Task.isCancelled else { return }
-@@ -2793,3 +2808,3 @@
+             let previousImage = image
+             if previousImage != nil {
+@@ -2791,7 +2806,7 @@ private struct CrossfadingBackdrop: View {
+                 outgoingOpacity = 1
+             }
              image = loaded
 -            loadedURL = url
 +            loadedRequestKey = requestKey
              imageOpacity = previousImage == nil ? 1 : 0
-@@ -2802,3 +2817,3 @@
+ 
+             withAnimation(.easeInOut(duration: 0.30)) {
+@@ -2800,7 +2815,7 @@ private struct CrossfadingBackdrop: View {
+             }
+ 
              try? await Task.sleep(nanoseconds: 300_000_000)
 -            guard !Task.isCancelled, loadedURL == url else { return }
 +            guard !Task.isCancelled, loadedRequestKey == requestKey else { return }
              outgoingImage = nil
-@@ -2824,2 +2839,3 @@
+             outgoingOpacity = 0
+         }
+@@ -2822,6 +2837,7 @@ extension CrossfadingBackdrop: Equatable {
+     static func == (lhs: CrossfadingBackdrop, rhs: CrossfadingBackdrop) -> Bool {
+         lhs.url == rhs.url
              && lhs.placeholder == rhs.placeholder
 +            && lhs.contentIdentity == rhs.contentIdentity
              && lhs.alignment == rhs.alignment
-@@ -3894,4 +3910,5 @@
+             && lhs.fallbackURL == rhs.fallbackURL
+     }
+@@ -3892,8 +3908,9 @@ struct TVHomeView: View {
+             GeometryReader { proxy in
+                 if fullscreenHeroBackdrop {
                      CrossfadingBackdrop(
 -                        url: showsLoading || homeLayout == "Grid View" || (heroEnabled && !gridHeroItems.isEmpty && !showsFocusedTitleBanner) ? nil : homeBackdropURL,
 +                        url: showsLoading || homeLayout == "Grid View" || (heroEnabled && !gridHeroItems.isEmpty && (isGridHeroFocused || !showsFocusedTitleBanner)) ? nil : homeBackdropURL,
                          placeholder: backdropColor,
 +                        contentIdentity: homeBackdropIdentity,
                          alignment: focusedCollectionFolder != nil ? .topTrailing : .center
-@@ -3909,4 +3926,5 @@
+                     )
+                     .equatable()
+@@ -3907,8 +3924,9 @@ struct TVHomeView: View {
+                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+ 
                          CrossfadingBackdrop(
 -                            url: showsLoading || homeLayout == "Grid View" || (heroEnabled && !gridHeroItems.isEmpty && !showsFocusedTitleBanner) ? nil : homeBackdropURL,
 +                            url: showsLoading || homeLayout == "Grid View" || (heroEnabled && !gridHeroItems.isEmpty && (isGridHeroFocused || !showsFocusedTitleBanner)) ? nil : homeBackdropURL,
                              placeholder: backdropColor,
 +                            contentIdentity: homeBackdropIdentity,
                              alignment: .topTrailing
-@@ -4503,2 +4521,7 @@
+                         )
+                         .equatable()
+@@ -4501,6 +4519,11 @@ struct TVHomeView: View {
+                     if focused {
+                         showsFocusedTitleBanner = false
                          focusedCardID = nil
 +                        focusWork.focusSettleTask?.cancel()
 +                        focusWork.heroEnrichmentTask?.cancel()
@@ -1570,7 +1626,11 @@ index 8e1d2a3..e2416dc 100644
 +                        focusWork.pendingFocusedFolder = nil
 +                        focusWork.pendingSectionId = nil
                      }
-@@ -6185,2 +6208,8 @@
+                 },
+                 onSelect: { meta in
+@@ -6183,6 +6206,12 @@ struct TVHomeView: View {
+         return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
+     }
  
 +    private var homeBackdropIdentity: String? {
 +        if let folder = focusedCollectionFolder { return "folder:\(folder.id)" }
@@ -1579,32 +1639,56 @@ index 8e1d2a3..e2416dc 100644
 +    }
 +
      private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
-@@ -6746,3 +6775,3 @@
+         guard let meta else { return nil }
+ 
+@@ -6744,7 +6773,7 @@ struct TVHomeView: View {
+     /// feel responsive when parked, long enough that continuous left/right/up/down
+     /// focus does not kick off decode/crossfade every step.
      private var heroSettleNanoseconds: UInt64 {
 -        fastNavigation ? 0 : 300_000_000
 +        fastNavigation ? 0 : 120_000_000
      }
-@@ -6834,3 +6863,4 @@
+ 
+     /// Catalog title focus: card strip + row offset are immediate; hero/backdrop
+@@ -6832,7 +6861,8 @@ struct TVHomeView: View {
+             // Third-party catalog responses are often intentionally compact
+             // and omit runtime/status and shelf artwork. Once focus settles,
              // ask for the full metadata record in the background and fill the missing fields.
 -            guard settledMeta.needsHeroMetadataEnrichment else { return }
 +            guard settledMeta.needsHeroMetadataEnrichment
 +                    || settledMeta.supportsCanonicalHeroArtworkRefresh else { return }
              enrichSettledCatalogMeta(settledMeta, in: targetSectionId)
-@@ -6883,3 +6913,3 @@
+         }
+     }
+@@ -6881,7 +6911,7 @@ struct TVHomeView: View {
+     private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) {
+         let enrichmentKey = "\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
          if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
 -            let merged = settledMeta.fillingMissingHeroMetadata(from: cached)
 +            let merged = settledMeta.mergingHomeHeroMetadata(from: cached)
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
-@@ -6912,3 +6942,3 @@
+                   focusWork.pendingSectionId == sectionId,
+                   focusWork.pendingFocusedFolder == nil else {
+@@ -6910,7 +6940,7 @@ struct TVHomeView: View {
+             }
+             guard !Task.isCancelled else { return }
              focusWork.enrichedHeroMetadata[enrichmentKey] = fetched
 -            let merged = settledMeta.fillingMissingHeroMetadata(from: fetched)
 +            let merged = settledMeta.mergingHomeHeroMetadata(from: fetched)
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
-@@ -9114,2 +9144,3 @@
+                   focusWork.pendingSectionId == sectionId,
+                   focusWork.pendingFocusedFolder == nil else {
+@@ -9112,6 +9142,7 @@ private struct TVGridHeroSlideshowView: View {
+             CrossfadingBackdrop(
+                 url: item.backgroundUrl.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? item.posterUrl,
                  placeholder: background,
 +                contentIdentity: "\(item.type.lowercased()):\(item.id)",
                  alignment: .top,
-@@ -9141,2 +9172,16 @@
+                 fallbackURL: item.posterUrl
+             )
+@@ -9139,6 +9170,20 @@ private struct TVGridHeroSlideshowView: View {
+                 endPoint: .bottom
+             )
          }
 +        .overlay(alignment: .bottom) {
 +            LinearGradient(
@@ -1621,7 +1705,11 @@ index 8e1d2a3..e2416dc 100644
 +            .allowsHitTesting(false)
 +        }
          .padding(.horizontal, -backdropBleed)
-@@ -9181,6 +9226,26 @@
+     }
+ 
+@@ -9179,10 +9224,31 @@ private struct TVGridHeroSlideshowView: View {
+         }
+         .task(id: activeItem.map { "\($0.type):\($0.id)" }) {
              enrichedHero = nil
 -            guard let item = activeItem, item.needsHeroMetadataEnrichment,
 +            guard let item = activeItem,
@@ -1636,12 +1724,13 @@ index 8e1d2a3..e2416dc 100644
 +            let nearby = (0..<min(2, items.count)).map { offset in
 +                items[(index + offset) % items.count]
 +            }
-+            let urls = Array(Set(nearby.flatMap { item in
-+                [item.backgroundUrl, item.posterUrl].compactMap { rawURL in
-+                    guard let rawURL, let url = URL(string: rawURL) else { return nil }
-+                    return url
++            var urls = Set<URL>()
++            for item in nearby {
++                for rawURL in [item.backgroundUrl, item.posterUrl].compactMap({ $0 }) {
++                    guard let url = URL(string: rawURL) else { continue }
++                    urls.insert(url)
 +                }
-+            }))
++            }
 +            await withTaskGroup(of: Void.self) { group in
 +                for url in urls {
 +                    group.addTask {
@@ -1650,9 +1739,15 @@ index 8e1d2a3..e2416dc 100644
 +                }
 +            }
          }
+         .contentShape(Rectangle())
+         .onAppear {
+diff --git a/tvosApp/NuvioTVTests/CatalogArtworkMergeTests.swift b/tvosApp/NuvioTVTests/CatalogArtworkMergeTests.swift
+index 24aff63..50b8d0f 100644
 --- a/tvosApp/NuvioTVTests/CatalogArtworkMergeTests.swift
 +++ b/tvosApp/NuvioTVTests/CatalogArtworkMergeTests.swift
-@@ -135,2 +135,24 @@
+@@ -133,6 +133,28 @@ final class CatalogArtworkMergeTests: XCTestCase {
+         XCTAssertEqual(merged.tmdbId, 278)
+     }
  
 +    func testHomeHeroPrefersCanonicalBackdropOverMismatchedCatalogArtwork() {
 +        let catalog = makeMeta(
@@ -1677,51 +1772,18 @@ index 8e1d2a3..e2416dc 100644
 +    }
 +
      /// A Stremio catalog page's `logo` field must survive decoding so Home can
+     /// draw the title logo in the landscape overlay — the field this feature
+     /// depends on after the merge above fills it in.
+diff --git a/tvosApp/Project.swift b/tvosApp/Project.swift
+index e2416dc..5bcf5fa 100644
 --- a/tvosApp/Project.swift
 +++ b/tvosApp/Project.swift
-@@ -52,3 +52,3 @@
+@@ -50,7 +50,7 @@ let signingXCConfig: Path = .relativeToManifest("Configurations/Signing.xcconfig
+ 
+ let bundleID = "com.pyksel.nuviotvos"
  let marketingVersion = "3.4.1"
 -let projectVersion = "76"
 +let projectVersion = "77"
  let tvOSDeployment = "17.5"
-diff --git a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-index 256aafe..3f8aa36 100644
---- a/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-+++ b/tvosApp/NuvioTV/Sources/Models/CatalogModels.swift
-@@ -368,10 +368,9 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
-     /// canonical backdrop when the catalog supplied artwork for another title.
-     func mergingHomeHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
-         let merged = fillingMissingHeroMetadata(from: fullMeta)
--        let canonicalBackdrop = fullMeta.backgroundUrl?
--            .trimmingCharacters(in: .whitespacesAndNewlines)
--            .nonEmpty
--        guard let canonicalBackdrop else { return merged }
-+        guard let canonicalBackdrop = fullMeta.backgroundUrl?
-+            .trimmingCharacters(in: .whitespacesAndNewlines),
-+              !canonicalBackdrop.isEmpty else { return merged }
-         return merged.withBackgroundURL(canonicalBackdrop)
-     }
  
-diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index 7070e7a..853e55c 100644
---- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-+++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-@@ -9235,12 +9235,13 @@ private struct TVGridHeroSlideshowView: View {
-             let nearby = (0..<min(2, items.count)).map { offset in
-                 items[(index + offset) % items.count]
-             }
--            let urls = Array(Set(nearby.flatMap { item in
--                [item.backgroundUrl, item.posterUrl].compactMap { rawURL in
--                    guard let rawURL, let url = URL(string: rawURL) else { return nil }
--                    return url
-+            var urls = Set<URL>()
-+            for item in nearby {
-+                for rawURL in [item.backgroundUrl, item.posterUrl].compactMap({ $0 }) {
-+                    guard let url = URL(string: rawURL) else { continue }
-+                    urls.insert(url)
-                 }
--            }))
-+            }
-             await withTaskGroup(of: Void.self) { group in
-                 for url in urls {
-                     group.addTask {
+ // MARK: - Project-level settings
