@@ -82,7 +82,7 @@ struct NuvioExternalRating: Codable, Hashable, Identifiable {
 }
 
 /// Content metadata
-struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
+struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
     let id: String
     let name: String
     let description: String?
@@ -569,7 +569,7 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
 }
 
 /// A single series episode (Stremio `videos[]`).
-struct NuvioVideo: Identifiable, Codable, Hashable {
+struct NuvioVideo: Identifiable, Codable, Hashable, Sendable {
     let id: String          // e.g. "tt0903747:1:1"
     let title: String
     let season: Int
@@ -1403,7 +1403,7 @@ enum ContinueWatchingFeatureFlags {
     static let nextUpCardsEnabled = true
 }
 
-struct ContinueWatchingItem: Identifiable, Codable, Equatable {
+struct ContinueWatchingItem: Identifiable, Codable, Equatable, Sendable {
     var id: String { meta.id }
     let meta: NuvioMeta
     let streamUrl: String
@@ -3101,12 +3101,22 @@ enum ContinueWatchingDismissStore {
     private static let separator = "|"
     private static let legacySeparator = "\u{1f}"
 
-    private(set) static var activeProfileId: String?
+    private static let cacheLock = NSRecursiveLock()
+    private static var cache: [String: Set<String>] = [:]
+    private static var _activeProfileId: String?
+
+    static var activeProfileId: String? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return _activeProfileId
+    }
 
     /// Driven by `ContinueWatchingStore.setActiveProfile` so removals follow the
     /// same profile scope as the row they hide.
     static func setActiveProfile(_ profileId: String?) {
-        activeProfileId = profileId
+        cacheLock.lock()
+        _activeProfileId = profileId
+        cacheLock.unlock()
     }
 
     private static func storageKey(for profileId: String?) -> String {
@@ -3122,7 +3132,11 @@ enum ContinueWatchingDismissStore {
     /// ``WatchedStore/eraseProfile(_:)``.
     static func eraseProfile(_ profileId: String) {
         let key = storageKey(for: profileId)
+        cacheLock.lock()
+        cache.removeValue(forKey: key)
+        cacheLock.unlock()
         UserDefaults.standard.removeObject(forKey: key)
+        postChangedNotification()
     }
 
     static func key(for item: ContinueWatchingItem) -> String {
@@ -3145,7 +3159,19 @@ enum ContinueWatchingDismissStore {
     }
 
     static func keys(profileId: String?) -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: storageKey(for: profileId)) ?? [])
+        let targetKey = storageKey(for: profileId)
+        cacheLock.lock()
+        if let cached = cache[targetKey] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        let loaded = Set(UserDefaults.standard.stringArray(forKey: targetKey) ?? [])
+        cacheLock.lock()
+        cache[targetKey] = loaded
+        cacheLock.unlock()
+        return loaded
     }
 
     static func isDismissed(_ item: ContinueWatchingItem) -> Bool {
@@ -3201,11 +3227,18 @@ enum ContinueWatchingDismissStore {
 
     private static func persist(_ keys: Set<String>, profileId: String? = activeProfileId) {
         let targetKey = storageKey(for: profileId)
+        cacheLock.lock()
+        cache[targetKey] = keys
+        cacheLock.unlock()
         if keys.isEmpty {
             UserDefaults.standard.removeObject(forKey: targetKey)
         } else {
             UserDefaults.standard.set(Array(keys), forKey: targetKey)
         }
+        postChangedNotification()
+    }
+
+    private static func postChangedNotification() {
         if Thread.isMainThread {
             NotificationCenter.default.post(name: changedNotification, object: nil)
         } else {
@@ -3217,14 +3250,18 @@ enum ContinueWatchingDismissStore {
 
     /// Deletes every profile's removals (and the legacy shared set) on sign-out.
     static func eraseAllProfiles() {
+        cacheLock.lock()
+        cache.removeAll()
+        cacheLock.unlock()
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
             .filter { $0.hasPrefix(baseKey) }
             .forEach { defaults.removeObject(forKey: $0) }
+        postChangedNotification()
     }
 }
 
-struct LibraryStoreItem: Identifiable, Codable, Equatable {
+struct LibraryStoreItem: Identifiable, Codable, Equatable, Sendable {
     var id: String { meta.id }
     let meta: NuvioMeta
     let addedAt: Date
@@ -3271,7 +3308,17 @@ enum LibraryStore {
         cacheLock.unlock()
 
         guard changed else { return }
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
+    }
+
+    private static func postChangedNotification() {
+        if Thread.isMainThread {
+            NotificationCenter.default.post(name: changedNotification, object: nil)
+        } else {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: changedNotification, object: nil)
+            }
+        }
     }
 
     private static var storageKey: String {
@@ -3399,7 +3446,7 @@ enum LibraryStore {
 
         guard let data = try? JSONEncoder().encode(items) else { return }
         _ = writeData(data, forKey: key)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     /// Deletes one profile's library, leaving every other profile alone.
@@ -3415,7 +3462,7 @@ enum LibraryStore {
         let key = storageKey(for: profileId)
         UserDefaults.standard.removeObject(forKey: key)
         LargePayloadStore.remove(key: key, directory: storageDirectoryName)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     /// Deletes every profile's library (and the legacy shared one) on sign-out.
@@ -3431,7 +3478,7 @@ enum LibraryStore {
             .filter { $0.hasPrefix(baseKey) }
             .forEach { defaults.removeObject(forKey: $0) }
         LargePayloadStore.removeDirectory(storageDirectoryName)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 }
 
@@ -3919,12 +3966,38 @@ enum CollectionsStore {
     private static let baseKey = "nuvio.tv.collections.json"
     private static let lastPulledIdsKey = "nuvio.tv.collections.lastPulledIds"
     private static let storageDirectoryName = "CollectionsStore"
-    private(set) static var activeProfileId: String?
+
+    private static let cacheLock = NSRecursiveLock()
+    private static var cachedRaw: [String: [[String: Any]]] = [:]
+    private static var cachedCollections: [String: [NuvioCollection]] = [:]
+    private static var cachedLastPulledIds: [String: Set<String>] = [:]
+    private static var _activeProfileId: String?
+
+    static var activeProfileId: String? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return _activeProfileId
+    }
 
     static func setActiveProfile(_ profileId: String?) {
-        guard activeProfileId != profileId else { return }
-        activeProfileId = profileId
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        cacheLock.lock()
+        guard _activeProfileId != profileId else {
+            cacheLock.unlock()
+            return
+        }
+        _activeProfileId = profileId
+        cacheLock.unlock()
+        postChangedNotification()
+    }
+
+    private static func postChangedNotification() {
+        if Thread.isMainThread {
+            NotificationCenter.default.post(name: changedNotification, object: nil)
+        } else {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: changedNotification, object: nil)
+            }
+        }
     }
 
     private static var storageKey: String {
@@ -3970,21 +4043,49 @@ enum CollectionsStore {
     /// after this device last synced) are not wiped, while intentional deletes
     /// of previously-pulled ids still go through.
     static func lastPulledCollectionIds() -> Set<String> {
-        guard let data = readData(forKey: lastPulledIdsStorageKey),
+        cacheLock.lock()
+        let key = lastPulledIdsStorageKey
+        if let cached = cachedLastPulledIds[key] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        guard let data = readData(forKey: key),
               let ids = try? JSONDecoder().decode([String].self, from: data) else {
+            cacheLock.lock()
+            cachedLastPulledIds[key] = []
+            cacheLock.unlock()
             return []
         }
-        return Set(ids)
+        let set = Set(ids)
+        cacheLock.lock()
+        cachedLastPulledIds[key] = set
+        cacheLock.unlock()
+        return set
     }
 
     private static func rememberPulledIds(_ ids: [String]) {
+        let key = lastPulledIdsStorageKey
+        cacheLock.lock()
+        cachedLastPulledIds[key] = Set(ids)
+        cacheLock.unlock()
         guard let data = try? JSONEncoder().encode(ids) else { return }
-        _ = writeData(data, forKey: lastPulledIdsStorageKey)
+        _ = writeData(data, forKey: key)
     }
 
     /// Decode one collection at a time so a single bad row cannot drop the rest.
     static func collections() -> [NuvioCollection] {
-        rawCollections().compactMap { row in
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        let key = storageKey
+        if let cached = cachedCollections[key] {
+            return cached
+        }
+
+        let rows = rawCollections()
+        let result = rows.compactMap { row -> NuvioCollection? in
             guard let data = try? JSONSerialization.data(withJSONObject: row) else { return nil }
             do {
                 return try JSONDecoder().decode(NuvioCollection.self, from: data)
@@ -3995,6 +4096,8 @@ enum CollectionsStore {
                 return nil
             }
         }
+        cachedCollections[key] = result
+        return result
     }
 
     /// Replaces the cache with the account's blob. Raw data is stored as-is so
@@ -4015,16 +4118,22 @@ enum CollectionsStore {
             return
         }
 
+        cacheLock.lock()
+        let key = storageKey
         if collections() == decoded {
+            cacheLock.unlock()
             rememberPulledIds(decoded.map(\.id))
             return
         }
 
         // Prefer re-encoded raw rows so a double-encoded string input is stored cleanly.
         let storeData = (try? JSONSerialization.data(withJSONObject: rows)) ?? json
-        _ = writeData(storeData, forKey: storageKey)
+        _ = writeData(storeData, forKey: key)
+        cachedRaw[key] = rows
+        cachedCollections[key] = decoded
+        cacheLock.unlock()
         rememberPulledIds(decoded.map(\.id))
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     /// Posted after a local edit (create/pin/delete/add-source) so the sync
@@ -4036,9 +4145,21 @@ enum CollectionsStore {
     /// dicts instead of the typed models so fields only the Android app knows
     /// (view modes, tile shapes, TMDB sources, …) survive the round-trip.
     static func rawCollections() -> [[String: Any]] {
-        guard let data = readData(forKey: storageKey) else { return [] }
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        let key = storageKey
+        if let cached = cachedRaw[key] {
+            return cached
+        }
+
+        guard let data = readData(forKey: key) else {
+            cachedRaw[key] = []
+            return []
+        }
         guard let rows = parseCollectionsArray(from: data) else {
-            LargePayloadStore.remove(key: storageKey, directory: storageDirectoryName)
+            LargePayloadStore.remove(key: key, directory: storageDirectoryName)
+            cachedRaw[key] = []
             return []
         }
         let streamingMigration = migrateStreamingServicesTemplate(in: rows)
@@ -4047,8 +4168,9 @@ enum CollectionsStore {
         let asianMigration = migrateAsianFilmAndSeriesTemplate(in: genresMigration.rows)
         if (streamingMigration.changed || studiosMigration.changed || genresMigration.changed || asianMigration.changed),
            let migratedData = try? JSONSerialization.data(withJSONObject: asianMigration.rows) {
-            _ = writeData(migratedData, forKey: storageKey)
+            _ = writeData(migratedData, forKey: key)
         }
+        cachedRaw[key] = asianMigration.rows
         return asianMigration.rows
     }
 
@@ -4546,17 +4668,28 @@ enum CollectionsStore {
     /// block saving the rest of the list.
     static func saveLocalEdit(_ raw: [[String: Any]]) {
         guard let data = try? JSONSerialization.data(withJSONObject: raw) else { return }
-        let decodedCount = raw.compactMap { row -> NuvioCollection? in
+        let decoded = raw.compactMap { row -> NuvioCollection? in
             guard let item = try? JSONSerialization.data(withJSONObject: row) else { return nil }
             return try? JSONDecoder().decode(NuvioCollection.self, from: item)
-        }.count
-        guard raw.isEmpty || decodedCount > 0 else {
+        }
+        guard raw.isEmpty || !decoded.isEmpty else {
             print("CollectionsStore.saveLocalEdit: refused — no decodable collections")
             return
         }
-        _ = writeData(data, forKey: storageKey)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
-        NotificationCenter.default.post(name: locallyEditedNotification, object: raw)
+        cacheLock.lock()
+        let key = storageKey
+        _ = writeData(data, forKey: key)
+        cachedRaw[key] = raw
+        cachedCollections[key] = decoded
+        cacheLock.unlock()
+        postChangedNotification()
+        if Thread.isMainThread {
+            NotificationCenter.default.post(name: locallyEditedNotification, object: raw)
+        } else {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: locallyEditedNotification, object: raw)
+            }
+        }
     }
 
     /// Merge a local edit into the latest remote blob.
@@ -4594,25 +4727,35 @@ enum CollectionsStore {
     static func eraseProfile(_ profileId: String) {
         let key = storageKey(for: profileId)
         let lastPulledKey = lastPulledIdsStorageKey(for: profileId)
+        cacheLock.lock()
+        cachedRaw.removeValue(forKey: key)
+        cachedCollections.removeValue(forKey: key)
+        cachedLastPulledIds.removeValue(forKey: lastPulledKey)
+        cacheLock.unlock()
         UserDefaults.standard.removeObject(forKey: key)
         UserDefaults.standard.removeObject(forKey: lastPulledKey)
         LargePayloadStore.remove(key: key, directory: storageDirectoryName)
         LargePayloadStore.remove(key: lastPulledKey, directory: storageDirectoryName)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     /// Deletes every profile's collections on sign-out.
     static func eraseAllProfiles() {
+        cacheLock.lock()
+        cachedRaw.removeAll()
+        cachedCollections.removeAll()
+        cachedLastPulledIds.removeAll()
+        cacheLock.unlock()
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
             .filter { $0.hasPrefix(baseKey) || $0.hasPrefix(lastPulledIdsKey) }
             .forEach { defaults.removeObject(forKey: $0) }
         LargePayloadStore.removeDirectory(storageDirectoryName)
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 }
 
-struct WatchedStoreItem: Identifiable, Codable, Equatable {
+struct WatchedStoreItem: Identifiable, Codable, Equatable, Sendable {
     var id: String {
         if let season, let episode {
             return "\(meta.canonicalType):\(meta.id):s\(season)e\(episode)"
@@ -5958,14 +6101,14 @@ enum WatchedStore {
                         _ = await WeTrakrProgressService.markWatched(
                             meta: meta,
                             season: season,
-                            episode: episodes.first,
+                            episodes: episodes,
                             store: store
                         )
                     } else {
                         _ = await WeTrakrProgressService.markUnwatched(
                             meta: meta,
                             season: season,
-                            episode: episodes.first,
+                            episodes: episodes,
                             store: store
                         )
                     }
@@ -6090,6 +6233,12 @@ enum WatchedStore {
             Task { @MainActor in
                 if isWatched {
                     _ = await WeTrakrProgressService.markSeasonWatched(
+                        meta: meta,
+                        season: season,
+                        store: traktStore
+                    )
+                } else {
+                    _ = await WeTrakrProgressService.markSeasonUnwatched(
                         meta: meta,
                         season: season,
                         store: traktStore
@@ -6688,6 +6837,41 @@ enum WatchedStore {
     ) -> Bool {
         let source = TraktWatchProgressSource.mdblist.rawValue
         let remoteItems = remoteItems.map { $0.adding(source: .mdblist) }
+        guard mergeRemote(remoteItems, confirmsTombstoneDeletions: false) else { return false }
+
+        let currentRemoteKeys = Set(remoteItems.flatMap(watchedIdentityKeys))
+        let removedRemoteKeys = Set(previousRemoteItems.flatMap(watchedIdentityKeys))
+            .subtracting(currentRemoteKeys)
+        guard !removedRemoteKeys.isEmpty else { return true }
+
+        let current = items()
+        let updated = current.compactMap { item -> WatchedStoreItem? in
+            guard item.watchedAt <= syncStartedAt,
+                  !watchedIdentityKeys(item).isDisjoint(with: removedRemoteKeys),
+                  item.sources.isEmpty || item.sources.contains(source) else {
+                return item
+            }
+            guard !item.sources.isEmpty else { return nil }
+            var retained = item
+            retained.sources.remove(source)
+            return retained.sources.isEmpty ? nil : retained
+        }
+        let changed = updated.count != current.count || zip(updated, current).contains {
+            $0.id != $1.id || $0.sources != $1.sources
+        }
+        return !changed || persist(updated)
+    }
+
+    /// Applies WeTrakr's remote snapshot while removing only rows previously
+    /// attributed to WeTrakr. Local, Trakt, and Simkl ownership is preserved.
+    @discardableResult
+    static func reconcileWeTrakrSnapshot(
+        _ remoteItems: [WatchedStoreItem],
+        previousRemoteItems: [WatchedStoreItem],
+        syncStartedAt: Date
+    ) -> Bool {
+        let source = TraktWatchProgressSource.wetrakr.rawValue
+        let remoteItems = remoteItems.map { $0.adding(source: .wetrakr) }
         guard mergeRemote(remoteItems, confirmsTombstoneDeletions: false) else { return false }
 
         let currentRemoteKeys = Set(remoteItems.flatMap(watchedIdentityKeys))

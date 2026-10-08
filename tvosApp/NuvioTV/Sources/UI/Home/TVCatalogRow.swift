@@ -731,8 +731,20 @@ extension TVCatalogRow: Equatable {
 
 enum TVHomeGridLayout {
     static let columns = 7
-    static let rows = 3
-    static let previewItemCount = columns * rows - 1
+    static let defaultRows = 3
+    static let rows = defaultRows
+    static let minRows = 1
+    static let maxRows = 10
+
+    static func previewItemCount(rows: Int = defaultRows) -> Int {
+        let effectiveRows = max(minRows, min(maxRows, rows))
+        return effectiveRows * columns - 1
+    }
+
+    static var previewItemCount: Int {
+        previewItemCount(rows: defaultRows)
+    }
+
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
     static let itemSpacing: CGFloat = 28
@@ -786,9 +798,10 @@ struct TVHomeCatalogGridSection: View {
     let onSeeAll: () -> Void
 
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+    @AppStorage(SettingsKey.gridRows) private var gridRows = TVHomeGridLayout.defaultRows
 
     private var previewItems: [NuvioMeta] {
-        Array(section.items.prefix(TVHomeGridLayout.previewItemCount))
+        Array(section.items.prefix(TVHomeGridLayout.previewItemCount(rows: gridRows)))
     }
 
     private var seeAllKey: String {

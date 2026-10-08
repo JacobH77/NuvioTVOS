@@ -287,7 +287,7 @@ struct PosterCard: View {
             .task(id: isFocused) {
                 guard isFocused else { return }
                 do {
-                    try await Task.sleep(nanoseconds: 300_000_000)
+                    try await Task.sleep(nanoseconds: 350_000_000)
                 } catch {
                     return
                 }
