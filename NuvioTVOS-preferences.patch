@@ -75,7 +75,7 @@ index f2d90e8..dca871d 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..749e5cb 100644
+index b6c20d9..1a63044 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -181,7 +181,179 @@ index b6c20d9..749e5cb 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -3785,30 +3826,10 @@ struct TVHomeView: View {
+@@ -3659,6 +3700,171 @@ struct TVHomeView: View {
+ 
+     var body: some View {
+         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
++        homeLibraryLifecycle
++        .onDisappear {
++            focusWork.cancelAll()
++            // The profile-focus retry is owned by a `.task(id:)` and cancels
++            // automatically when this Home view leaves the hierarchy.
++            homeReloadTask?.cancel()
++            continueWatchingRefreshTask?.cancel()
++            continueWatchingRefreshTask = nil
++            traktWatchedHistorySyncTask?.cancel()
++            traktWatchedHistorySyncTask = nil
++            finishSimklHomeLoadingDiagnostic()
++            continueWatchingRefreshGeneration &+= 1
++        }
++        .onChange(of: isLoading) { _, loading in
++            TVHomeDebugTrace.log("home.onChange(isLoading) loading=\(loading) showsLoading=\(showsLoading)")
++            if loading && showsLoading {
++                requestLoadingFocus()
++            } else if !loading || !showsLoading {
++                isLoadingFocusActive = false
++            }
++        }
++        .onChange(of: profileGateReadiness) { _, _ in
++            reportProfileGateReadiness()
++        }
++        .onChange(of: isProfileFocusPending) { _, switching in
++            nativeProfileFocusedCardKey = nil
++            didNativeFocusGridHero = false
++            if switching { reportProfileGateReadiness() }
++        }
++        .onChange(of: profileGateGeneration) { _, _ in
++            nativeProfileFocusedCardKey = nil
++            didNativeFocusGridHero = false
++            reportProfileGateReadiness()
++        }
++        .onChange(of: contentIdentity) { _, _ in
++            nativeProfileFocusedCardKey = nil
++            didNativeFocusGridHero = false
++            reportProfileGateReadiness()
++        }
++        .onChange(of: isFullScreenOverlayPresented) { oldVal, isPresented in
++            if oldVal && !isPresented && isActive {
++                checkAndTriggerAutoRefresh()
++            }
++        }
++        .onChange(of: isActive) { oldVal, active in
++            if !oldVal && active && !isFullScreenOverlayPresented {
++                checkAndTriggerAutoRefresh()
++            }
++        }
++        .onChange(of: scenePhase) { _, phase in
++            if phase == .active {
++                checkAndTriggerAutoRefresh()
++            }
++        }
++        .onChange(of: focusedPosterBackdropEnabled) { _, enabled in
++            guard !enabled else { return }
++            focusWork.pendingLandscapeFocusedId = nil
++            focusWork.landscapeFocusTask?.cancel()
++            landscapeFocusedId = nil
++        }
++        .onChange(of: focusedCardID) { oldValue, newValue in
++            TVHomeDebugTrace.measure("home.focusedCardID.onChange") {
++                TVHomeDebugTrace.log(
++                    "home.focusedCardID changed from \(oldValue ?? "nil") to \(newValue ?? "nil") "
++                        + "pendingInitial=\(pendingInitialFocusCardKey ?? "nil") "
++                        + "suppressAnimations=\(suppressReturnFocusAnimations) "
++                        + "lastFocused=\(store.lastFocusedCardID ?? "nil") "
++                        + "didPrepareViewport=\(didPrepareInitialFocusViewport)"
++                )
++                if newValue == nil {
++                    // A FocusState assignment can request focus, but only a
++                    // native card callback below can acknowledge it.
++                    nativeProfileFocusedCardKey = nil
++                }
++                if let newValue {
++                    if let pending = pendingInitialFocusCardKey {
++                        if pending == newValue {
++                            TVHomeDebugTrace.log("home.focusedCardID matched pendingInitialFocusCardKey=\(pending)")
++                            self.pendingInitialFocusCardKey = nil
++                            self.suppressReturnFocusAnimations = false
++                        } else {
++                            // While waiting for pending initial focus target, ignore transient focus
++                            // events during layout/viewport scroll passes.
++                            TVHomeDebugTrace.log("home.focusedCardID ignoring transient focus on \(newValue) while waiting for \(pending)")
++                            return
++                        }
++                    } else if !didPrepareInitialFocusViewport,
++                              let saved = store.lastFocusedCardID,
++                              saved != newValue
++                    {
++                        pendingInitialFocusCardKey = saved
++                        return
++                    }
++                    store.lastFocusedCardID = newValue
++                    if isActive {
++                        releaseReturnFocusAnimationSuppression()
++                    }
++                    if isEnabled, overlayRestoreCardID != nil {
++                        completeOverlayFocusRestore(for: newValue)
++                    }
++                }
++            }
++        }
++        // Visible menus still toggle Home's disabled environment. Full-screen
++        // overlays do not: their opacity-zero Home tree is already unfocusable,
++        // and handling the overlay transition directly avoids invalidating all
++        // resident shelves on Details entry.
++        .onChange(of: isEnabled) { _, enabled in
++            TVHomeDebugTrace.log(
++                "home.overlay.isEnabled changed to \(enabled) active=\(isActive) defersPrep=\(focusWork.defersOverlayPreparation)"
++            )
++            // Full-screen transitions have their own handler below. This one
++            // remains for the visible card-menu path and inactive TabView tabs.
++            guard !isFullScreenOverlayPresented else { return }
++            handleHomeOverlayStateChange(isPresented: !enabled)
++        }
++        .onChange(of: isFullScreenOverlayPresented) { _, presented in
++            TVHomeDebugTrace.log(
++                "home.overlay.fullScreen changed to \(presented) active=\(isActive) defersPrep=\(focusWork.defersOverlayPreparation)"
++            )
++            handleHomeOverlayStateChange(isPresented: presented)
++        }
++        .onChange(of: detailsDidDisappearGeneration) { _, generation in
++            guard !isFullScreenOverlayPresented, isActive else { return }
++            let savedTarget = overlayRestoreCardID
++                ?? focusWork.pendingOverlayRestoreCardID
++                ?? store.lastFocusedCardID
++            guard let rawTarget = savedTarget,
++                  let target = validRestoreTarget(rawTarget) else { return }
++            TVHomeDebugTrace.log(
++                "home.details.disappeared generation=\(generation) restoring target=\(target)"
++            )
++            if let rowIndex = visibleSections.firstIndex(where: { target.hasPrefix("\($0.id)\u{1}") }) {
++                focusedRowIndex = rowIndex
++                focusedSectionId = visibleSections[rowIndex].id
++            }
++            focusedCardID = target
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
++                if overlayRestoreCardID != nil {
++                    completeOverlayFocusRestore(for: target)
++                }
++            }
++        }
++        .onChange(of: focusRows) { _, _ in
++            retargetMissingFocusIfNeeded()
++        }
++        .fullScreenCover(item: $browsingSection) { section in
++            TVHomeCatalogBrowseView(
++                section: section,
++                repository: repository,
++                watchedTitleKeys: watchedTitleKeys,
++                onDismiss: { browsingSection = nil },
++                onSelect: { meta in
++                    browsingSection = nil
++                    DispatchQueue.main.async {
++                        navigateToDetailsFromHome(id: meta.id, type: meta.type)
++                    }
++                },
++                onLongPress: onLongPressCard
++            )
++        }
++        .onExitCommand(perform: canHandleExitCommand ? handleBackCommand : nil)
++    }
++
++    private var homeScreenContent: some View {
+         ZStack(alignment: .topLeading) {
+             // Keep TVHomeView mounted in TabView across tab switches so that
+             // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
+@@ -3785,30 +3991,10 @@ struct TVHomeView: View {
                          }
                      }
                  } else {
@@ -216,10 +388,185 @@ index b6c20d9..749e5cb 100644
                      // Android uses a LazyColumn of LazyRows: only viewport rows
                      // and cards own render work. Keep the vertical Home strip
                      // lazy as well; rows retain their horizontal position in
-@@ -4381,6 +4402,24 @@ struct TVHomeView: View {
-         .onExitCommand(perform: canHandleExitCommand ? handleBackCommand : nil)
-     }
- 
+@@ -3947,6 +4133,10 @@ struct TVHomeView: View {
+                     .allowsHitTesting(false)
+             }
+         }
++    }
++
++    private var homeLoadLifecycle: some View {
++        homeScreenContent
+         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
+             let isLoaded = store.isLoaded(for: contentIdentity)
+             await loadWithAutomaticRetry(for: contentIdentity, forceReload: !isLoaded)
+@@ -4137,6 +4327,10 @@ struct TVHomeView: View {
+                 }
+             }
+         }
++    }
++
++    private var homeLibraryLifecycle: some View {
++        homeLoadLifecycle
+         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
+             guard isActive && !isFullScreenOverlayPresented else { return }
+             refreshWatchedTitles()
+@@ -4218,167 +4412,24 @@ struct TVHomeView: View {
+                 await load(for: identity, forceReload: true)
+             }
+         }
+-        .onDisappear {
+-            focusWork.cancelAll()
+-            // The profile-focus retry is owned by a `.task(id:)` and cancels
+-            // automatically when this Home view leaves the hierarchy.
+-            homeReloadTask?.cancel()
+-            continueWatchingRefreshTask?.cancel()
+-            continueWatchingRefreshTask = nil
+-            traktWatchedHistorySyncTask?.cancel()
+-            traktWatchedHistorySyncTask = nil
+-            finishSimklHomeLoadingDiagnostic()
+-            continueWatchingRefreshGeneration &+= 1
+-        }
+-        .onChange(of: isLoading) { _, loading in
+-            TVHomeDebugTrace.log("home.onChange(isLoading) loading=\(loading) showsLoading=\(showsLoading)")
+-            if loading && showsLoading {
+-                requestLoadingFocus()
+-            } else if !loading || !showsLoading {
+-                isLoadingFocusActive = false
+-            }
+-        }
+-        .onChange(of: profileGateReadiness) { _, _ in
+-            reportProfileGateReadiness()
+-        }
+-        .onChange(of: isProfileFocusPending) { _, switching in
+-            nativeProfileFocusedCardKey = nil
+-            didNativeFocusGridHero = false
+-            if switching { reportProfileGateReadiness() }
+-        }
+-        .onChange(of: profileGateGeneration) { _, _ in
+-            nativeProfileFocusedCardKey = nil
+-            didNativeFocusGridHero = false
+-            reportProfileGateReadiness()
+-        }
+-        .onChange(of: contentIdentity) { _, _ in
+-            nativeProfileFocusedCardKey = nil
+-            didNativeFocusGridHero = false
+-            reportProfileGateReadiness()
+-        }
+-        .onChange(of: isFullScreenOverlayPresented) { oldVal, isPresented in
+-            if oldVal && !isPresented && isActive {
+-                checkAndTriggerAutoRefresh()
+-            }
+-        }
+-        .onChange(of: isActive) { oldVal, active in
+-            if !oldVal && active && !isFullScreenOverlayPresented {
+-                checkAndTriggerAutoRefresh()
+-            }
+-        }
+-        .onChange(of: scenePhase) { _, phase in
+-            if phase == .active {
+-                checkAndTriggerAutoRefresh()
+-            }
+-        }
+-        .onChange(of: focusedPosterBackdropEnabled) { _, enabled in
+-            guard !enabled else { return }
+-            focusWork.pendingLandscapeFocusedId = nil
+-            focusWork.landscapeFocusTask?.cancel()
+-            landscapeFocusedId = nil
+-        }
+-        .onChange(of: focusedCardID) { oldValue, newValue in
+-            TVHomeDebugTrace.measure("home.focusedCardID.onChange") {
+-                TVHomeDebugTrace.log(
+-                    "home.focusedCardID changed from \(oldValue ?? "nil") to \(newValue ?? "nil") "
+-                        + "pendingInitial=\(pendingInitialFocusCardKey ?? "nil") "
+-                        + "suppressAnimations=\(suppressReturnFocusAnimations) "
+-                        + "lastFocused=\(store.lastFocusedCardID ?? "nil") "
+-                        + "didPrepareViewport=\(didPrepareInitialFocusViewport)"
+-                )
+-                if newValue == nil {
+-                    // A FocusState assignment can request focus, but only a
+-                    // native card callback below can acknowledge it.
+-                    nativeProfileFocusedCardKey = nil
+-                }
+-                if let newValue {
+-                    if let pending = pendingInitialFocusCardKey {
+-                        if pending == newValue {
+-                            TVHomeDebugTrace.log("home.focusedCardID matched pendingInitialFocusCardKey=\(pending)")
+-                            self.pendingInitialFocusCardKey = nil
+-                            self.suppressReturnFocusAnimations = false
+-                        } else {
+-                            // While waiting for pending initial focus target, ignore transient focus
+-                            // events during layout/viewport scroll passes.
+-                            TVHomeDebugTrace.log("home.focusedCardID ignoring transient focus on \(newValue) while waiting for \(pending)")
+-                            return
+-                        }
+-                    } else if !didPrepareInitialFocusViewport,
+-                              let saved = store.lastFocusedCardID,
+-                              saved != newValue
+-                    {
+-                        pendingInitialFocusCardKey = saved
+-                        return
+-                    }
+-                    store.lastFocusedCardID = newValue
+-                    if isActive {
+-                        releaseReturnFocusAnimationSuppression()
+-                    }
+-                    if isEnabled, overlayRestoreCardID != nil {
+-                        completeOverlayFocusRestore(for: newValue)
+-                    }
+-                }
+-            }
+-        }
+-        // Visible menus still toggle Home's disabled environment. Full-screen
+-        // overlays do not: their opacity-zero Home tree is already unfocusable,
+-        // and handling the overlay transition directly avoids invalidating all
+-        // resident shelves on Details entry.
+-        .onChange(of: isEnabled) { _, enabled in
+-            TVHomeDebugTrace.log(
+-                "home.overlay.isEnabled changed to \(enabled) active=\(isActive) defersPrep=\(focusWork.defersOverlayPreparation)"
+-            )
+-            // Full-screen transitions have their own handler below. This one
+-            // remains for the visible card-menu path and inactive TabView tabs.
+-            guard !isFullScreenOverlayPresented else { return }
+-            handleHomeOverlayStateChange(isPresented: !enabled)
+-        }
+-        .onChange(of: isFullScreenOverlayPresented) { _, presented in
+-            TVHomeDebugTrace.log(
+-                "home.overlay.fullScreen changed to \(presented) active=\(isActive) defersPrep=\(focusWork.defersOverlayPreparation)"
+-            )
+-            handleHomeOverlayStateChange(isPresented: presented)
+-        }
+-        .onChange(of: detailsDidDisappearGeneration) { _, generation in
+-            guard !isFullScreenOverlayPresented, isActive else { return }
+-            let savedTarget = overlayRestoreCardID
+-                ?? focusWork.pendingOverlayRestoreCardID
+-                ?? store.lastFocusedCardID
+-            guard let rawTarget = savedTarget,
+-                  let target = validRestoreTarget(rawTarget) else { return }
+-            TVHomeDebugTrace.log(
+-                "home.details.disappeared generation=\(generation) restoring target=\(target)"
+-            )
+-            if let rowIndex = visibleSections.firstIndex(where: { target.hasPrefix("\($0.id)\u{1}") }) {
+-                focusedRowIndex = rowIndex
+-                focusedSectionId = visibleSections[rowIndex].id
+-            }
+-            focusedCardID = target
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+-                if overlayRestoreCardID != nil {
+-                    completeOverlayFocusRestore(for: target)
+-                }
+-            }
+-        }
+-        .onChange(of: focusRows) { _, _ in
+-            retargetMissingFocusIfNeeded()
+-        }
+-        .fullScreenCover(item: $browsingSection) { section in
+-            TVHomeCatalogBrowseView(
+-                section: section,
+-                repository: repository,
+-                watchedTitleKeys: watchedTitleKeys,
+-                onDismiss: { browsingSection = nil },
++    }
++
 +    @ViewBuilder
 +    private var featuredHeroHeader: some View {
 +        if heroEnabled && homeLayout != "Grid View" && !gridHeroItems.isEmpty {
@@ -231,17 +578,22 @@ index b6c20d9..749e5cb 100644
 +                onInitialFocusRequested: {},
 +                heroHeight: homeLayout == "Compact" ? CGFloat(390) : CGFloat(500),
 +                onPlay: onPlayFeatured,
-+                onSelect: { meta in
+                 onSelect: { meta in
+-                    browsingSection = nil
+-                    DispatchQueue.main.async {
+-                        navigateToDetailsFromHome(id: meta.id, type: meta.type)
+-                    }
+-                },
+-                onLongPress: onLongPressCard
 +                    navigateToDetailsFromHome(id: meta.id, type: meta.type)
 +                }
-+            )
-+        }
-+    }
-+
+             )
+         }
+-        .onExitCommand(perform: canHandleExitCommand ? handleBackCommand : nil)
+     }
+ 
      /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
-     ///   The scroll view gives it back so the hero backdrop runs to the physical
-     ///   screen edges; every row below re-applies it so the posters keep the
-@@ -4416,6 +4455,7 @@ struct TVHomeView: View {
+@@ -4416,6 +4467,7 @@ struct TVHomeView: View {
                                  didRequestInitialCardFocus = true
                              },
                              backdropBleed: heroBleed,
@@ -249,7 +601,7 @@ index b6c20d9..749e5cb 100644
                              onFocusChange: {
                                  isGridHeroFocused = $0
                                  let wasHeroFocused = didNativeFocusGridHero
-@@ -8940,12 +8980,16 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8940,12 +8992,16 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -267,7 +619,7 @@ index b6c20d9..749e5cb 100644
  
      private var index: Int {
          guard !items.isEmpty else { return 0 }
-@@ -8999,7 +9043,6 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8999,7 +9055,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -275,7 +627,7 @@ index b6c20d9..749e5cb 100644
                      .transition(.opacity)
              }
  
-@@ -9022,7 +9065,7 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,7 +9077,7 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -284,7 +636,7 @@ index b6c20d9..749e5cb 100644
          .clipped()
          // After `clipped()`, so the widened artwork isn't trimmed back to the
          // hero's frame.
-@@ -9035,35 +9078,16 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9035,35 +9090,16 @@ private struct TVGridHeroSlideshowView: View {
                  onFocusChange?(focused)
              })
          }
@@ -325,7 +677,7 @@ index b6c20d9..749e5cb 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9150,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9162,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
