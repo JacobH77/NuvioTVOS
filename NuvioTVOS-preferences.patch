@@ -75,7 +75,7 @@ index f2d90e8..dca871d 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..1a63044 100644
+index b6c20d9..f62b5ed 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -140,7 +140,29 @@ index b6c20d9..1a63044 100644
      private func playRecommendedTitle(meta: NuvioMeta, playManually: Bool) {
          if playManually || meta.isSeries {
              withAnimation(.easeInOut(duration: 0.28)) {
-@@ -2964,6 +3003,7 @@ private struct TVMainTabView: View {
+@@ -2694,6 +2733,7 @@ private struct CrossfadingBackdrop: View {
+     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
+     /// (Android `Alignment.TopEnd`); title posters keep center.
+     var alignment: Alignment = .center
++    var fallbackURL: String? = nil
+ 
+     @State private var image: UIImage?
+     @State private var loadedURL: String?
+@@ -2726,7 +2766,12 @@ private struct CrossfadingBackdrop: View {
+                 outgoingOpacity = 0
+                 return
+             }
+-            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
++            var loadedImage = await BackdropImageCache.shared.image(for: imageURL)
++            if loadedImage == nil, !Task.isCancelled,
++               let fallbackURL, let fallback = URL(string: fallbackURL), fallback != imageURL {
++                loadedImage = await BackdropImageCache.shared.image(for: fallback)
++            }
++            guard let loaded = loadedImage else { return }
+             // Some catalog add-ons (including BetterPosters) only provide a
+             // poster URL. PosterCard uses that same image for its landscape
+             // state, so allow the full-screen aspect-fill to use it as well.
+@@ -2964,6 +3009,7 @@ private struct TVMainTabView: View {
      let onRequestAccountRefresh: () -> Void
      let onOpenCollectionFolder: (TVCollectionFolderItem, String) -> Void
      let onResumePlayback: (ContinueWatchingItem) -> Void
@@ -148,7 +170,7 @@ index b6c20d9..1a63044 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -2976,7 +3016,7 @@ private struct TVMainTabView: View {
+@@ -2976,7 +3022,7 @@ private struct TVMainTabView: View {
      @AppStorage(SettingsKey.amoled) private var amoled = false
      @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
      @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -157,7 +179,7 @@ index b6c20d9..1a63044 100644
      @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Nuvio User"
      @StateObject private var profileTabAvatar = ProfileTabAvatarRenderer()
      @State private var showingReauthSheet = false
-@@ -3016,7 +3056,6 @@ private struct TVMainTabView: View {
+@@ -3016,7 +3062,6 @@ private struct TVMainTabView: View {
              NativeSearchView(
                  viewModel: searchViewModel,
                  showDiscover: discoverLocation == "Search",
@@ -165,7 +187,7 @@ index b6c20d9..1a63044 100644
                  isFullScreenOverlayPresented: isFullScreenOverlayPresented,
                  detailsDidDisappearGeneration: detailsDidDisappearGeneration,
                  onContentClick: onNavigateToDetails,
-@@ -3087,6 +3126,7 @@ private struct TVMainTabView: View {
+@@ -3087,6 +3132,7 @@ private struct TVMainTabView: View {
                  onNavigateToDetails: onNavigateToDetails,
                  onOpenCollectionFolder: onOpenCollectionFolder,
                  onResumePlayback: onResumePlayback,
@@ -173,7 +195,7 @@ index b6c20d9..1a63044 100644
                  onPlayContinueWatchingManually: onPlayContinueWatchingManually,
                  onStartContinueWatchingFromBeginning: onStartContinueWatchingFromBeginning,
                  onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-@@ -3526,6 +3566,7 @@ struct TVHomeView: View {
+@@ -3526,6 +3572,7 @@ struct TVHomeView: View {
      let onNavigateToDetails: (String, String) -> Void
      let onOpenCollectionFolder: (TVCollectionFolderItem, String) -> Void
      let onResumePlayback: (ContinueWatchingItem) -> Void
@@ -181,7 +203,7 @@ index b6c20d9..1a63044 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -3659,6 +3700,171 @@ struct TVHomeView: View {
+@@ -3659,6 +3706,171 @@ struct TVHomeView: View {
  
      var body: some View {
          let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
@@ -353,7 +375,16 @@ index b6c20d9..1a63044 100644
          ZStack(alignment: .topLeading) {
              // Keep TVHomeView mounted in TabView across tab switches so that
              // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
-@@ -3785,30 +3991,10 @@ struct TVHomeView: View {
+@@ -3759,7 +3971,7 @@ struct TVHomeView: View {
+                 .ignoresSafeArea()
+             }
+ 
+-            // 3. Scrollable catalog rows overlay, with pinned Hero at the top
++            // 3. Hero and catalog rows share one vertical scroll view.
+             VStack(alignment: .leading, spacing: 0) {
+                 if showsLoading {
+                     TVLoadingView()
+@@ -3785,30 +3997,8 @@ struct TVHomeView: View {
                          }
                      }
                  } else {
@@ -383,12 +414,49 @@ index b6c20d9..1a63044 100644
 -                    
 +                    // Featured catalog titles precede Continue Watching, using
 +                    // the existing carousel artwork, typography and colors.
-+                    featuredHeroHeader
-+
                      // Android uses a LazyColumn of LazyRows: only viewport rows
                      // and cards own render work. Keep the vertical Home strip
                      // lazy as well; rows retain their horizontal position in
-@@ -3947,6 +4133,10 @@ struct TVHomeView: View {
+@@ -3837,6 +4027,9 @@ struct TVHomeView: View {
+                             ScrollViewReader { verticalScrollProxy in
+                                 ScrollView(.vertical, showsIndicators: false) {
+                                     VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
++                                        featuredHeroHeader
++                                            .id("featured-home-hero")
++
+                                         if sessionNeedsReauthentication && !isBannerDismissed {
+                                             TVReauthBannerView(
+                                                 onSignIn: onRequestReauth,
+@@ -3858,6 +4051,14 @@ struct TVHomeView: View {
+                                                     horizontalEdgeInset: horizontalEdgeInset,
+                                                     verticalScrollProxy: verticalScrollProxy
+                                                 )
++                                                .onMoveCommand { direction in
++                                                    guard direction == .up, index == 0,
++                                                          heroEnabled, !gridHeroItems.isEmpty else { return }
++                                                    withAnimation(TVHomeLayout.verticalScrollAnimation) {
++                                                        verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                                                    }
++                                                    gridHeroFocusRequestGeneration &+= 1
++                                                }
+                                             } else {
+                                                 Color.clear
+                                                     .frame(
+@@ -3877,6 +4078,13 @@ struct TVHomeView: View {
+                                     // ancestor is the UIScrollView that owns the row offset.
+                                     .background(TVScrollViewFocusConfigurator())
+                                     #endif
++                                    .onChange(of: isGridHeroFocused) { _, focused in
++                                        if focused {
++                                            withAnimation(TVHomeLayout.verticalScrollAnimation) {
++                                                verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                                            }
++                                        }
++                                    }
+                                     .onAppear {
+                                         prepareInitialFocusViewport(
+                                             for: sections,
+@@ -3947,6 +4155,10 @@ struct TVHomeView: View {
                      .allowsHitTesting(false)
              }
          }
@@ -399,7 +467,7 @@ index b6c20d9..1a63044 100644
          .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
              let isLoaded = store.isLoaded(for: contentIdentity)
              await loadWithAutomaticRetry(for: contentIdentity, forceReload: !isLoaded)
-@@ -4137,6 +4327,10 @@ struct TVHomeView: View {
+@@ -4137,6 +4349,10 @@ struct TVHomeView: View {
                  }
              }
          }
@@ -410,7 +478,7 @@ index b6c20d9..1a63044 100644
          .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
              guard isActive && !isFullScreenOverlayPresented else { return }
              refreshWatchedTitles()
-@@ -4218,167 +4412,24 @@ struct TVHomeView: View {
+@@ -4218,167 +4434,28 @@ struct TVHomeView: View {
                  await load(for: identity, forceReload: true)
              }
          }
@@ -565,6 +633,11 @@ index b6c20d9..1a63044 100644
 -                repository: repository,
 -                watchedTitleKeys: watchedTitleKeys,
 -                onDismiss: { browsingSection = nil },
+-                onSelect: { meta in
+-                    browsingSection = nil
+-                    DispatchQueue.main.async {
+-                        navigateToDetailsFromHome(id: meta.id, type: meta.type)
+-                    }
 +    }
 +
 +    @ViewBuilder
@@ -574,17 +647,16 @@ index b6c20d9..1a63044 100644
 +                items: gridHeroItems,
 +                selectedIndex: $gridHeroIndex,
 +                focusRequestGeneration: gridHeroFocusRequestGeneration,
-+                shouldRequestInitialFocus: false,
-+                onInitialFocusRequested: {},
-+                heroHeight: homeLayout == "Compact" ? CGFloat(390) : CGFloat(500),
++                shouldRequestInitialFocus: store.lastFocusedCardID == nil && !didRequestInitialCardFocus,
++                onInitialFocusRequested: { didRequestInitialCardFocus = true },
++                heroHeight: homeLayout == "Compact" ? CGFloat(620) : CGFloat(720),
 +                onPlay: onPlayFeatured,
-                 onSelect: { meta in
--                    browsingSection = nil
--                    DispatchQueue.main.async {
--                        navigateToDetailsFromHome(id: meta.id, type: meta.type)
--                    }
--                },
++                onFocusChange: { focused in
++                    isGridHeroFocused = focused
++                    if focused { focusedCardID = nil }
+                 },
 -                onLongPress: onLongPressCard
++                onSelect: { meta in
 +                    navigateToDetailsFromHome(id: meta.id, type: meta.type)
 +                }
              )
@@ -593,7 +665,7 @@ index b6c20d9..1a63044 100644
      }
  
      /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
-@@ -4416,6 +4467,7 @@ struct TVHomeView: View {
+@@ -4416,6 +4493,7 @@ struct TVHomeView: View {
                                  didRequestInitialCardFocus = true
                              },
                              backdropBleed: heroBleed,
@@ -601,7 +673,57 @@ index b6c20d9..1a63044 100644
                              onFocusChange: {
                                  isGridHeroFocused = $0
                                  let wasHeroFocused = didNativeFocusGridHero
-@@ -8940,12 +8992,16 @@ private struct TVGridHeroSlideshowView: View {
+@@ -5384,7 +5462,7 @@ struct TVHomeView: View {
+             TVCollectionFolderRow(
+                 id: section.id,
+                 title: section.title,
+-                showsSectionTitle: false,
++                showsSectionTitle: true,
+                 horizontalEdgeInset: horizontalEdgeInset,
+                 folders: section.collectionFolders,
+                 initialScrollIndex: rowScrollStore.index(for: section.id),
+@@ -5470,7 +5548,7 @@ struct TVHomeView: View {
+                 title: section.title,
+                 addonName: section.addonName,
+                 showAddonName: catalogAddonNames,
+-                showsSectionTitle: false,
++                showsSectionTitle: true,
+                 horizontalEdgeInset: horizontalEdgeInset,
+                 items: section.items,
+                 progressByItemId: (section.id == TVHomeSection.continueWatchingId || section.id == TVHomeSection.upcomingId)
+@@ -5770,19 +5848,17 @@ struct TVHomeView: View {
+         }
+     }
+ 
+-    /// Normal Modern Home catalog rows contain only the poster strip. Their
+-    /// title block is part of the fixed hero now, so the row can be clipped at
+-    /// the poster boundary during vertical focus transitions.
++    /// Include the section heading in both rendered rows and offscreen shells.
+     private var estimatedCatalogRowHeight: CGFloat {
+         let imageHeight: CGFloat = homeLayout == "Compact" ? 255 : 315
+         let stripHeight = imageHeight + (posterLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
+-        return stripHeight
++        return stripHeight + TVHomeLayout.rowTitleBlock
+     }
+ 
+     /// Loading rows still show their known catalog title while cards are being
+     /// fetched, so preserve their original title-bearing geometry.
+     private var estimatedLoadingCatalogRowHeight: CGFloat {
+-        estimatedCatalogRowHeight + TVHomeLayout.rowTitleBlock
++        estimatedCatalogRowHeight
+     }
+ 
+     /// Collection folder row estimate. Curated templates may hide every folder
+@@ -5791,7 +5867,7 @@ struct TVHomeView: View {
+         let imageHeight: CGFloat = homeLayout == "Compact" ? 255 : 315
+         let showsLabels = posterLabels && section.collectionFolders.contains { !$0.hideTitle }
+         let stripHeight = imageHeight + (showsLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
+-        return stripHeight
++        return stripHeight + TVHomeLayout.rowTitleBlock
+     }
+ 
+     private func estimatedHeight(for section: TVHomeSection) -> CGFloat {
+@@ -8940,18 +9016,24 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -619,7 +741,28 @@ index b6c20d9..1a63044 100644
  
      private var index: Int {
          guard !items.isEmpty else { return 0 }
-@@ -8999,7 +9055,6 @@ private struct TVGridHeroSlideshowView: View {
+         return min(max(selectedIndex, 0), items.count - 1)
+     }
+ 
++    @State private var enrichedHero: NuvioMeta?
++
+     private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
+ 
+     /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
+@@ -8964,9 +9046,10 @@ private struct TVGridHeroSlideshowView: View {
+ 
+         ZStack {
+             CrossfadingBackdrop(
+-                url: item.backgroundUrl ?? item.posterUrl,
++                url: item.backgroundUrl.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? item.posterUrl,
+                 placeholder: background,
+-                alignment: .top
++                alignment: .top,
++                fallbackURL: item.posterUrl
+             )
+ 
+             LinearGradient(
+@@ -8999,7 +9082,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -627,7 +770,7 @@ index b6c20d9..1a63044 100644
                      .transition(.opacity)
              }
  
-@@ -9022,7 +9077,7 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,12 +9104,21 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -636,7 +779,22 @@ index b6c20d9..1a63044 100644
          .clipped()
          // After `clipped()`, so the widened artwork isn't trimmed back to the
          // hero's frame.
-@@ -9035,35 +9090,16 @@ private struct TVGridHeroSlideshowView: View {
+         .background {
+-            if let activeItem { artLayer(activeItem) }
++            if let activeItem {
++                artLayer(enrichedHero?.id == activeItem.id && enrichedHero?.type == activeItem.type ? (enrichedHero ?? activeItem) : activeItem)
++            }
++        }
++        .task(id: activeItem.map { "\($0.type):\($0.id)" }) {
++            enrichedHero = nil
++            guard let item = activeItem, item.needsHeroMetadataEnrichment,
++                  let full = try? await CinemetaCatalogRepository().getMetadata(id: item.id, type: item.type),
++                  !Task.isCancelled else { return }
++            enrichedHero = item.fillingMissingHeroMetadata(from: full)
+         }
+         .contentShape(Rectangle())
+         .background {
+@@ -9035,35 +9126,16 @@ private struct TVGridHeroSlideshowView: View {
                  onFocusChange?(focused)
              })
          }
@@ -677,7 +835,7 @@ index b6c20d9..1a63044 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9162,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9198,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
@@ -781,10 +939,39 @@ index 11d479a..ef3343d 100644
                  focus: focus,
                  tag: .watchlist,
 diff --git a/tvosApp/NuvioTV/Sources/UI/Discover/DiscoverView.swift b/tvosApp/NuvioTV/Sources/UI/Discover/DiscoverView.swift
-index c8a09cb..5f9ed05 100644
+index c8a09cb..fad60a8 100644
 --- a/tvosApp/NuvioTV/Sources/UI/Discover/DiscoverView.swift
 +++ b/tvosApp/NuvioTV/Sources/UI/Discover/DiscoverView.swift
-@@ -302,7 +302,7 @@ struct DiscoverSection: View {
+@@ -13,6 +13,7 @@ struct DiscoverSection: View {
+     let onContentClick: (String, String) -> Void
+     let isBesideKeyboard: Bool
+     let columnCount: Int?
++    let cardWidth: CGFloat?
+     var onLongPress: ((NuvioMeta) -> Void)? = nil
+     /// Lets an embedded host react to moving into a card or out of the
+     /// Discover controls entirely (the Netflix Search host uses this to
+@@ -48,6 +49,7 @@ struct DiscoverSection: View {
+         onContentClick: @escaping (String, String) -> Void,
+         isBesideKeyboard: Bool = false,
+         columnCount: Int? = nil,
++        cardWidth: CGFloat? = nil,
+         onLongPress: ((NuvioMeta) -> Void)? = nil,
+         onCardFocus: (() -> Void)? = nil,
+         onFilterFocus: (() -> Void)? = nil,
+@@ -57,6 +59,7 @@ struct DiscoverSection: View {
+         self.onContentClick = onContentClick
+         self.isBesideKeyboard = isBesideKeyboard
+         self.columnCount = columnCount
++        self.cardWidth = cardWidth
+         self.onLongPress = onLongPress
+         self.onCardFocus = onCardFocus
+         self.onFilterFocus = onFilterFocus
+@@ -298,11 +301,11 @@ struct DiscoverSection: View {
+         .defaultFocusIfAvailable($focusedCardID, shouldRestoreFocus ? lastFocusedCardID : nil)
+     }
+ 
+-    private var posterWidth: CGFloat { DiscoverGridMetrics.posterWidth }
++    private var posterWidth: CGFloat { cardWidth ?? DiscoverGridMetrics.posterWidth }
      private var posterGap: CGFloat { isBesideKeyboard || columnCount != nil ? 24 : DiscoverGridMetrics.posterGap }
  
      private var columns: [GridItem] {
@@ -807,7 +994,7 @@ index 1f2085e..ceed232 100644
                      .foregroundColor(.white)
  
 diff --git a/tvosApp/NuvioTV/Sources/UI/Search/NativeSearchView.swift b/tvosApp/NuvioTV/Sources/UI/Search/NativeSearchView.swift
-index fe8b0d5..1b48a26 100644
+index fe8b0d5..d310af7 100644
 --- a/tvosApp/NuvioTV/Sources/UI/Search/NativeSearchView.swift
 +++ b/tvosApp/NuvioTV/Sources/UI/Search/NativeSearchView.swift
 @@ -125,7 +125,7 @@ struct NativeSearchView: View {
@@ -819,15 +1006,24 @@ index fe8b0d5..1b48a26 100644
  
      @FocusState private var focusedResultID: String?
      @FocusState private var clearRecentFocused: Bool
-@@ -343,6 +343,7 @@ struct NativeSearchView: View {
+@@ -138,6 +138,7 @@ struct NativeSearchView: View {
+     @State private var overlayFocusRestorationActive = false
+     @State private var suppressOverlayDismissalExit = false
+     @State private var resultsScrollTopGeneration = 0
++    @State private var gridAvailableWidth = NativeSearchGridMetrics.gridCardRowWidth
+     @State private var nativeGridColumnCount = Int(NativeSearchGridMetrics.linearColumnCount)
+     @State private var discoverOverlayTransitionActive = false
+     /// Controls the native `.searchable` keyboard visibility in Linear mode.
+@@ -343,6 +344,8 @@ struct NativeSearchView: View {
                          DiscoverSection(
                              onContentClick: onContentClick,
                              isBesideKeyboard: true,
-+                            columnCount: nativeGridColumnCount,
++                            columnCount: 4,
++                            cardWidth: gridResultCardWidth,
                              onLongPress: onLongPress,
                              parentTransitionActive: $discoverOverlayTransitionActive
                          )
-@@ -360,9 +361,16 @@ struct NativeSearchView: View {
+@@ -360,9 +363,16 @@ struct NativeSearchView: View {
                      }
                  }
              }
@@ -847,7 +1043,7 @@ index fe8b0d5..1b48a26 100644
              .padding(.top, 24)
              .ignoresSafeArea(.container, edges: .bottom)
          }
-@@ -381,7 +389,7 @@ struct NativeSearchView: View {
+@@ -381,7 +391,7 @@ struct NativeSearchView: View {
                    focusedResultID == nil,
                    isEnabled,
                    overlayRestoreResultID == nil,
@@ -856,7 +1052,7 @@ index fe8b0d5..1b48a26 100644
                    !overlayFocusRestorationActive else { return }
              shouldRestoreResultFocus = true
          }
-@@ -416,6 +424,8 @@ struct NativeSearchView: View {
+@@ -416,6 +426,8 @@ struct NativeSearchView: View {
      }
  
      private func transferFocusToGridKeyboard() {
@@ -865,7 +1061,7 @@ index fe8b0d5..1b48a26 100644
          focusedResultID = nil
          clearRecentFocused = false
      }
-@@ -491,7 +501,8 @@ struct NativeSearchView: View {
+@@ -491,7 +503,8 @@ struct NativeSearchView: View {
                      .foregroundColor(.white.opacity(0.5))
              }
          }
@@ -875,16 +1071,26 @@ index fe8b0d5..1b48a26 100644
          .onMoveCommand { direction in
              if isGridMode {
                  if direction == .left {
-@@ -567,7 +578,7 @@ struct NativeSearchView: View {
+@@ -567,7 +580,7 @@ struct NativeSearchView: View {
  
      private func resultsGrid(isGridMode: Bool) -> some View {
          let cols = isGridMode ? gridModeColumns : linearModeColumns
 -        let colCount = isGridMode ? Int(NativeSearchGridMetrics.gridColumnCount) : nativeGridColumnCount
-+        let colCount = nativeGridColumnCount
++        let colCount = isGridMode ? 4 : nativeGridColumnCount
  
          return ScrollViewReader { proxy in
              ScrollView {
-@@ -587,7 +598,7 @@ struct NativeSearchView: View {
+@@ -579,15 +592,15 @@ struct NativeSearchView: View {
+                     ForEach(Array(visibleResults.enumerated()), id: \.element.id) { index, item in
+                         PosterGridCard(
+                             meta: item,
+-                            width: NativeSearchGridMetrics.linearPosterWidth,
+-                            height: NativeSearchGridMetrics.linearPosterHeight,
++                            width: isGridMode ? gridResultCardWidth : NativeSearchGridMetrics.linearPosterWidth,
++                            height: isGridMode ? gridResultCardWidth * 1.5 : NativeSearchGridMetrics.linearPosterHeight,
+                             externalFocus: $focusedResultID,
+                             retainFocusAppearance: overlayRestoreResultID == item.id,
+                             onLongPress: onLongPress.map { cb in { cb(item) } },
                              forceShowLabels: true,
                              onMove: { direction in
                                  if isGridMode {
@@ -893,7 +1099,7 @@ index fe8b0d5..1b48a26 100644
                                          transferFocusToGridKeyboard()
                                      }
                                  } else {
-@@ -618,14 +629,12 @@ struct NativeSearchView: View {
+@@ -618,14 +631,12 @@ struct NativeSearchView: View {
                  }
              }
              .background {
@@ -914,6 +1120,29 @@ index fe8b0d5..1b48a26 100644
                  }
              }
          }
+@@ -650,16 +661,17 @@ struct NativeSearchView: View {
+         )]
+     }
+ 
++    private var gridResultCardWidth: CGFloat {
++        max(1, (gridAvailableWidth - NativeSearchGridMetrics.gridPosterGap * 3) / 4)
++    }
++
+     private var gridModeColumns: [GridItem] {
+-        [GridItem(
+-            .adaptive(minimum: NativeSearchGridMetrics.gridPosterWidth, maximum: NativeSearchGridMetrics.gridPosterWidth),
+-            spacing: NativeSearchGridMetrics.gridPosterGap,
+-            alignment: .top
+-        )]
++        Array(repeating: GridItem(.flexible(minimum: 0), spacing: NativeSearchGridMetrics.gridPosterGap, alignment: .top), count: 4)
+     }
+ 
+     private func updateNativeGridColumnCount(for width: CGFloat) {
+         let contentWidth = max(0, width - (NativeSearchGridMetrics.gridContentInset * 2))
++        if gridAvailableWidth != contentWidth { gridAvailableWidth = contentWidth }
+         let step = NativeSearchGridMetrics.linearPosterWidth + NativeSearchGridMetrics.linearPosterGap
+         let count = max(1, Int((contentWidth + NativeSearchGridMetrics.linearPosterGap) / step))
+         if nativeGridColumnCount != count {
 diff --git a/tvosApp/NuvioTV/Sources/UI/Settings/SettingsView.swift b/tvosApp/NuvioTV/Sources/UI/Settings/SettingsView.swift
 index aedfa23..b4bbc4d 100644
 --- a/tvosApp/NuvioTV/Sources/UI/Settings/SettingsView.swift
