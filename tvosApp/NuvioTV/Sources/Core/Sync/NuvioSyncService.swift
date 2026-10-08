@@ -1188,8 +1188,11 @@ final class NuvioSyncManager: ObservableObject {
                 let collectionsBlob = try await collectionsRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
                 if let collectionsBlob {
-                    CollectionsStore.applyRemote(collectionsBlob)
-                    let count = CollectionsStore.collections().count
+                    let count = await Task.detached(priority: .utility) { () -> Int in
+                        CollectionsStore.applyRemote(collectionsBlob)
+                        return CollectionsStore.collections().count
+                    }.value
+                    try ensureStillSyncing(profileId: activeProfile.id)
                     print("Nuvio sync pulled collections (\(collectionsBlob.count) bytes, \(count) collection(s)).")
                 } else {
                     print("Nuvio sync pulled collections: server returned none.")
@@ -1231,7 +1234,10 @@ final class NuvioSyncManager: ObservableObject {
             do {
                 let remoteLibrary = try await libraryRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
-                LibraryStore.mergeRemote(remoteLibrary)
+                await Task.detached(priority: .utility) {
+                    LibraryStore.mergeRemote(remoteLibrary)
+                }.value
+                try ensureStillSyncing(profileId: activeProfile.id)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1246,10 +1252,13 @@ final class NuvioSyncManager: ObservableObject {
                 // are attributed to Nuvio Sync — not to whichever tracker
                 // happens to be selected right now. Remote deletions on Nuvio
                 // account are reconciled so deleted items don't resurrect.
-                WatchedStore.reconcileNuvioSnapshot(
-                    remoteWatched,
-                    syncStartedAt: progressPullStartedAt
-                )
+                await Task.detached(priority: .utility) {
+                    WatchedStore.reconcileNuvioSnapshot(
+                        remoteWatched,
+                        syncStartedAt: progressPullStartedAt
+                    )
+                }.value
+                try ensureStillSyncing(profileId: activeProfile.id)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1265,10 +1274,13 @@ final class NuvioSyncManager: ObservableObject {
                 // Authoritative, deletions included. The account is this
                 // backend's source of truth, and a row deleted on another
                 // device reaches us only as an absence from the snapshot.
-                let progressReconcile = WatchProgressLedger.reconcileRemote(
-                    remoteProgress,
-                    syncStartedAt: progressPullStartedAt
-                )
+                let progressReconcile = await Task.detached(priority: .utility) {
+                    WatchProgressLedger.reconcileRemote(
+                        remoteProgress,
+                        syncStartedAt: progressPullStartedAt
+                    )
+                }.value
+                try ensureStillSyncing(profileId: activeProfile.id)
                 print("[NuvioSync] pullWatchProgress reconcile result: saved=\(progressReconcile.saved), removed=\(progressReconcile.removedKeys.count) (\(progressReconcile.removedKeys)), didChange=\(progressReconcile.didChange)")
                 guard progressReconcile.saved else {
                     throw AuthError(message: "Watch progress could not be saved on this Apple TV.")

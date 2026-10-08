@@ -6,7 +6,7 @@ import Foundation
 /// the same shape (`WatchProgressEntry` minus its local-only presentation
 /// fields), and the wire format in `sync_pull_watch_progress` is a direct
 /// mapping of these properties.
-struct WatchProgressRecord: Codable, Equatable, Identifiable {
+struct WatchProgressRecord: Codable, Equatable, Identifiable, Sendable {
     var id: String { progressKey }
 
     /// Server row identity: `id` for movies, `id_s{season}e{episode}` for
@@ -97,7 +97,17 @@ enum WatchProgressLedger {
         activeProfileId = profileId
         invalidateCache()
         cacheLock.unlock()
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
+    }
+
+    private static func postChangedNotification() {
+        if Thread.isMainThread {
+            NotificationCenter.default.post(name: changedNotification, object: nil)
+        } else {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: changedNotification, object: nil)
+            }
+        }
     }
 
     private static func invalidateCache() {
@@ -414,7 +424,7 @@ enum WatchProgressLedger {
         // a test suite silently disables what the next run is asserting.
         UserDefaults.standard.removeObject(forKey: repushFlagKey(for: profileId))
         invalidateCache()
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     static func eraseAllProfiles() {
@@ -424,7 +434,7 @@ enum WatchProgressLedger {
             .forEach { defaults.removeObject(forKey: $0) }
         LargePayloadStore.removeDirectory(storageDirectoryName)
         invalidateCache()
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
     }
 
     @discardableResult
@@ -452,7 +462,7 @@ enum WatchProgressLedger {
         }
         cachedRecords = trimmed
         cachedKey = key
-        NotificationCenter.default.post(name: changedNotification, object: nil)
+        postChangedNotification()
         return true
     }
 

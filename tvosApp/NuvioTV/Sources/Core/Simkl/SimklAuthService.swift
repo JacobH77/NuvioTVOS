@@ -82,6 +82,8 @@ extension SimklTokenStorage {
 /// with ProfileSettings mirroring for iCloud sync across Apple TVs.
 final class SimklKeychainTokenStorage: SimklTokenStorage {
     private let service = "com.nuvio.tv.simkl.auth"
+    private static let lock = NSLock()
+    private static var tokenCache: [String: String] = [:]
 
     func accessToken(for profileScope: String) -> String? {
         readToken(accountType: "accessToken", profileScope: profileScope, fallbackKey: SettingsKey.simklAccessToken)
@@ -100,6 +102,11 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
     }
 
     private func readToken(accountType: String, profileScope: String, fallbackKey: String) -> String? {
+        let cacheKey = "\(accountType):\(profileScope)"
+        if let cached = Self.lock.withLock({ Self.tokenCache[cacheKey] }), !cached.isEmpty {
+            return cached
+        }
+
         var query = keychainQuery(for: profileScope, accountType: accountType)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -108,6 +115,7 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
         if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
            let data = item as? Data,
            let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            Self.lock.withLock { Self.tokenCache[cacheKey] = token }
             return token
         }
 
@@ -121,6 +129,14 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
     }
 
     private func writeToken(_ token: String?, accountType: String, profileScope: String, mirrorKey: String) {
+        let cacheKey = "\(accountType):\(profileScope)"
+        Self.lock.withLock {
+            if let token, !token.isEmpty {
+                Self.tokenCache[cacheKey] = token
+            } else {
+                Self.tokenCache.removeValue(forKey: cacheKey)
+            }
+        }
         SecItemDelete(keychainQuery(for: profileScope, accountType: accountType) as CFDictionary)
         let store = ProfileSettings.store(for: profileScope)
         if let token, !token.isEmpty {

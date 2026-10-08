@@ -137,18 +137,39 @@ protocol MdbListTokenStorage: AnyObject {
 
 final class MdbListKeychainTokenStorage: MdbListTokenStorage {
     private static let service = "com.nuvio.tv.mdblist.auth"
+    private static let lock = NSLock()
+    private static var tokenCache: [String: MdbListStoredTokens] = [:]
+    private static var negativeCache: Set<String> = []
 
     func tokens(for profileScope: String) -> MdbListStoredTokens? {
+        let (cached, isNegative) = Self.lock.withLock {
+            (Self.tokenCache[profileScope], Self.negativeCache.contains(profileScope))
+        }
+        if let cached { return cached }
+        if isNegative { return nil }
+
         var query = keychainQuery(for: profileScope)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return try? JSONDecoder().decode(MdbListStoredTokens.self, from: data)
+              let data = item as? Data,
+              let decoded = try? JSONDecoder().decode(MdbListStoredTokens.self, from: data) else {
+            Self.lock.withLock { _ = Self.negativeCache.insert(profileScope) }
+            return nil
+        }
+        Self.lock.withLock {
+            Self.tokenCache[profileScope] = decoded
+            Self.negativeCache.remove(profileScope)
+        }
+        return decoded
     }
 
     func save(_ tokens: MdbListStoredTokens, for profileScope: String) {
+        Self.lock.withLock {
+            Self.tokenCache[profileScope] = tokens
+            Self.negativeCache.remove(profileScope)
+        }
         guard let data = try? JSONEncoder().encode(tokens) else { return }
         var addQuery = keychainQuery(for: profileScope)
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -163,10 +184,18 @@ final class MdbListKeychainTokenStorage: MdbListTokenStorage {
     }
 
     func remove(for profileScope: String) {
+        Self.lock.withLock {
+            Self.tokenCache.removeValue(forKey: profileScope)
+            Self.negativeCache.insert(profileScope)
+        }
         _ = SecItemDelete(keychainQuery(for: profileScope) as CFDictionary)
     }
 
     func removeAll() {
+        Self.lock.withLock {
+            Self.tokenCache.removeAll()
+            Self.negativeCache.removeAll()
+        }
         _ = SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service
