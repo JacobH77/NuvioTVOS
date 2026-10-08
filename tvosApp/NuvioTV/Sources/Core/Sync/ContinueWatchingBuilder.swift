@@ -185,10 +185,6 @@ enum ContinueWatchingBuilder {
             return
         }
 
-        for candidate in candidates where !WatchProgressLedger.isComplete(candidate) && candidate.position > 5 {
-            ContinueWatchingDismissStore.clear(contentId: candidate.contentId)
-        }
-
         let currentPlan = planEntries(candidates: candidates, seeds: seeds)
         let existingItems = ContinueWatchingStore.items()
         print("[ContinueWatchingBuilder] rebuild: plan count=\(currentPlan.count)")

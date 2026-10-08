@@ -98,6 +98,8 @@ final class NuvioSyncManager: ObservableObject {
     private var activePullKey: String?
     /// A refresh that arrived while a pull was running, replayed on completion.
     private var pendingResyncRequested = false
+    /// Explicit force requests must replay without the passive refresh floor.
+    private var pendingForcedResyncKey: String?
     private var automaticAccountPullRetryCount = 0
     /// The backend uses this heartbeat to show the Apple TV under the account's
     /// linked devices. Keep it well below the server's stale-device window,
@@ -179,7 +181,7 @@ final class NuvioSyncManager: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.schedulePush(scope: .progress, delay: 1.5) }
+            Task { @MainActor in self?.schedulePush(scope: .settings, delay: 1.5) }
         })
         observers.append(center.addObserver(
             forName: ProfileSettings.settingsChangedNotification,
@@ -355,6 +357,7 @@ final class NuvioSyncManager: ObservableObject {
             lastCompletedPullAt.removeAll()
             activePullKey = nil
             pendingResyncRequested = false
+            pendingForcedResyncKey = nil
             observedAuthUserId = nil
             observedActiveProfileId = nil
             lastDeviceRegistrationAt = nil
@@ -422,6 +425,9 @@ final class NuvioSyncManager: ObservableObject {
         guard AuthConfig.isConfigured, authManager?.isAuthenticated == true else { return }
         if let key = currentSyncKey() {
             lastCompletedPullAt.removeValue(forKey: key)
+            if pullTask != nil, activePullKey == key {
+                pendingForcedResyncKey = key
+            }
         }
         schedulePull(force: true)
     }
@@ -732,6 +738,8 @@ final class NuvioSyncManager: ObservableObject {
             return
         }
 
+        pendingResyncRequested = false
+        pendingForcedResyncKey = nil
         pullGeneration &+= 1
         let generation = pullGeneration
         automaticAccountPullRetryCount = 0
@@ -756,15 +764,22 @@ final class NuvioSyncManager: ObservableObject {
 
     private func finishPull(generation: UInt) {
         guard generation == pullGeneration else { return }
+        let shouldForceResync = pendingForcedResyncKey != nil
+            && pendingForcedResyncKey == currentSyncKey()
+        pendingForcedResyncKey = nil
         pullTask = nil
         activePullKey = nil
         isPullingAccountProfiles = false
-        // A request that arrived mid-pull was deferred rather than dropped, so
-        // honour it now — but through the same floor, so a burst of screen
-        // changes still collapses into one refresh.
+        // A request that arrived mid-pull was deferred rather than dropped.
+        // Explicit force intent bypasses the refresh floor; passive refreshes
+        // still use it so repeated screen changes collapse into one pull.
         if pendingResyncRequested {
             pendingResyncRequested = false
-            refreshAccountIfIdle()
+            if shouldForceResync {
+                forcePull()
+            } else {
+                refreshAccountIfIdle()
+            }
         }
     }
 
@@ -1153,6 +1168,7 @@ final class NuvioSyncManager: ObservableObject {
                 session: session,
                 remoteProfileId: remoteProfileId
             )
+            let libraryPullContext = LibraryStore.capturePullContext(profileId: activeProfile.id)
             async let libraryRequest = client.pullLibrary(
                 session: session,
                 remoteProfileId: remoteProfileId
@@ -1234,10 +1250,14 @@ final class NuvioSyncManager: ObservableObject {
             do {
                 let remoteLibrary = try await libraryRequest
                 try ensureStillSyncing(profileId: activeProfile.id)
-                await Task.detached(priority: .utility) {
-                    LibraryStore.mergeRemote(remoteLibrary)
+                let librarySaved = await Task.detached(priority: .utility) {
+                    LibraryStore.reconcileRemote(remoteLibrary, context: libraryPullContext)
                 }.value
                 try ensureStillSyncing(profileId: activeProfile.id)
+                if !librarySaved {
+                    pullFailures += 1
+                    print("Nuvio library sync failed: the reconciled snapshot could not be saved.")
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1361,7 +1381,8 @@ final class NuvioSyncManager: ObservableObject {
                 // to stay re-pullable.
                 lastCompletedPullAt[key] = Date()
             }
-            await pushLocalSnapshots()
+            pendingPushScopes.formUnion(.all)
+            await flushPendingPushesNow()
         } catch is CancellationError {
             guard generation == pullGeneration else { return }
             isApplyingRemoteProfiles = false
@@ -1556,7 +1577,11 @@ final class NuvioSyncManager: ObservableObject {
             let ownsLibrary = Self.ownsLibrary(for: activeProfile.id)
             if scopes.contains(.library) && ownsLibrary {
                 try ensureStillSyncing(profileId: activeProfile.id)
-                try await client.pushLibrary(session: session, remoteProfileId: remoteProfileId)
+                try await client.pushLibrary(
+                    session: session,
+                    remoteProfileId: remoteProfileId,
+                    localProfileId: activeProfile.id
+                )
             }
 
             let ownsWatchState = Self.ownsWatchState(for: activeProfile.id)
@@ -1988,6 +2013,78 @@ enum PosterCardStyleSyncMapper {
 /// `ContinueWatchingPreferencesRepository` payload.
 enum ContinueWatchingSyncMapper {
     static let featureKey = "continue_watching_settings_payload"
+    static let androidTraktFeatureKey = "trakt_settings"
+    static let androidDismissedNextUpKeysKey = "dismissed_next_up_keys"
+    private static let dismissalKeySeparator = "|"
+    private static let legacyDismissalKeySeparator = "\u{1f}"
+
+    struct DismissalKeysImport: Equatable {
+        let isPresent: Bool
+        let keys: Set<String>?
+    }
+
+    static func dismissalKeysForImport(
+        androidTraktFeature: Any?,
+        legacyPayload: Any?
+    ) -> DismissalKeysImport {
+        let android = androidDismissalKeys(from: androidTraktFeature)
+        if android.isPresent { return android }
+        let legacyKeys = importPayload(legacyPayload).dismissedKeys
+        return DismissalKeysImport(isPresent: legacyKeys != nil, keys: legacyKeys)
+    }
+
+    static func androidDismissalKeys(from feature: Any?) -> DismissalKeysImport {
+        guard let feature else {
+            return DismissalKeysImport(isPresent: false, keys: nil)
+        }
+        guard let featureDictionary = feature as? [String: Any] else {
+            return DismissalKeysImport(isPresent: true, keys: nil)
+        }
+        guard let rawEntry = featureDictionary[androidDismissedNextUpKeysKey] else {
+            return DismissalKeysImport(isPresent: false, keys: nil)
+        }
+        guard let entry = rawEntry as? [String: Any],
+              entry["type"] as? String == "string_set",
+              let values = entry["value"] as? [Any],
+              values.allSatisfy({ $0 is String }) else {
+            return DismissalKeysImport(isPresent: true, keys: nil)
+        }
+        let keys = Set(values.compactMap { value -> String? in
+            guard let rawValue = value as? String else { return nil }
+            return androidWildcardKey(from: rawValue)
+        })
+        return DismissalKeysImport(isPresent: true, keys: keys)
+    }
+
+    static func exportAndroidTraktFeature(
+        existing: [String: Any]?,
+        dismissedKeys: Set<String>
+    ) -> [String: Any] {
+        var feature = existing ?? [:]
+        let contentIDs = Set(dismissedKeys.compactMap { contentID(fromDismissalKey: $0) })
+        feature[androidDismissedNextUpKeysKey] = [
+            "type": "string_set",
+            "value": Array(contentIDs).sorted()
+        ]
+        return feature
+    }
+
+    private static func androidWildcardKey(from rawValue: String) -> String? {
+        guard let id = contentID(fromDismissalKey: rawValue) else { return nil }
+        return "\(id)\(dismissalKeySeparator)-1\(dismissalKeySeparator)-1"
+    }
+
+    private static func contentID(fromDismissalKey key: String) -> String? {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let currentSeparator = Character(dismissalKeySeparator)
+        let legacySeparator = Character(legacyDismissalKeySeparator)
+        let delimiter = trimmed.firstIndex(of: currentSeparator)
+            ?? trimmed.firstIndex(of: legacySeparator)
+        let id = (delimiter.map { String(trimmed[..<$0]) } ?? trimmed)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return id.isEmpty ? nil : id
+    }
 
     static func sortModeToWire(_ sortMode: String?) -> String {
         switch sortMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -2029,7 +2126,7 @@ enum ContinueWatchingSyncMapper {
         let style = existingDict["style"] as? String ?? "Card"
         let useEpisodeThumbnails = existingDict["use_episode_thumbnails_in_cw"] as? Bool ?? true
         let blurNextUp = existingDict["blur_continue_watching_next_up"] as? Bool ?? false
-        let localDismissed = ContinueWatchingDismissStore.keys(profileId: localProfileId)
+        let localDismissed = ContinueWatchingDismissStore.keysForExport(profileId: localProfileId)
         let showResumePromptOnLaunch = existingDict["showResumePromptOnLaunch"] as? Bool ?? true
         let sortMode = sortModeToWire(continueWatchingSort)
 
@@ -2878,24 +2975,27 @@ fileprivate final class NuvioAPIClient {
         lastPulledProfileSettingsJSON = nil
         lastPulledMobileProfileSettingsJSON = nil
 
-        let settingsJSON = try await pullProfileSettingsJSON(
+        async let settingsJSONRequest = pullProfileSettingsJSON(
             session: session,
             remoteProfileId: remoteProfileId,
             platform: Self.settingsPlatform
         )
-        lastPulledProfileSettingsJSON = settingsJSON
-        // Android TV keeps this feature in its mobile-compatible settings blob.
-        // Pull it independently so badge packs/settings follow the account even
-        // when tvOS has never written a tv blob for this profile.
-        let mobileSettingsJSON = try? await pullProfileSettingsJSON(
+        async let mobileSettingsJSONRequest = pullProfileSettingsJSON(
             session: session,
             remoteProfileId: remoteProfileId,
             platform: Self.mobileSettingsPlatform
         )
+        let settingsJSON = try await settingsJSONRequest
+        lastPulledProfileSettingsJSON = settingsJSON
+        // Android TV keeps this feature in its mobile-compatible settings blob.
+        // Pull it independently so badge packs/settings follow the account even
+        // when tvOS has never written a tv blob for this profile.
+        let mobileSettingsJSON = try? await mobileSettingsJSONRequest
         lastPulledMobileProfileSettingsJSON = mobileSettingsJSON
 
         let features = settingsJSON?["features"] as? [String: Any] ?? [:]
         let mobileFeatures = mobileSettingsJSON?["features"] as? [String: Any] ?? [:]
+        let androidTraktFeature = features[ContinueWatchingSyncMapper.androidTraktFeatureKey]
         let tvosFeature = features[Self.settingsFeature] as? [String: Any]
         let debridFeature = features[Self.debridSettingsFeature] as? [String: Any]
         let tmdbFeature = features[Self.tmdbSettingsFeature] as? [String: Any]
@@ -2914,7 +3014,7 @@ fileprivate final class NuvioAPIClient {
         let themeFeature = (mobileFeatures[Self.themeSettingsFeature] as? [String: Any])
             ?? (features[Self.themeSettingsFeature] as? [String: Any])
 
-        guard tvosFeature != nil || debridFeature != nil || tmdbFeature != nil || streamBadgeFeature != nil || posterCardStyleFeature != nil || playerFeature != nil || continueWatchingFeature != nil || mdbListFeature != nil || themeFeature != nil else {
+        guard tvosFeature != nil || debridFeature != nil || tmdbFeature != nil || streamBadgeFeature != nil || posterCardStyleFeature != nil || playerFeature != nil || continueWatchingFeature != nil || androidTraktFeature != nil || mdbListFeature != nil || themeFeature != nil else {
             return false
         }
 
@@ -2927,7 +3027,11 @@ fileprivate final class NuvioAPIClient {
         importStreamBadgeSettings(streamBadgeFeature, localProfileId: localProfileId)
         importPosterCardStyleSettings(posterCardStyleFeature, localProfileId: localProfileId)
         importPlayerSettings(playerFeature, localProfileId: localProfileId)
-        importContinueWatchingSettings(continueWatchingFeature, localProfileId: localProfileId)
+        importContinueWatchingSettings(
+            continueWatchingFeature,
+            androidTraktFeature: androidTraktFeature,
+            localProfileId: localProfileId
+        )
         importMdbListSettings(mdbListFeature, localProfileId: localProfileId)
         ThemeSettingsSyncMapper.importPayload(themeFeature, localProfileId: localProfileId)
         return true
@@ -2955,23 +3059,46 @@ fileprivate final class NuvioAPIClient {
         remoteProfileId: Int,
         localProfileId: String
     ) async throws {
-        // Refresh mobile immediately so player_settings uses the freshest
-        // mobile-authoritative blob (the user may have changed it since pull).
-        var latestMobileSettingsJSON = lastPulledMobileProfileSettingsJSON ?? [:]
-        if let fetched = try? await pullProfileSettingsJSON(
-            session: session, remoteProfileId: remoteProfileId,
+        // Refresh both independent blobs before replacing either. The tv fetch
+        // is required so Android Trakt preferences are never overwritten from
+        // a stale cache; mobile remains best-effort for its mirrored features.
+        async let latestTVSettingsRequest = pullProfileSettingsJSON(
+            session: session,
+            remoteProfileId: remoteProfileId,
+            platform: Self.settingsPlatform
+        )
+        async let latestMobileSettingsRequest = pullProfileSettingsJSON(
+            session: session,
+            remoteProfileId: remoteProfileId,
             platform: Self.mobileSettingsPlatform
-        ) {
+        )
+        let freshTVSettingsJSON = try await latestTVSettingsRequest
+        var latestMobileSettingsJSON = lastPulledMobileProfileSettingsJSON ?? [:]
+        if let fetched = try? await latestMobileSettingsRequest {
             latestMobileSettingsJSON = fetched
             lastPulledMobileProfileSettingsJSON = latestMobileSettingsJSON
         }
+        let freshTVFeatures = freshTVSettingsJSON?["features"] as? [String: Any] ?? [:]
+        let freshAndroidTraktFeature = freshTVFeatures[ContinueWatchingSyncMapper.androidTraktFeatureKey]
+        let freshAndroidDismissals = ContinueWatchingSyncMapper.androidDismissalKeys(
+            from: freshAndroidTraktFeature
+        )
+        if freshAndroidDismissals.isPresent, let keys = freshAndroidDismissals.keys {
+            ContinueWatchingDismissStore.reconcileRemoteKeys(keys, profileId: localProfileId)
+        }
         // This RPC atomically replaces the complete (user, profile, platform)
-        // blob. Merge our namespaced feature into the row we just pulled so
-        // Android/other TV feature keys survive a tvOS settings update.
-        var settingsJSON = lastPulledProfileSettingsJSON ?? [:]
+        // blob. Start from the fresh tv row, or an empty row when none exists,
+        // so other Android/TV features survive this update.
+        var settingsJSON = freshTVSettingsJSON ?? [:]
         var features = settingsJSON["features"] as? [String: Any] ?? [:]
         features[Self.settingsFeature] = exportSettings(localProfileId: localProfileId)
         features[Self.streamBadgeSettingsFeature] = exportStreamBadgeSettings(localProfileId: localProfileId)
+        let existingTraktSettings = features[ContinueWatchingSyncMapper.androidTraktFeatureKey] as? [String: Any]
+        features[ContinueWatchingSyncMapper.androidTraktFeatureKey] =
+            ContinueWatchingSyncMapper.exportAndroidTraktFeature(
+                existing: existingTraktSettings,
+                dismissedKeys: ContinueWatchingDismissStore.keysForExport(profileId: localProfileId)
+            )
         // Keep Android stream-filter keys; overlay API keys + preferred resolver.
         let existingDebrid = features[Self.debridSettingsFeature] as? [String: Any]
         features[Self.debridSettingsFeature] = exportDebridSettings(
@@ -3035,6 +3162,16 @@ fileprivate final class NuvioAPIClient {
                 "p_settings_json": settingsJSON
             ]
         )
+        lastPulledProfileSettingsJSON = settingsJSON
+        let sentAndroidDismissals = ContinueWatchingSyncMapper.androidDismissalKeys(
+            from: features[ContinueWatchingSyncMapper.androidTraktFeatureKey]
+        )
+        if let sentKeys = sentAndroidDismissals.keys {
+            ContinueWatchingDismissStore.acknowledgePushedKeys(
+                sentKeys,
+                profileId: localProfileId
+            )
+        }
 
         // Keep the Android/mobile-compatible feature in its own blob as well.
         // Other mobile settings remain untouched by merging the latest remote
@@ -3074,7 +3211,7 @@ fileprivate final class NuvioAPIClient {
         var allItems: [RemoteLibraryItem] = []
         var offset = 0
         while true {
-            let page: LossyRows<RemoteLibraryItem> = try await rpcRows(
+            let data = try await rpcData(
                 "sync_pull_library",
                 session: session,
                 params: [
@@ -3083,10 +3220,9 @@ fileprivate final class NuvioAPIClient {
                     "p_offset": offset
                 ]
             )
-            allItems += page.elements
-            // Paginate on the server's raw row count, not the decoded count —
-            // dropped rows must not end the loop early.
-            if page.rawCount < Self.pullPageSize { break }
+            let page = try Self.makeDecoder().decode([RemoteLibraryItem].self, from: data)
+            allItems += page
+            if page.count < Self.pullPageSize { break }
             offset += Self.pullPageSize
         }
         return allItems.map { remote in
@@ -3097,8 +3233,13 @@ fileprivate final class NuvioAPIClient {
         }
     }
 
-    func pushLibrary(session: AuthSession, remoteProfileId: Int) async throws {
-        let payload = LibraryStore.items().map { item -> [String: Any] in
+    func pushLibrary(
+        session: AuthSession,
+        remoteProfileId: Int,
+        localProfileId: String
+    ) async throws {
+        let snapshot = LibraryStore.capturePushSnapshot(profileId: localProfileId)
+        let payload = snapshot.items.map { item -> [String: Any] in
             var row: [String: Any] = [
                 "content_id": item.meta.id,
                 "content_type": item.meta.type,
@@ -3117,7 +3258,6 @@ fileprivate final class NuvioAPIClient {
             }
             return row
         }
-        guard !payload.isEmpty else { return }
         try await rpcVoid(
             "sync_push_library",
             session: session,
@@ -3126,6 +3266,7 @@ fileprivate final class NuvioAPIClient {
                 "p_profile_id": remoteProfileId
             ]
         )
+        _ = LibraryStore.acknowledgePush(snapshot)
     }
 
     func pullWatched(session: AuthSession, remoteProfileId: Int) async throws -> [WatchedStoreItem] {
@@ -3225,13 +3366,14 @@ fileprivate final class NuvioAPIClient {
     /// `ContinueWatchingBuilder`'s job, and a failure there is retried instead
     /// of discarding history.
     func pullWatchProgress(session: AuthSession, remoteProfileId: Int) async throws -> [WatchProgressRecord] {
-        let remote: [RemoteWatchProgress] = try await rpcRows(
+        let data = try await rpcData(
             "sync_pull_watch_progress",
             session: session,
             params: [
                 "p_profile_id": remoteProfileId
             ]
-        ).elements
+        )
+        let remote = try Self.makeDecoder().decode([RemoteWatchProgress].self, from: data)
 
         return remote.map { entry in
             let type = Self.normalizedContentType(entry.contentType)
@@ -3818,10 +3960,13 @@ fileprivate final class NuvioAPIClient {
         )
     }
 
-    private func importContinueWatchingSettings(_ remote: Any?, localProfileId: String) {
-        guard let remote else { return }
+    private func importContinueWatchingSettings(
+        _ remote: Any?,
+        androidTraktFeature: Any?,
+        localProfileId: String
+    ) {
         let defaults = ProfileSettings.store(for: localProfileId)
-        let (isVisible, upNext, showUnaired, sortMode, dismissedKeys) = ContinueWatchingSyncMapper.importPayload(remote)
+        let (isVisible, upNext, showUnaired, sortMode, _) = ContinueWatchingSyncMapper.importPayload(remote)
         if let isVisible {
             defaults.set(isVisible, forKey: SettingsKey.continueWatchingVisible)
         }
@@ -3837,8 +3982,12 @@ fileprivate final class NuvioAPIClient {
                 defaults.set(sortMode, forKey: SettingsKey.continueWatchingSort)
             }
         }
-        if let dismissedKeys {
-            ContinueWatchingDismissStore.replaceKeys(dismissedKeys, profileId: localProfileId)
+        let dismissalImport = ContinueWatchingSyncMapper.dismissalKeysForImport(
+            androidTraktFeature: androidTraktFeature,
+            legacyPayload: remote
+        )
+        if let dismissedKeys = dismissalImport.keys {
+            ContinueWatchingDismissStore.reconcileRemoteKeys(dismissedKeys, profileId: localProfileId)
         }
     }
 

@@ -246,15 +246,6 @@ enum WatchProgressLedger {
         _ remote: [WatchProgressRecord],
         syncStartedAt: Date
     ) -> (saved: Bool, removedKeys: [String], didChange: Bool) {
-        // A zero-row response is ambiguous: it can mean the account was
-        // intentionally cleared, but it can also be a transient/backend/profile
-        // mismatch. Never turn that ambiguity into destructive local data loss.
-        // Explicit removals are still reconciled from non-empty snapshots.
-        guard !remote.isEmpty else {
-            print("[WatchProgressLedger] reconcileRemote: remote snapshot is empty -> skipping reconciliation")
-            return (true, [], false)
-        }
-
         let byKey = merged(remote, into: records())
         let remoteKeys = Set(remote.map(\.progressKey))
 
