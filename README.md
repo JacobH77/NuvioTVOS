@@ -48,23 +48,23 @@ Download the latest Apple TV `.ipa` from [Releases](https://github.com/bobsupra/
 ## Latest tvOS Beta
 
 <!-- BEGIN LATEST_BETA -->
-**Beta 3.4.1** is the latest tvOS release.
+**Beta 3.4.2** is the latest tvOS release.
 
-[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.1/NuvioTV-3.4.1-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.1) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
+[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.2/NuvioTV-3.4.2-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.2) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
 <!-- END LATEST_BETA -->
 
 > 🎉 **Thank you for 200+ GitHub Stars!** A huge thank you to everyone in the community for supporting NuvioTVOS and helping us reach 200+ stars!
 
 The IPA requires a compatible tvOS development or sideloading signing workflow before installation.
 
-### New in Beta 3.4.1
+### New in Beta 3.4.2
 
-- **Fullscreen Trailer Playback & Details Screen Enhancements:** Added dedicated fullscreen trailer playback mode directly from the Details screen with native audio and subtitle track selectors.
-- **Batch Episode Watch Action:** Added `markWatchedUpTo` to mark all previous episodes in a season or series as watched in one action.
-- **Landscape Layout Options:** Sleek landscape card layout options for Home catalogs and the Continue Watching row.
-- **Stream Discovery & Live/Sports Optimization:** Provider unavailability notice detection with manual selection preservation, plus automatic live and sports debrid caching exemptions.
-- **Player Stability & AetherEngine Refinements:** Optimized smart subtitle matching, instant loaded track updating, and enhanced surface rebind stability.
-- **Cloud Sync & Profile Isolation:** Streamlined catalog snapshot metadata persistence to prevent sync collisions across profiles.
+- **WeTrakr Integration & Unified Cloud Tracking:** Added full WeTrakr authentication, device pairing, scrobble tracking, watch status sync, and watchlist reconciliation across multi-service setups.
+- **Trakt OAuth PKCE & Multi-Account Support:** Modernized Trakt device and authorization workflows with PKCE support without requiring static client secrets.
+- **Playback Error Diagnostics & Host Formatting:** Refined stream diagnostic insight banners with formatted localized host labels and corrected translation placeholders.
+- **Catalog Payload Storage & Focus Safety:** Decoupled UserDefaults notification broadcasts from internal synchronization locks in `HomeCatalogPayloadStore`, and disarmed debug watchdogs for silky smooth 60fps Home scrolling.
+- **Media Identity Resolution:** Enhanced canonical identity conflict resolution across IMDb/TMDb entries while maintaining graceful fallback for third-party catalog feeds.
+- **Tests & Performance:** 640 automated unit tests passing with 0 failures, plus persistent build caching for sub-2-second test execution.
 
 ### Built-in Player
 
