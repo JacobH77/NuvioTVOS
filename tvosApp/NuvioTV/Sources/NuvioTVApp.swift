@@ -1856,8 +1856,12 @@ struct ContentView: View {
                     openDetailsRoot(id: contentId, type: contentType)
                 }
             },
-            onRequestAccountRefresh: {
-                syncManager.refreshAccountIfIdle()
+            onRequestAccountRefresh: { force in
+                if force {
+                    syncManager.forcePull()
+                } else {
+                    syncManager.refreshAccountIfIdle()
+                }
             },
             onOpenCollectionFolder: { folder, collectionTitle in
                 if ["STREAMING_SERVICE", "STUDIO_FRANCHISE"].contains(
@@ -2962,7 +2966,7 @@ private struct TVMainTabView: View {
     let onSignIn: () -> Void
     let onSignOut: () -> Void
     let onNavigateToDetails: (String, String) -> Void
-    let onRequestAccountRefresh: () -> Void
+    let onRequestAccountRefresh: (Bool) -> Void
     let onOpenCollectionFolder: (TVCollectionFolderItem, String) -> Void
     let onResumePlayback: (ContinueWatchingItem) -> Void
     var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
@@ -3537,7 +3541,7 @@ struct TVHomeView: View {
     /// Asks the account for fresh data when Nuvio Sync owns Continue Watching.
     /// That row is read from the local ledger, so nothing else here would ever
     /// notice a title deleted on another device.
-    var onRequestAccountRefresh: () -> Void = {}
+    var onRequestAccountRefresh: (Bool) -> Void = { _ in }
     var onRequestReauth: () -> Void = {}
 
     @AppStorage(SettingsKey.amoled) private var amoled = false
@@ -6931,7 +6935,7 @@ struct TVHomeView: View {
     private func refreshHomeSection(sectionId: String) {
         if sectionId == TVHomeSection.continueWatchingId {
             scheduleContinueWatchingRefresh()
-            onRequestAccountRefresh()
+            onRequestAccountRefresh(true)
             return
         }
         if sectionId == TVHomeSection.upcomingId {
@@ -7307,7 +7311,7 @@ struct TVHomeView: View {
             // pull. Ask for a new one; it lands via the store's change
             // notification, which already refreshes the row.
             print("[ContinueWatching][Home] refreshContinueWatchingFromSelectedSource: triggering account refresh for local ledger")
-            onRequestAccountRefresh()
+            onRequestAccountRefresh(false)
             return
         }
 
