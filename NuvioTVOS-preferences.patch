@@ -75,7 +75,7 @@ index f2d90e8..dca871d 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..72a3ec2 100644
+index b6c20d9..c1d68f2 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -181,7 +181,7 @@ index b6c20d9..72a3ec2 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -3785,30 +3826,22 @@ struct TVHomeView: View {
+@@ -3785,30 +3826,10 @@ struct TVHomeView: View {
                          }
                      }
                  } else {
@@ -206,27 +206,42 @@ index b6c20d9..72a3ec2 100644
 -                                navigateToDetailsFromHome(id: heroMeta.id, type: heroMeta.type)
 -                            }
 -                            .equatable()
+-                        }
+-                    }
+-                    
 +                    // Featured catalog titles precede Continue Watching, using
 +                    // the existing carousel artwork, typography and colors.
-+                    if heroEnabled && homeLayout != "Grid View" && !gridHeroItems.isEmpty {
-+                        TVGridHeroSlideshowView(
-+                            items: gridHeroItems,
-+                            selectedIndex: $gridHeroIndex,
-+                            focusRequestGeneration: gridHeroFocusRequestGeneration,
-+                            shouldRequestInitialFocus: false,
-+                            onInitialFocusRequested: {},
-+                            heroHeight: homeLayout == "Compact" ? 390 : 500,
-+                            onPlay: onPlayFeatured
-+                        ) { meta in
-+                            navigateToDetailsFromHome(id: meta.id, type: meta.type)
-                         }
-                     }
--                    
++                    featuredHeroHeader
 +
                      // Android uses a LazyColumn of LazyRows: only viewport rows
                      // and cards own render work. Keep the vertical Home strip
                      // lazy as well; rows retain their horizontal position in
-@@ -4416,6 +4449,7 @@ struct TVHomeView: View {
+@@ -4386,6 +4407,24 @@ struct TVHomeView: View {
+     ///   screen edges; every row below re-applies it so the posters keep the
+     ///   gutter the rest of Home uses.
+     @ViewBuilder
++    @ViewBuilder
++    private var featuredHeroHeader: some View {
++        if heroEnabled && homeLayout != "Grid View" && !gridHeroItems.isEmpty {
++            TVGridHeroSlideshowView(
++                items: gridHeroItems,
++                selectedIndex: $gridHeroIndex,
++                focusRequestGeneration: gridHeroFocusRequestGeneration,
++                shouldRequestInitialFocus: false,
++                onInitialFocusRequested: {},
++                heroHeight: homeLayout == "Compact" ? CGFloat(390) : CGFloat(500),
++                onPlay: onPlayFeatured,
++                onSelect: { meta in
++                    navigateToDetailsFromHome(id: meta.id, type: meta.type)
++                }
++            )
++        }
++    }
++
+     private func homeGrid(sections: [TVHomeSection], heroBleed: CGFloat) -> some View {
+         let heroItems = heroEnabled ? gridHeroItems : []
+         ScrollViewReader { verticalScrollProxy in
+@@ -4416,6 +4455,7 @@ struct TVHomeView: View {
                                  didRequestInitialCardFocus = true
                              },
                              backdropBleed: heroBleed,
@@ -234,7 +249,7 @@ index b6c20d9..72a3ec2 100644
                              onFocusChange: {
                                  isGridHeroFocused = $0
                                  let wasHeroFocused = didNativeFocusGridHero
-@@ -8940,12 +8974,16 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8940,12 +8980,16 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -252,7 +267,7 @@ index b6c20d9..72a3ec2 100644
  
      private var index: Int {
          guard !items.isEmpty else { return 0 }
-@@ -8999,7 +9037,6 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8999,7 +9043,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -260,7 +275,7 @@ index b6c20d9..72a3ec2 100644
                      .transition(.opacity)
              }
  
-@@ -9022,7 +9059,7 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,7 +9065,7 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -269,7 +284,7 @@ index b6c20d9..72a3ec2 100644
          .clipped()
          // After `clipped()`, so the widened artwork isn't trimmed back to the
          // hero's frame.
-@@ -9035,35 +9072,16 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9035,35 +9078,16 @@ private struct TVGridHeroSlideshowView: View {
                  onFocusChange?(focused)
              })
          }
@@ -310,7 +325,7 @@ index b6c20d9..72a3ec2 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9144,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9150,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
