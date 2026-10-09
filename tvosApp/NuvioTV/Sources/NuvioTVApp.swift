@@ -2697,7 +2697,7 @@ private struct CrossfadingBackdrop: View {
     let url: String?
     let placeholder: Color
     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
-    /// (Android `Alignment.TopEnd`); title posters keep center.
+    /// (Android `Alignment.TopEnd`); title backdrops keep center.
     var alignment: Alignment = .center
 
     @State private var image: UIImage?
@@ -2720,31 +2720,61 @@ private struct CrossfadingBackdrop: View {
                         .id(loadedURL)
                 }
             }
-            // Portrait poster fallbacks must be cropped inside the screen, not
-            // enlarge the root Home layout and let tvOS pan the hero offscreen.
+            // Keep source artwork cropped inside the screen rather than letting
+            // an oversized image expand the Home layout or pan the hero away.
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
         .task(id: url) {
-            guard let url, url != loadedURL, let imageURL = URL(string: url) else {
+            let requestedURL = url?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let requestedURL,
+                  !requestedURL.isEmpty,
+                  let imageURL = URL(string: requestedURL) else {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    imageOpacity = 0
+                    outgoingOpacity = 0
+                }
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                guard !Task.isCancelled else { return }
+                image = nil
+                loadedURL = nil
                 outgoingImage = nil
+                imageOpacity = 1
                 outgoingOpacity = 0
                 return
             }
-            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
-            // Some catalog add-ons (including BetterPosters) only provide a
-            // poster URL. PosterCard uses that same image for its landscape
-            // state, so allow the full-screen aspect-fill to use it as well.
-            // `.task(id:)` cancels when `url` changes, so reaching here means this
-            // URL is still the focused one. Cancellation leaves the old image up.
+
+            if requestedURL == loadedURL {
+                imageOpacity = 1
+                outgoingOpacity = 0
+                outgoingImage = nil
+                return
+            }
+
+            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else {
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    imageOpacity = 0
+                    outgoingOpacity = 0
+                }
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                guard !Task.isCancelled else { return }
+                image = nil
+                loadedURL = nil
+                outgoingImage = nil
+                imageOpacity = 1
+                outgoingOpacity = 0
+                return
+            }
             guard !Task.isCancelled else { return }
+            // Keep the current image visible until the next one is decoded.
             let previousImage = image
             if previousImage != nil {
                 outgoingImage = previousImage
                 outgoingOpacity = 1
             }
             image = loaded
-            loadedURL = url
+            loadedURL = requestedURL
             imageOpacity = previousImage == nil ? 1 : 0
 
             withAnimation(.easeInOut(duration: 0.30)) {
@@ -2753,7 +2783,7 @@ private struct CrossfadingBackdrop: View {
             }
 
             try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled, loadedURL == url else { return }
+            guard !Task.isCancelled, loadedURL == requestedURL else { return }
             outgoingImage = nil
             outgoingOpacity = 0
         }
@@ -3494,12 +3524,15 @@ struct TVScrollViewFocusConfigurator: UIViewRepresentable {
 
 private enum TVHomeProfileFocusTarget: Equatable {
     case card(key: String, sectionID: String, sectionIndex: Int)
+    case homeHero
     case gridHero
 
     var signature: String {
         switch self {
         case .card(let key, let sectionID, let sectionIndex):
             return "card|\(sectionID)|\(sectionIndex)|\(key)"
+        case .homeHero:
+            return "homeHero"
         case .gridHero:
             return "gridHero"
         }
@@ -3643,6 +3676,10 @@ struct TVHomeView: View {
     @State private var isGridHeroFocused = false
     @State private var nativeProfileFocusedCardKey: String?
     @State private var didNativeFocusGridHero = false
+    /// The configured hero is the opening focus target; row focus takes over
+    /// after the first navigation or when restoring a details return.
+    @State private var didRequestInitialHomeHeroFocus = false
+    @State private var didNativeFocusHomeHero = false
     @State private var gridHeroFocusRequestGeneration = 0
     /// Suppress the one focus/layout animation caused by returning to Home from
     /// another tab. Normal left/right focus animations remain enabled.
@@ -3817,7 +3854,20 @@ struct TVHomeView: View {
                             }
                             .equatable()
                             .onChange(of: isHomeHeroFocused) { _, focused in
-                                if focused { focusHomeHeroContext() }
+                                if focused {
+                                    if isProfileFocusPending {
+                                        didNativeFocusHomeHero = true
+                                        reportProfileGateReadiness()
+                                    }
+                                    focusHomeHeroContext()
+                                } else if isProfileFocusPending {
+                                    didNativeFocusHomeHero = false
+                                    reportProfileGateReadiness()
+                                }
+                            }
+                            .onAppear {
+                                guard isActive, detailsDidDisappearGeneration == 0 else { return }
+                                requestInitialHomeHeroFocus()
                             }
                         }
                     }
@@ -4074,7 +4124,9 @@ struct TVHomeView: View {
                 if !suppressReturnFocusAnimations {
                     armReturnFocusAnimationSuppression()
                 }
-                if let lastFocused = store.lastFocusedCardID, focusedCardID == nil {
+                if heroEnabled, homeLayout != "Grid View", visibleHero != nil {
+                    requestInitialHomeHeroFocus()
+                } else if let lastFocused = store.lastFocusedCardID, focusedCardID == nil {
                     pendingInitialFocusCardKey = lastFocused
                     didRequestInitialCardFocus = false
                     didPrepareInitialFocusViewport = false
@@ -4910,7 +4962,10 @@ struct TVHomeView: View {
     }
 
     private var initialDefaultFocusCardID: String? {
-        store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID ?? profileGateStartupFocusTargetCardKey
+        guard !isHomeHeroFocused else { return nil }
+        return store.lastFocusedCardID
+            ?? focusWork.pendingOverlayRestoreCardID
+            ?? profileGateStartupFocusTargetCardKey
     }
 
     private var profileGateStartupFocusTargetCardKey: String? {
@@ -4923,6 +4978,9 @@ struct TVHomeView: View {
     private var profileGateStartupFocusTarget: TVHomeProfileFocusTarget? {
         if homeLayout == "Grid View", heroEnabled, !gridHeroItems.isEmpty {
             return .gridHero
+        }
+        if homeLayout != "Grid View", heroEnabled, visibleHero != nil {
+            return .homeHero
         }
         for (index, section) in visibleSections.enumerated() {
             guard section.hasContent, !section.isLoadingPlaceholder else { continue }
@@ -4999,6 +5057,8 @@ struct TVHomeView: View {
         switch target {
         case .card(let key, _, _):
             return nativeProfileFocusedCardKey == key
+        case .homeHero:
+            return didNativeFocusHomeHero
         case .gridHero:
             return didNativeFocusGridHero
         }
@@ -5042,6 +5102,9 @@ struct TVHomeView: View {
             }
 
             switch target {
+            case .homeHero:
+                TVHomeDebugTrace.log("home.maintainProfileGateFocus setting home hero focus attempt=\(attempt)")
+                requestInitialHomeHeroFocus()
             case .gridHero:
                 TVHomeDebugTrace.log("home.maintainProfileGateFocus setting gridHero focus attempt=\(attempt)")
                 var transaction = Transaction()
@@ -5273,6 +5336,22 @@ struct TVHomeView: View {
         focusedSectionId = nil
         focusedCollectionFolder = nil
         landscapeFocusedId = nil
+    }
+
+    private func requestInitialHomeHeroFocus() {
+        if !didRequestInitialHomeHeroFocus {
+            didRequestInitialHomeHeroFocus = true
+            didRequestInitialCardFocus = true
+            didPrepareInitialFocusViewport = true
+            store.lastFocusedCardID = nil
+            didNativeFocusHomeHero = false
+            nativeProfileFocusedCardKey = nil
+        }
+        pendingInitialFocusCardKey = nil
+        focusedCardID = nil
+        focusedRowIndex = 0
+        focusHomeHeroContext()
+        isHomeHeroFocused = true
     }
 
     private var firstFocusableSectionId: String? {
@@ -6055,14 +6134,16 @@ struct TVHomeView: View {
     }
 
     private var visibleFocusedMeta: NuvioMeta? {
-        guard focusedSectionId != nil,
+        guard !isHomeHeroFocused,
+              focusedSectionId != nil,
               let focusedMeta,
               isVisible(focusedMeta) else { return nil }
         return focusedMeta
     }
 
-    /// Featured titles for configured Home catalogs. Start with one item from
-    /// each catalog for variety, then fill remaining carousel slots in order.
+    /// Featured titles for configured Home catalogs. Prefer real backdrop
+    /// artwork; poster-only entries remain available when a source has no
+    /// backdrop at all.
     private var gridHeroItems: [NuvioMeta] {
         let heroSections = TVHomeHeroSelection.catalogSections(
             in: visibleSections,
@@ -6078,11 +6159,13 @@ struct TVHomeView: View {
         }
 
         for section in heroSections {
-            if let first = section.items.first { appendIfNeeded(first) }
+            if let first = TVHomeHeroSelection.featuredItems(in: section).first {
+                appendIfNeeded(first)
+            }
             if result.count == TVHomeGridLayout.heroPageLimit { return result }
         }
         for section in heroSections {
-            for item in section.items {
+            for item in TVHomeHeroSelection.featuredItems(in: section) {
                 appendIfNeeded(item)
                 if result.count == TVHomeGridLayout.heroPageLimit { return result }
             }
@@ -6099,8 +6182,8 @@ struct TVHomeView: View {
     }
 
     private var homeBackdropURL: String? {
-        // Collection folder focus uses its own hero backdrop (Android Modern
-        // Home parity). Fall back to the focused/hero title poster otherwise.
+        // Home folder focus uses its own backdrop; titles use actual backdrop
+        // artwork and fall back to the configured hero when a title has none.
         if let folder = focusedCollectionFolder {
             return folder.preferredHeroBackdropURLString
                 ?? preferredBackdropURL(for: visibleHero)
@@ -6110,15 +6193,8 @@ struct TVHomeView: View {
 
     private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
         guard let meta else { return nil }
-
-        // Match PosterCard's landscape artwork selection. BetterPosters catalog
-        // entries intentionally contain `poster` without `background`; falling
-        // back here keeps the focused card and the Home backdrop in sync.
-        for candidate in [meta.backgroundUrl, meta.posterUrl] {
-            let url = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !url.isEmpty { return url }
-        }
-        return nil
+        let backdrop = meta.backgroundUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return backdrop.isEmpty ? nil : backdrop
     }
 
     private func isVisible(_ meta: NuvioMeta) -> Bool {
@@ -7637,14 +7713,21 @@ enum TVHomeHeroSelection {
                 guard selectedIDs.contains(section.id) else { continue }
                 matchingSelectionExists = true
             }
-            if let item = section.items.first { return item }
+            if let item = featuredItems(in: section).first { return item }
         }
 
         guard !selectedIDs.isEmpty, !matchingSelectionExists else { return nil }
         for section in sections where isCatalogSection(section) {
-            if let item = section.items.first { return item }
+            if let item = featuredItems(in: section).first { return item }
         }
         return nil
+    }
+
+    static func featuredItems(in section: TVHomeSection) -> [NuvioMeta] {
+        let withBackdrops = section.items.filter {
+            !($0.backgroundUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+        return withBackdrops.isEmpty ? Array(section.items.prefix(1)) : withBackdrops
     }
 
     private static func selectedCatalogIDs(from data: Data) -> Set<String> {
@@ -8960,58 +9043,68 @@ private struct TVHeroView: View {
     }
 
     var body: some View {
-        Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 18) {
-                if let logoUrl = meta.logoUrl {
-                    CachedHeroLogo(url: logoUrl, title: meta.name)
-                } else {
-                    Text(meta.name)
-                        .font(.custom("Inter-Bold", size: 54))
-                        .lineLimit(2)
-                        .foregroundColor(.white)
-                }
-
-                TVHeroMetaLine(meta: meta, episodeLine: episodeLine)
-
-                if let continueItem {
-                    Text(continueItem.isUpNextEntry ? continueItem.upNextBadgeText : continueItem.remainingText.uppercased())
-                        .font(.custom("Inter-SemiBold", size: 22))
-                        .foregroundColor(.white.opacity(0.66))
-                }
-
-                if let description = heroDescription {
-                    Text(description.wrappedEveryNWords(9))
-                        .font(.custom("Inter-Regular", size: 24))
-                        .foregroundColor(.white)
-                        .lineSpacing(3)
-                        .lineLimit(4)
-                        .frame(maxWidth: 900, alignment: .leading)
-                        .padding(.top, 4)
-                }
-
-                if hasCatalogTitle, let catalogTitle {
-                    TVHeroCatalogTitleView(
-                        title: catalogTitle,
-                        addonName: catalogAddonName,
-                        showAddonName: showsCatalogAddonName
-                    )
-                }
+        VStack(alignment: .leading, spacing: 18) {
+            if let logoUrl = meta.logoUrl {
+                CachedHeroLogo(url: logoUrl, title: meta.name)
+            } else {
+                Text(meta.name)
+                    .font(.custom("Inter-Bold", size: 54))
+                    .lineLimit(2)
+                    .foregroundColor(.white)
             }
-            .foregroundColor(.white)
-            .padding(.leading, TVLayout.rowLeading)
-            .padding(.top, homeLayout == "Compact" ? 82 : 140)
-            .padding(.bottom, TVHomeLayout.heroBottomPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: heroHeight, alignment: .bottomLeading)
-            .contentShape(Rectangle())
+
+            TVHeroMetaLine(meta: meta, episodeLine: episodeLine)
+
+            if let continueItem {
+                Text(continueItem.isUpNextEntry ? continueItem.upNextBadgeText : continueItem.remainingText.uppercased())
+                    .font(.custom("Inter-SemiBold", size: 22))
+                    .foregroundColor(.white.opacity(0.66))
+            }
+
+            if let description = heroDescription {
+                Text(description.wrappedEveryNWords(9))
+                    .font(.custom("Inter-Regular", size: 24))
+                    .foregroundColor(.white)
+                    .lineSpacing(3)
+                    .lineLimit(4)
+                    .frame(maxWidth: 900, alignment: .leading)
+                    .padding(.top, 4)
+            }
+
+            if hasCatalogTitle, let catalogTitle {
+                TVHeroCatalogTitleView(
+                    title: catalogTitle,
+                    addonName: catalogAddonName,
+                    showAddonName: showsCatalogAddonName
+                )
+            }
+
+            Button(action: onSelect) {
+                Label(
+                    L10n.string("tvos_hero_more_info", fallback: "More Info"),
+                    systemImage: "info.circle.fill"
+                )
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 24)
+                .frame(height: 56)
+                .background(.white.opacity(isFocused ? 0.22 : 0.14), in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.30), lineWidth: 1))
+            }
+            .buttonStyle(PosterCardButtonStyle())
+            .focused($focusBinding)
+            .focusEffectDisabledIfAvailable()
+            .scaleEffect(isFocused ? 1.05 : 1)
+            .animation(.easeInOut(duration: 0.18), value: isFocused)
+            .accessibilityLabel("Featured \(meta.name)")
+            .accessibilityHint("Select to open details")
         }
-        .buttonStyle(.plain)
-        .focused($focusBinding)
-        .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.015 : 1)
-        .animation(.easeInOut(duration: 0.18), value: isFocused)
-        .accessibilityLabel("Featured \(meta.name)")
-        .accessibilityHint("Select to open details")
+        .foregroundColor(.white)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.top, homeLayout == "Compact" ? 82 : 140)
+        .padding(.bottom, TVHomeLayout.heroBottomPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: heroHeight, alignment: .bottomLeading)
     }
 
     /// "S1 E3 · Title" for the episode in progress; nil for movies or when the
@@ -9087,7 +9180,7 @@ private struct TVGridHeroSlideshowView: View {
 
         ZStack {
             CrossfadingBackdrop(
-                url: item.backgroundUrl ?? item.posterUrl,
+                url: item.backgroundUrl,
                 placeholder: background,
                 alignment: .top
             )

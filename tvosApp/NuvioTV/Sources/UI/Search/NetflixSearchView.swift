@@ -4,9 +4,9 @@ import SwiftUI
 /// Wired to the same `CatalogRepository` search use case as
 /// `SearchView` via `NetflixSearchViewModel`.
 ///
-/// Text entry uses the same tvOS `.searchable` host as Native search, so
-/// Netflix gets the identical full-size linear keyboard, 123/space/delete
-/// controls, and Siri dictation while retaining its own result layout.
+/// Text entry uses a glass-styled focus target backed by the native tvOS
+/// keyboard, including system dictation. tvOS does not let apps capture the
+/// Siri button globally; dictation is available while the Search field is active.
 ///
 /// Reuses `PosterGridCard`, `GlassChip`, `GlassCapsule`,
 /// `GlassChipBackground`, `PosterCardButtonStyle`, `DiscoverSection`,
@@ -41,6 +41,8 @@ struct NetflixSearchView: View {
     @FocusState private var focusedTypeFilterID: String?
     @FocusState private var clearRecentFocused: Bool
     @FocusState private var focusedRecentSearchID: String?
+    @FocusState private var searchFieldFocused: Bool
+    @FocusState private var clearSearchFocused: Bool
     /// Same overlay-restore dance as `SearchView`: Details is a sibling
     /// overlay (not a navigation push), so returning from it needs to
     /// re-place focus geometrically instead of snapping to the first result.
@@ -54,8 +56,8 @@ struct NetflixSearchView: View {
     @State private var suppressOverlayDismissalExit = false
     @State private var resultsScrollTopGeneration = 0
     @State private var discoverOverlayTransitionActive = false
-    /// Match Native search: the tvOS keyboard stays mounted for focus
-    /// restoration but collapses while browsing results.
+    /// Recent searches and type filters remain in the search context until a
+    /// result takes focus; the text field itself stays visible throughout.
     @State private var searchPresented = true
     @State private var resultFocusGeneration = 0
     @Environment(\.isEnabled) private var isEnabled
@@ -90,6 +92,9 @@ struct NetflixSearchView: View {
         }
         .onExitCommand(perform: canHandleExitCommand ? handleExitCommand : nil)
         .onChange(of: focusedItemID) { _, newValue in
+            if newValue != nil {
+                searchFieldFocused = false
+            }
             resultFocusGeneration &+= 1
             if let newValue {
                 withAnimation(.easeInOut(duration: 0.22)) {
@@ -109,13 +114,18 @@ struct NetflixSearchView: View {
                 scheduleRestoreArm()
             }
         }
+        .onChange(of: searchFieldFocused) { _, focused in
+            if focused {
+                searchPresented = true
+            }
+        }
         .onChange(of: focusedTypeFilterID) { _, newValue in
             guard newValue != nil,
                   focusedItemID == nil,
                   isEnabled,
                   overlayRestoreItemID == nil,
                   !overlayFocusRestorationActive else { return }
-            showKeyboard()
+            showSearchContext()
         }
         .onChange(of: isEnabled) { _, enabled in
             if !enabled {
@@ -136,13 +146,7 @@ struct NetflixSearchView: View {
 
     private var linearBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            NativeSearchKeyboardHost(
-                text: $viewModel.searchText,
-                prompt: L10n.string("search_placeholder", fallback: "Search movies & series"),
-                isPresented: $searchPresented,
-                isDisabled: overlayRestoreItemID != nil || discoverOverlayTransitionActive,
-                topPadding: 56
-            )
+            searchField
 
             VStack(alignment: .leading, spacing: 20) {
                 if viewModel.hasQuery {
@@ -165,13 +169,13 @@ struct NetflixSearchView: View {
                                 }
                             },
                             onFilterFocus: {
-                                showKeyboard()
+                                showSearchContext()
                             },
                             onFocusExit: {
                                 guard isEnabled,
                                       !discoverOverlayTransitionActive,
                                       focusedRecentSearchID == nil else { return }
-                                showKeyboard()
+                                showSearchContext()
                             },
                             parentTransitionActive: $discoverOverlayTransitionActive
                         )
@@ -193,6 +197,54 @@ struct NetflixSearchView: View {
             .padding(.top, 16)
             .ignoresSafeArea(.container, edges: .bottom)
         }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundColor(.white.opacity(0.65))
+
+            NetflixSearchTextEntry(
+                text: $viewModel.searchText,
+                prompt: L10n.string("search_placeholder", fallback: "Search movies & series"),
+                focused: $searchFieldFocused,
+                onEditingChanged: { isEditing in
+                    if isEditing {
+                        searchPresented = true
+                    } else {
+                        viewModel.commitCurrentSearch()
+                        searchPresented = false
+                    }
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !viewModel.searchText.isEmpty {
+                Button {
+                    viewModel.clear()
+                    searchPresented = true
+                    searchFieldFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundColor(.white.opacity(0.65))
+                }
+                .buttonStyle(PosterCardButtonStyle())
+                .focused($clearSearchFocused)
+                .focusEffectDisabledIfAvailable()
+                .scaleEffect(clearSearchFocused ? 1.08 : 1)
+                .animation(.easeOut(duration: 0.14), value: clearSearchFocused)
+                .accessibilityLabel(L10n.string("action_clear", fallback: "Clear"))
+            }
+        }
+        .padding(.horizontal, 32)
+        .frame(height: 78)
+        .modifier(GlassCapsule(focused: searchFieldFocused || clearSearchFocused))
+        .padding(.horizontal, NetflixSearchMetrics.pageInset)
+        .padding(.top, 56)
+        .disabled(overlayRestoreItemID != nil || discoverOverlayTransitionActive)
+        .focusSection()
     }
 
     private func scheduleRestoreArm() {
@@ -219,7 +271,7 @@ struct NetflixSearchView: View {
         // transition before placing focus back on the saved result.
         resultFocusGeneration &+= 1
         overlayFocusRestorationActive = true
-        searchPresented = false
+        searchFieldFocused = false
         for delay in [0.06, 0.12, 0.45] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if overlayRestoreGeneration == generation, overlayRestoreItemID == target {
@@ -266,8 +318,8 @@ struct NetflixSearchView: View {
     /// Back on search behaves like Discover: leave the keyboard collapsed and
     /// return the results columns to their top edge.
     private func returnToResultsTop() {
+        searchFieldFocused = false
         searchPresented = false
-        resultsScrollTopGeneration &+= 1
         guard let first = visibleResults.first else {
             focusedItemID = nil
             return
@@ -276,8 +328,8 @@ struct NetflixSearchView: View {
         focusedItemID = "\(prefix)\(first.id)"
     }
 
-    /// Re-expands the shared Native search host after focus leaves results.
-    private func showKeyboard() {
+    /// Re-enters the search context after focus leaves results.
+    private func showSearchContext() {
         guard isEnabled,
               overlayRestoreItemID == nil,
               !overlayFocusRestorationActive else { return }
@@ -291,13 +343,13 @@ struct NetflixSearchView: View {
     /// then land on the All filter as the intermediate focus stop.
     private func transferFirstRowFocusToAllFilter() {
         guard let sourceFocusID = focusedItemID else {
-            showKeyboard()
+            showSearchContext()
             return
         }
 
         resultFocusGeneration &+= 1
         let generation = resultFocusGeneration
-        showKeyboard()
+        showSearchContext()
 
         // Claim the current card again so this Up press cannot also open the
         // adaptive tab sidebar/menu. This mirrors the app's grid-hero focus guard.
@@ -321,13 +373,13 @@ struct NetflixSearchView: View {
     /// keyboard on the next focus pass so the adaptive sidebar cannot win.
     private func transferTypeFilterFocusToKeyboard() {
         guard let sourceFocusID = focusedTypeFilterID else {
-            showKeyboard()
+            showSearchContext()
             return
         }
 
         resultFocusGeneration &+= 1
         let generation = resultFocusGeneration
-        showKeyboard()
+        showSearchContext()
 
         focusedTypeFilterID = sourceFocusID
         DispatchQueue.main.async {
@@ -340,6 +392,7 @@ struct NetflixSearchView: View {
                       isEnabled,
                       focusedTypeFilterID == sourceFocusID else { return }
                 focusedTypeFilterID = nil
+                searchFieldFocused = true
             }
         }
     }
@@ -347,13 +400,14 @@ struct NetflixSearchView: View {
     private func transferRecentRowFocusToKeyboard() {
         resultFocusGeneration &+= 1
         let generation = resultFocusGeneration
-        showKeyboard()
+        showSearchContext()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             guard resultFocusGeneration == generation,
                   searchPresented,
                   isEnabled else { return }
             focusedRecentSearchID = nil
+            searchFieldFocused = true
             clearRecentFocused = false
         }
     }
@@ -592,6 +646,8 @@ struct NetflixSearchView: View {
                             focusValue: "recent:\(term)"
                         ) {
                             viewModel.applyRecent(term)
+                            searchPresented = false
+                            searchFieldFocused = false
                         }
                     }
 
@@ -653,5 +709,54 @@ struct NetflixSearchView: View {
             }
         }
         .frame(maxWidth: 700)
+    }
+}
+
+/// Glass-styled focus target backed by the system tvOS text keyboard. Keeping
+/// the actual UITextField off-screen avoids the native white TextField platter;
+/// the focused button remains the visible, Siri Remote-selectable control.
+private struct NetflixSearchTextEntry: View {
+    @Binding var text: String
+    let prompt: String
+    @FocusState.Binding var focused: Bool
+    let onEditingChanged: (Bool) -> Void
+    @State private var isEditing = false
+
+    var body: some View {
+        Button {
+            isEditing = true
+        } label: {
+            ZStack(alignment: .leading) {
+                HiddenLoginTextField(text: $text, isEditing: $isEditing)
+                    .frame(width: 1, height: 1)
+                    .offset(x: -4_000)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
+                Text(text.isEmpty ? prompt : text)
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundColor(text.isEmpty ? .white.opacity(0.62) : .white)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focused)
+        .focusEffectDisabledIfAvailable()
+        .accessibilityLabel(prompt)
+        .accessibilityValue(text)
+        .accessibilityHint(L10n.string("tvos_search_start_hint", fallback: "Select to enter a search"))
+        .accessibilityIdentifier("tvos.search.query")
+        .onChange(of: focused) { _, isFocused in
+            if isFocused, !isEditing {
+                isEditing = true
+            }
+        }
+        .onChange(of: isEditing) { _, editing in
+            onEditingChanged(editing)
+        }
     }
 }

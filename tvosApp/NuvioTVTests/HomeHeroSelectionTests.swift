@@ -44,6 +44,35 @@ final class HomeHeroSelectionTests: XCTestCase {
         )
     }
 
+    func testFeaturedTitlePrefersBackdropArtworkWithinConfiguredCatalog() throws {
+        let posterOnly = NuvioMeta(
+            id: "poster-only",
+            name: "Poster only",
+            posterUrl: "https://example.com/poster.jpg",
+            type: "movie"
+        )
+        let backdrop = NuvioMeta(
+            id: "with-backdrop",
+            name: "Backdrop title",
+            backgroundUrl: "https://example.com/backdrop.jpg",
+            type: "movie"
+        )
+        let section = TVHomeSection(
+            id: "catalog",
+            title: "Catalog",
+            items: [posterOnly, backdrop]
+        )
+
+        XCTAssertEqual(
+            TVHomeHeroSelection.featuredTitle(in: [section], selectionData: Data())?.id,
+            "with-backdrop"
+        )
+        XCTAssertEqual(
+            TVHomeHeroSelection.featuredItems(in: section).map(\.id),
+            ["with-backdrop"]
+        )
+    }
+
     private func section(_ id: String, title: String, itemId: String) -> TVHomeSection {
         TVHomeSection(
             id: id,

@@ -3,8 +3,8 @@ import Combine
 
 /// Netflix-style alternative to `SearchViewModel`. Same catalog search use
 /// case (`CatalogRepository.search(query:)`) and the same debounce/cache/
-/// recent-search shape. Its `searchText` binding is shared directly with the
-/// tvOS `.searchable` host used by `NetflixSearchView`.
+/// recent-search shape. Its `searchText` binding is shared with the glass
+/// Search entry and the system tvOS keyboard used by `NetflixSearchView`.
 @MainActor
 class NetflixSearchViewModel: ObservableObject {
     @Published var searchText = ""

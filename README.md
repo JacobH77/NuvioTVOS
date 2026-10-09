@@ -135,7 +135,7 @@ The original shared mobile code is still present in [composeApp](./composeApp), 
 - Continue Watching remains a separate Home row and persisted store; it does not share Watchlist entries.
 - Watchlist data persists per profile and syncs through the selected library source. Completed movies are removed; a series stays until all aired regular episodes in its loaded guide are watched.
 - Search defaults to a Nuvio-styled Cinematic layout with responsive results and Siri Remote focus navigation.
-- Search uses the native tvOS [`searchable`](https://developer.apple.com/documentation/swiftui/view/searchable(text:placement:prompt:)) field and keyboard dictation. tvOS does not expose app-wide Siri-button interception, and App Intents [`searchInApp`](https://developer.apple.com/documentation/appintents/appschema/systemintent/searchinapp) is unavailable on tvOS; voice dictation begins after opening the Search field.
+- The Cinematic search field uses Nuvio's glass focus treatment with the native tvOS keyboard and system dictation. tvOS does not expose app-wide Siri-button interception; dictation requires the Search field to be active.
 - Catalog and metadata repository with configurable catalog, playback, and subtitle integrations.
 - User-configurable source integrations in Settings → Integrations → Add-ons.
 - Cloud library playback through supported connected services.
