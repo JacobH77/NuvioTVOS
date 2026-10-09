@@ -172,6 +172,27 @@ final class HomeHeroPresentationTests: XCTestCase {
         }
     }
 
+    func testFeaturedHeroHonorsFocusRequestWhenItIsRemounted() {
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: false,
+                focusRequestGeneration: 1
+            )
+        )
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: true,
+                focusRequestGeneration: 0
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: false,
+                focusRequestGeneration: 0
+            )
+        )
+    }
+
     func testGridBackdropStaysHiddenUntilAContentTitleIsFocused() {
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedArtwork(

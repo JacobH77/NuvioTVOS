@@ -2782,6 +2782,14 @@ private struct CrossfadingBackdrop: View {
             let requestedContentIdentity = contentIdentity
             let primary = resolvedURL(from: url)
             let fallback = resolvedURL(from: fallbackURL)
+            let logIdentity = requestedContentIdentity ?? "none"
+            let primaryHost = primary?.host ?? "none"
+            let fallbackHost = fallback?.host ?? "none"
+
+            TVHomeDebugTrace.log(
+                "backdrop.request identity=\(logIdentity) "
+                    + "primaryHost=\(primaryHost) fallbackHost=\(fallbackHost)"
+            )
 
             if imageContentIdentity != requestedContentIdentity {
                 image = nil
@@ -2802,6 +2810,7 @@ private struct CrossfadingBackdrop: View {
             }
 
             guard primary != nil || fallback != nil else {
+                TVHomeDebugTrace.log("backdrop.skip no usable artwork URL identity=\(logIdentity)")
                 image = nil
                 imageContentIdentity = nil
                 loadedRequestKey = nil
@@ -2823,7 +2832,20 @@ private struct CrossfadingBackdrop: View {
             }
             guard let loaded = loadedImage,
                   !Task.isCancelled,
-                  requestKey == self.requestKey else { return }
+                  requestKey == self.requestKey else {
+                if !Task.isCancelled {
+                    TVHomeDebugTrace.log(
+                        "backdrop.failed identity=\(logIdentity) "
+                            + "primaryHost=\(primaryHost) fallbackHost=\(fallbackHost)"
+                    )
+                }
+                return
+            }
+
+            TVHomeDebugTrace.log(
+                "backdrop.loaded identity=\(logIdentity) "
+                    + "size=\(loaded.size.width)x\(loaded.size.height)"
+            )
 
             let previousImage = image
             if let previousImage,
@@ -9574,8 +9596,13 @@ private struct TVGridHeroSlideshowView: View {
         .contentShape(Rectangle())
         .onAppear {
             reconcileSelection()
-            guard shouldRequestInitialFocus else { return }
-            onInitialFocusRequested()
+            guard TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: shouldRequestInitialFocus,
+                focusRequestGeneration: focusRequestGeneration
+            ) else { return }
+            if shouldRequestInitialFocus {
+                onInitialFocusRequested()
+            }
             DispatchQueue.main.async { focusedAction = .play }
         }
         .onChange(of: focusRequestGeneration) { _, _ in
