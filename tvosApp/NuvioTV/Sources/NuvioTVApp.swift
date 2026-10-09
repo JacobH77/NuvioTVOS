@@ -4235,11 +4235,7 @@ struct TVHomeView: View {
                                             var transaction = Transaction(animation: nil)
                                             transaction.disablesAnimations = true
                                             withTransaction(transaction) {
-                                                if focusedRowIndex == 0, heroEnabled, !gridHeroItems.isEmpty {
-                                                    verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
-                                                } else {
-                                                    verticalScrollProxy.scrollTo(sectionID, anchor: .top)
-                                                }
+                                                verticalScrollProxy.scrollTo(sectionID, anchor: .top)
                                             }
                                         }
                                     }
@@ -4768,7 +4764,7 @@ struct TVHomeView: View {
                                         }
                                         focusedRowIndex = index
                                         if index == 0, heroEnabled, !heroItems.isEmpty {
-                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
+                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                         }
                                         focusedSectionId = section.id
                                         focusedCardID = cardKey
@@ -4818,7 +4814,7 @@ struct TVHomeView: View {
                                         }
                                         focusedRowIndex = index
                                         if index == 0, heroEnabled, !heroItems.isEmpty {
-                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
+                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                         }
                                         focusedSectionId = section.id
                                         focusedCardID = cardKey
@@ -4889,7 +4885,7 @@ struct TVHomeView: View {
                                         }
                                         focusedRowIndex = index
                                         if index == 0, heroEnabled, !heroItems.isEmpty {
-                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
+                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                         }
                                         focusedSectionId = section.id
                                         focusedCardID = cardKey
@@ -4912,7 +4908,7 @@ struct TVHomeView: View {
                                         acknowledgeNativeProfileCardFocus(cardKey)
                                         focusedRowIndex = index
                                         if index == 0, heroEnabled, !heroItems.isEmpty {
-                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
+                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                         }
                                         focusedSectionId = section.id
                                         focusedCardID = cardKey
@@ -5361,10 +5357,10 @@ struct TVHomeView: View {
                     withTransaction(transaction) {
                         if homeLayout == "Grid View", sectionIndex == 0,
                            heroEnabled, !gridHeroItems.isEmpty {
-                            proxy.scrollTo("home-grid-hero-top", anchor: .top)
+                            proxy.scrollTo(sectionID, anchor: .top)
                         } else if homeLayout != "Grid View", sectionIndex == 0,
                                   heroEnabled, !gridHeroItems.isEmpty {
-                            proxy.scrollTo("featured-home-hero", anchor: .top)
+                            proxy.scrollTo(sectionID, anchor: .top)
                         } else {
                             proxy.scrollTo(sectionID, anchor: .top)
                         }
@@ -5703,7 +5699,7 @@ struct TVHomeView: View {
                         var transaction = Transaction(animation: nil)
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
-                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
+                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                         }
                     } else if changedRow {
                         focusedRowIndex = index
@@ -5772,7 +5768,7 @@ struct TVHomeView: View {
                         var transaction = Transaction(animation: nil)
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
-                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
+                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                         }
                     } else if changedRow {
                         focusedRowIndex = index
@@ -5871,7 +5867,7 @@ struct TVHomeView: View {
                         var transaction = Transaction(animation: nil)
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
-                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
+                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
                         }
                     } else if changedRow {
                         focusedRowIndex = index
