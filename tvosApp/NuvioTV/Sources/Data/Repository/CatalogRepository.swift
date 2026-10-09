@@ -911,6 +911,48 @@ final class CinemetaCatalogRepository: CatalogRepository {
         return try await loadMetadata(id: id, type: type, cachedIsSeriesHint: cached?.isSeries)
     }
 
+    /// Fetches a title's hero artwork from Cinemeta itself, bypassing add-on
+    /// metadata endpoints. Some catalog add-ons return valid title metadata
+    /// with a backdrop copied from another catalog item, so they cannot be
+    /// treated as the canonical artwork source for Home.
+    func getCanonicalHeroMetadata(id: String, type: String) async throws -> NuvioMeta? {
+        let metaType = Self.isSeriesType(type) ? "series" : "movie"
+        var imdbID = NuvioMeta.canonicalImdbID(from: id)
+        if imdbID == nil,
+           id.hasPrefix("tmdb:"),
+           let tmdbID = Int(id.dropFirst("tmdb:".count)) {
+            imdbID = await Self.resolveImdbFromTmdb(tmdbId: tmdbID, type: metaType)
+        }
+        if imdbID == nil, id.hasPrefix("simkl:") {
+            imdbID = await SimklDetailsService.resolveImdbID(
+                simklID: String(id.dropFirst("simkl:".count)),
+                type: metaType
+            )
+        }
+        guard let imdbID else { return nil }
+        for candidateType in Self.cinemetaMetadataTypesToTry(
+            primaryType: metaType,
+            canonicalImdbID: imdbID
+        ) {
+            let url = baseURL
+                .appendingPathComponent("meta")
+                .appendingPathComponent(candidateType)
+                .appendingPathComponent("\(imdbID).json")
+            let response: CinemetaMetaResponse
+            do {
+                response = try await fetch(url)
+            } catch {
+                continue
+            }
+            let rawMeta = response.meta.toMeta(fallbackType: candidateType)
+            guard NuvioMeta.canonicalImdbID(from: rawMeta.imdbId ?? rawMeta.id) == imdbID else {
+                continue
+            }
+            return await TmdbDetailsService.localizedMetadata(for: rawMeta)
+        }
+        return nil
+    }
+
     func refreshMetadata(id: String, type: String) async throws -> NuvioMeta {
         if let jellyfinMeta = await JellyfinLibraryIndex.shared.meta(forContentId: id) {
             return jellyfinMeta

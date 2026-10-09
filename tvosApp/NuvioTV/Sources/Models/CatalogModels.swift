@@ -303,6 +303,15 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
         return !hasRuntime || (isSeries && !hasStatus) || !hasLogo || !hasBackdrop
     }
 
+    /// Home can refresh artwork from Cinemeta for standard provider IDs. Add-on
+    /// catalog backdrops are sometimes attached to the wrong title, so Home
+    /// gives the canonical metadata backdrop priority after that lookup.
+    var supportsCanonicalHeroArtworkRefresh: Bool {
+        NuvioMeta.canonicalImdbID(from: imdbId ?? id) != nil
+            || id.hasPrefix("tmdb:")
+            || id.hasPrefix("simkl:")
+    }
+
     /// Search records also need both external identifiers so watched-state
     /// matching can resolve the same title as Discovery.
     var needsSearchMetadataEnrichment: Bool {
@@ -353,6 +362,51 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
             externalRatings: externalRatings,
             posterShape: posterShape ?? fullMeta.posterShape
         )
+    }
+
+    /// Merge the usual missing Home metadata, while preferring a refreshed
+    /// canonical backdrop when the catalog supplied artwork for another title.
+    func mergingHomeHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
+        guard hasSameMediaIdentity(as: fullMeta) else { return self }
+        let merged = fillingMissingHeroMetadata(from: fullMeta)
+        guard let canonicalBackdrop = fullMeta.backgroundUrl?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !canonicalBackdrop.isEmpty else { return merged }
+        return merged.withBackgroundURL(canonicalBackdrop)
+    }
+
+    /// A Home artwork refresh may use a different provider ID for the same
+    /// title, but it must never merge metadata from another title or media type.
+    func hasSameMediaIdentity(as other: NuvioMeta) -> Bool {
+        func mediaKind(_ meta: NuvioMeta) -> String {
+            if NuvioMeta.isSeriesType(meta.type) { return "series" }
+            let type = meta.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["movie", "film", "films"].contains(type) { return "movie" }
+            return meta.videos?.isEmpty == false ? "series" : type
+        }
+        guard mediaKind(self) == mediaKind(other) else { return false }
+
+        func keys(for meta: NuvioMeta) -> Set<String> {
+            var result = Set<String>()
+            for rawID in [meta.id, meta.imdbId].compactMap({ $0 }) {
+                let value = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !value.isEmpty else { continue }
+                result.insert("id:\(value)")
+                if let imdbID = NuvioMeta.canonicalImdbID(from: rawID) {
+                    result.insert("imdb:\(imdbID)")
+                }
+                if value.hasPrefix("tmdb:"),
+                   let tmdbID = Int(value.dropFirst("tmdb:".count)) {
+                    result.insert("tmdb:\(tmdbID)")
+                }
+            }
+            if let tmdbId = meta.tmdbId {
+                result.insert("tmdb:\(tmdbId)")
+            }
+            return result
+        }
+
+        return !keys(for: self).isDisjoint(with: keys(for: other))
     }
 
     /// Search-specific merge for a compact result and its refreshed `/meta`
@@ -505,6 +559,37 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
             released: released,
             status: status,
             videos: videosToUse,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings,
+            posterShape: posterShape
+        )
+    }
+
+    private func withBackgroundURL(_ backgroundURL: String) -> NuvioMeta {
+        NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: posterUrl,
+            backgroundUrl: backgroundURL,
+            logoUrl: logoUrl,
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            type: type,
+            year: year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: runtime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification,
+            country: country,
+            language: language,
+            released: released,
+            status: status,
+            videos: videos,
             trailerYtIds: trailerYtIds,
             externalRatings: externalRatings,
             posterShape: posterShape
@@ -5837,6 +5922,7 @@ enum WatchedStore {
             return !episodeKeys.contains(String(season) + ":" + String(episode))
         }
         guard persist(updated) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
 
         clearTombstone(meta: meta, season: nil, episode: nil)
         for item in episodeItems {
@@ -6022,6 +6108,7 @@ enum WatchedStore {
             )
         }
         guard persist(isWatched ? written + untouched : untouched) else { return false }
+        if isWatched { removeCompletedTitleFromWatchlist(meta) }
 
         for episode in episodeNumbers.sorted() {
             if isWatched {
@@ -6180,6 +6267,7 @@ enum WatchedStore {
         }
 
         guard persist(written + untouched) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
 
         for item in written {
             guard let s = item.season, let ep = item.episode else { continue }
@@ -6246,6 +6334,39 @@ enum WatchedStore {
         _ = persist(updated)
     }
 
+    /// Watchlist entries stay until the movie or all aired regular episodes
+    /// are complete. Resolve compact series metadata before making that decision.
+    private static func removeCompletedTitleFromWatchlist(_ meta: NuvioMeta) {
+        let profileID = activeProfileId
+        let source = TraktSettingsStore.librarySourceMode
+        Task { @MainActor in
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID else { return }
+            var resolved = meta
+            if meta.isSeries, !contains(meta: meta), meta.videos == nil || meta.videos?.isEmpty == true {
+                guard let full = try? await CinemetaCatalogRepository().getMetadata(id: meta.id, type: meta.type) else { return }
+                resolved = full
+            }
+            // The user can switch profiles or undo a watched mark while the
+            // episode guide loads. Recheck both before touching any watchlist.
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID,
+                  TraktSettingsStore.librarySourceMode == source else { return }
+            let completed = contains(meta: resolved)
+                || (resolved.isSeries && hasSeriesWatchedState(resolved))
+            guard completed else { return }
+            if LibraryStore.contains(metaId: meta.id, type: meta.type) {
+                LibraryStore.remove(metaId: meta.id, type: meta.type)
+            }
+            if SelectedLibraryService.isSelectedAndAuthenticated {
+                let removed = await SelectedLibraryService.setWatchlist(meta, isInWatchlist: false)
+                if removed, activeProfileId == profileID {
+                    NotificationCenter.default.post(name: TraktSettingsStore.libraryChangedNotification, object: nil)
+                }
+            }
+        }
+    }
+
     @discardableResult
     static func markWatched(_ meta: NuvioMeta, season: Int? = nil, episode: Int? = nil) -> Bool {
         print("[WatchedStore] markWatched called: meta=\(meta.id), S\(season.map(String.init) ?? "nil")E\(episode.map(String.init) ?? "nil")")
@@ -6263,6 +6384,7 @@ enum WatchedStore {
                 && $0.season == season && $0.episode == episode)
         }
         guard persist(updated) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
         // The mark is durable now, so it is safe to cancel any pending remote
         // delete. A failed watched-list write must leave that protection intact.
         clearTombstone(meta: meta, season: season, episode: episode)

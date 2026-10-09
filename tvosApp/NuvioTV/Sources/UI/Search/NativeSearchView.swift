@@ -94,11 +94,11 @@ private enum NativeSearchGridMetrics {
     static let linearColumnCount: CGFloat = 7
     static let linearCardRowWidth = linearPosterWidth * linearColumnCount + linearPosterGap * (linearColumnCount - 1)
 
-    // Grid layout metrics (4 columns beside the keyboard)
+    // Five original-size columns beside the keyboard
     static let gridPosterWidth: CGFloat = 210
     static let gridPosterHeight: CGFloat = 315
     static let gridPosterGap: CGFloat = 28
-    static let gridColumnCount: CGFloat = 4
+    static let gridColumnCount: CGFloat = 5
     static let gridCardRowWidth = gridPosterWidth * gridColumnCount + gridPosterGap * (gridColumnCount - 1)
 
     static let keyboardWidth: CGFloat = 520
@@ -125,7 +125,7 @@ struct NativeSearchView: View {
     let onContentClick: (String, String) -> Void
     var onLongPress: ((NuvioMeta) -> Void)? = nil
 
-    @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
+    @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .grid
 
     @FocusState private var focusedResultID: String?
     @FocusState private var clearRecentFocused: Bool
@@ -138,6 +138,7 @@ struct NativeSearchView: View {
     @State private var overlayFocusRestorationActive = false
     @State private var suppressOverlayDismissalExit = false
     @State private var resultsScrollTopGeneration = 0
+    @State private var gridAvailableWidth = NativeSearchGridMetrics.gridCardRowWidth
     @State private var nativeGridColumnCount = Int(NativeSearchGridMetrics.linearColumnCount)
     @State private var discoverOverlayTransitionActive = false
     /// Controls the native `.searchable` keyboard visibility in Linear mode.
@@ -343,6 +344,8 @@ struct NativeSearchView: View {
                         DiscoverSection(
                             onContentClick: onContentClick,
                             isBesideKeyboard: true,
+                            columnCount: 5,
+                            cardWidth: gridResultCardWidth,
                             onLongPress: onLongPress,
                             parentTransitionActive: $discoverOverlayTransitionActive
                         )
@@ -360,9 +363,16 @@ struct NativeSearchView: View {
                     }
                 }
             }
-            .frame(maxWidth: viewModel.hasQuery
-                ? NativeSearchGridMetrics.gridCardRowWidth + (NativeSearchGridMetrics.gridContentInset * 2)
-                : 210 * 5 + 24 * 4 + 24, alignment: .leading)
+            .frame(maxWidth: NativeSearchGridMetrics.gridCardRowWidth + (NativeSearchGridMetrics.gridContentInset * 2), alignment: .leading)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { updateNativeGridColumnCount(for: geometry.size.width) }
+                        .onChange(of: geometry.size.width) { _, width in
+                            updateNativeGridColumnCount(for: width)
+                        }
+                }
+            }
             .padding(.top, 24)
             .ignoresSafeArea(.container, edges: .bottom)
         }
@@ -381,7 +391,7 @@ struct NativeSearchView: View {
                   focusedResultID == nil,
                   isEnabled,
                   overlayRestoreResultID == nil,
-                  effectiveLayoutMode == .grid || !searchPresented,
+                  effectiveLayoutMode == .linear && !searchPresented,
                   !overlayFocusRestorationActive else { return }
             shouldRestoreResultFocus = true
         }
@@ -416,6 +426,8 @@ struct NativeSearchView: View {
     }
 
     private func transferFocusToGridKeyboard() {
+        restoreArmTask?.cancel()
+        shouldRestoreResultFocus = false
         focusedResultID = nil
         clearRecentFocused = false
     }
@@ -491,7 +503,8 @@ struct NativeSearchView: View {
                     .foregroundColor(.white.opacity(0.5))
             }
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: isGridMode ? nil : width, alignment: .leading)
+        .frame(maxWidth: isGridMode ? width : nil, alignment: .leading)
         .onMoveCommand { direction in
             if isGridMode {
                 if direction == .left {
@@ -567,7 +580,7 @@ struct NativeSearchView: View {
 
     private func resultsGrid(isGridMode: Bool) -> some View {
         let cols = isGridMode ? gridModeColumns : linearModeColumns
-        let colCount = isGridMode ? Int(NativeSearchGridMetrics.gridColumnCount) : nativeGridColumnCount
+        let colCount = isGridMode ? 5 : nativeGridColumnCount
 
         return ScrollViewReader { proxy in
             ScrollView {
@@ -579,15 +592,15 @@ struct NativeSearchView: View {
                     ForEach(Array(visibleResults.enumerated()), id: \.element.id) { index, item in
                         PosterGridCard(
                             meta: item,
-                            width: NativeSearchGridMetrics.linearPosterWidth,
-                            height: NativeSearchGridMetrics.linearPosterHeight,
+                            width: isGridMode ? gridResultCardWidth : NativeSearchGridMetrics.linearPosterWidth,
+                            height: isGridMode ? gridResultCardWidth * 1.5 : NativeSearchGridMetrics.linearPosterHeight,
                             externalFocus: $focusedResultID,
                             retainFocusAppearance: overlayRestoreResultID == item.id,
                             onLongPress: onLongPress.map { cb in { cb(item) } },
                             forceShowLabels: true,
                             onMove: { direction in
                                 if isGridMode {
-                                    if index % 4 == 0, direction == .left {
+                                    if index % colCount == 0, direction == .left {
                                         transferFocusToGridKeyboard()
                                     }
                                 } else {
@@ -618,14 +631,12 @@ struct NativeSearchView: View {
                 }
             }
             .background {
-                if !isGridMode {
-                    GeometryReader { geometry in
-                        Color.clear
-                            .onAppear { updateNativeGridColumnCount(for: geometry.size.width) }
-                            .onChange(of: geometry.size.width) { _, width in
-                                updateNativeGridColumnCount(for: width)
-                            }
-                    }
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { updateNativeGridColumnCount(for: geometry.size.width) }
+                        .onChange(of: geometry.size.width) { _, width in
+                            updateNativeGridColumnCount(for: width)
+                        }
                 }
             }
         }
@@ -650,16 +661,17 @@ struct NativeSearchView: View {
         )]
     }
 
+    private var gridResultCardWidth: CGFloat {
+        NativeSearchGridMetrics.gridPosterWidth
+    }
+
     private var gridModeColumns: [GridItem] {
-        [GridItem(
-            .adaptive(minimum: NativeSearchGridMetrics.gridPosterWidth, maximum: NativeSearchGridMetrics.gridPosterWidth),
-            spacing: NativeSearchGridMetrics.gridPosterGap,
-            alignment: .top
-        )]
+        Array(repeating: GridItem(.fixed(NativeSearchGridMetrics.gridPosterWidth), spacing: NativeSearchGridMetrics.gridPosterGap, alignment: .top), count: 5)
     }
 
     private func updateNativeGridColumnCount(for width: CGFloat) {
         let contentWidth = max(0, width - (NativeSearchGridMetrics.gridContentInset * 2))
+        if gridAvailableWidth != contentWidth { gridAvailableWidth = contentWidth }
         let step = NativeSearchGridMetrics.linearPosterWidth + NativeSearchGridMetrics.linearPosterGap
         let count = max(1, Int((contentWidth + NativeSearchGridMetrics.linearPosterGap) / step))
         if nativeGridColumnCount != count {

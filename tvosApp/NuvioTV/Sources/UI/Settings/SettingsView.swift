@@ -2970,7 +2970,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
-    @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
+    @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Grid"
     @AppStorage(SettingsKey.continueWatchingVisible) private var continueWatchingVisible = true
     @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
@@ -3240,7 +3240,7 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .onAppear {
                     if !searchStyles.contains(searchStyle) {
-                        searchStyle = "Netflix"
+                        searchStyle = "Grid"
                     }
                 }
 

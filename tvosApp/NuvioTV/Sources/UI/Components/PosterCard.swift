@@ -2648,8 +2648,8 @@ struct TitleActionsMenuContent: View {
             } label: {
                 Label(
                     inLibrary
-                        ? L10n.string("action_remove_from_library", fallback: "Remove from library")
-                        : L10n.string("action_add_to_library", fallback: "Add to library"),
+                        ? L10n.string("watchlist_remove", fallback: "Remove from watchlist")
+                        : L10n.string("watchlist_add", fallback: "Add to watchlist"),
                     systemImage: inLibrary ? "checkmark" : "plus"
                 )
             }
