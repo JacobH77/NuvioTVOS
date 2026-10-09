@@ -126,8 +126,7 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: false,
-                focusedTitleMatchesFeaturedTitle: false
+                showsFocusedTitle: false
             )
         )
         XCTAssertFalse(
