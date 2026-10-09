@@ -4503,6 +4503,9 @@ struct TVHomeView: View {
                                         sectionTitle: section.title,
                                         restoreCardID: TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
                                     )
+                                },
+                                onMove: { direction in
+                                    returnFocusToFeaturedHero(direction, fromRow: index)
                                 }
                             )
                             .id(section.id)
@@ -4584,7 +4587,10 @@ struct TVHomeView: View {
                                     onStartContinueWatchingFromBeginning?(item)
                                 },
                                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
+                                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) },
+                                onMove: { direction in
+                                    returnFocusToFeaturedHero(direction, fromRow: index)
+                                }
                             )
                             .id(section.id)
                         } else {
@@ -4619,6 +4625,9 @@ struct TVHomeView: View {
                                 },
                                 onLongPress: onLongPressCard,
                                 onRefreshCatalog: { refreshHomeSection(sectionId: section.id) },
+                                onMove: { direction in
+                                    returnFocusToFeaturedHero(direction, fromRow: index)
+                                },
                                 onSeeAllFocus: {
                                     let cardKey = "\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"
                                     acknowledgeNativeProfileCardFocus(cardKey)
@@ -5366,6 +5375,18 @@ struct TVHomeView: View {
         }
     }
 
+    private func returnFocusToFeaturedHero(_ direction: MoveCommandDirection, fromRow rowIndex: Int) {
+        guard TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+            directionIsUp: direction == .up,
+            focusedRowIndex: rowIndex,
+            heroEnabled: heroEnabled && homeLayout == "Grid View",
+            hasFeaturedTitles: !gridHeroItems.isEmpty
+        ) else { return }
+
+        showsFocusedTitleBanner = false
+        gridHeroFocusRequestGeneration &+= 1
+    }
+
     @ViewBuilder
     private func homeSectionRow(
         index: Int,
@@ -5490,6 +5511,9 @@ struct TVHomeView: View {
                         restoreCardID: TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
                     )
                 },
+                onMove: { direction in
+                    returnFocusToFeaturedHero(direction, fromRow: index)
+                }
             )
             .equatable()
             .frame(
@@ -5632,7 +5656,10 @@ struct TVHomeView: View {
                     onStartContinueWatchingFromBeginning?(item)
                 },
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
+                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) },
+                onMove: { direction in
+                    returnFocusToFeaturedHero(direction, fromRow: index)
+                }
             )
             .equatable()
             .frame(

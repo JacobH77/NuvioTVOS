@@ -794,6 +794,7 @@ struct TVHomeCatalogGridSection: View {
     let onSelect: (NuvioMeta) -> Void
     var onLongPress: ((NuvioMeta) -> Void)? = nil
     var onRefreshCatalog: (() -> Void)? = nil
+    var onMove: ((MoveCommandDirection) -> Void)? = nil
     let onSeeAllFocus: () -> Void
     let onSeeAll: () -> Void
 
@@ -842,7 +843,7 @@ struct TVHomeCatalogGridSection: View {
                 alignment: .leading,
                 spacing: TVHomeGridLayout.itemSpacing
             ) {
-                ForEach(previewItems, id: \.homeTitleIdentity) { item in
+                ForEach(Array(previewItems.enumerated()), id: \.element.homeTitleIdentity) { index, item in
                     let cardKey = TVHomeCardIdentity.key(rowID: section.id, item: item)
                     let shouldRequestInitialFocus = cardKey == initialFocusCardKey
                     PosterGridCard(
@@ -858,7 +859,11 @@ struct TVHomeCatalogGridSection: View {
                         onFocus: { onFocus($0) },
                         onBlur: onBlur,
                         onLongPress: onLongPress.map { cb in { cb(item) } },
-                        onRefreshCatalog: onRefreshCatalog
+                        onRefreshCatalog: onRefreshCatalog,
+                        onMove: { direction in
+                            guard index < TVHomeGridLayout.columns else { return }
+                            onMove?(direction)
+                        }
                     ) {
                         onSelect(item)
                     }

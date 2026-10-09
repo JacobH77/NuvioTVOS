@@ -6294,6 +6294,44 @@ enum WatchedStore {
         currentSnapshot().contains(meta: meta)
     }
 
+    /// Remove a title from the selected watchlist only after it is complete.
+    /// Series completion may require the full episode guide, so resolve compact
+    /// catalog metadata before making that decision and recheck the profile and
+    /// source after the asynchronous lookup.
+    private static func removeCompletedTitleFromWatchlist(_ meta: NuvioMeta) {
+        let profileID = activeProfileId
+        let source = TraktSettingsStore.librarySourceMode
+        Task { @MainActor in
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID else { return }
+
+            var resolved = meta
+            if meta.isSeries, !contains(meta: meta), meta.videos == nil || meta.videos?.isEmpty == true {
+                guard let full = try? await CinemetaCatalogRepository().getMetadata(id: meta.id, type: meta.type) else {
+                    return
+                }
+                resolved = full
+            }
+
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID,
+                  TraktSettingsStore.librarySourceMode == source else { return }
+            let completed = contains(meta: resolved)
+                || (resolved.isSeries && hasSeriesWatchedState(resolved))
+            guard completed else { return }
+
+            if LibraryStore.contains(metaId: meta.id, type: meta.type) {
+                LibraryStore.remove(metaId: meta.id, type: meta.type)
+            }
+            if SelectedLibraryService.isSelectedAndAuthenticated {
+                let removed = await SelectedLibraryService.setWatchlist(meta, isInWatchlist: false)
+                if removed, activeProfileId == profileID {
+                    NotificationCenter.default.post(name: TraktSettingsStore.libraryChangedNotification, object: nil)
+                }
+            }
+        }
+    }
+
     /// Watched state for the Details title action. A fully watched series may
     /// have only episode rows after a Trakt pull, so the aggregate episode
     /// policy must be considered alongside an explicit title marker.
@@ -6432,6 +6470,7 @@ enum WatchedStore {
             return !episodeKeys.contains(String(season) + ":" + String(episode))
         }
         guard persist(updated) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
 
         clearTombstone(meta: meta, season: nil, episode: nil)
         for item in episodeItems {
@@ -6617,6 +6656,7 @@ enum WatchedStore {
             )
         }
         guard persist(isWatched ? written + untouched : untouched) else { return false }
+        if isWatched { removeCompletedTitleFromWatchlist(meta) }
 
         for episode in episodeNumbers.sorted() {
             if isWatched {
@@ -6781,6 +6821,7 @@ enum WatchedStore {
         }
 
         guard persist(written + untouched) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
 
         for item in written {
             guard let s = item.season, let ep = item.episode else { continue }
@@ -6864,6 +6905,7 @@ enum WatchedStore {
                 && $0.season == season && $0.episode == episode)
         }
         guard persist(updated) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
         // The mark is durable now, so it is safe to cancel any pending remote
         // delete. A failed watched-list write must leave that protection intact.
         clearTombstone(meta: meta, season: season, episode: episode)
