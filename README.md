@@ -48,9 +48,9 @@ Download the latest Apple TV `.ipa` from [Releases](https://github.com/bobsupra/
 ## Latest tvOS Beta
 
 <!-- BEGIN LATEST_BETA -->
-**Beta 3.4.1** is the latest tvOS release.
+**Beta 3.4.2** is the latest tvOS release.
 
-[Quick download (.ipa)](https://github.com/bobsupra/NuvioTVOS/releases/download/tvos-beta-3.4.1/NuvioTV-3.4.1-unsigned-release.ipa) · [Read the release notes](https://github.com/bobsupra/NuvioTVOS/releases/tag/tvos-beta-3.4.1) · [Report a bug or suggest an idea](https://github.com/bobsupra/NuvioTVOS/issues/new/choose)
+[Quick download (.ipa)](https://github.com/JacobH77/NuvioTVOS/releases/download/tvos-beta-3.4.2/NuvioTV-3.4.2-unsigned-release.ipa) · [Read the release notes](https://github.com/JacobH77/NuvioTVOS/releases/tag/tvos-beta-3.4.2) · [Manage notifications](https://github.com/JacobH77/NuvioTVOS/subscription) → choose **Custom → Releases** · [Report a bug or suggest an idea](https://github.com/JacobH77/NuvioTVOS/issues/new/choose)
 <!-- END LATEST_BETA -->
 
 > 🎉 **Thank you for 200+ GitHub Stars!** A huge thank you to everyone in the community for supporting NuvioTVOS and helping us reach 200+ stars!
@@ -130,8 +130,8 @@ The original shared mobile code is still present in [composeApp](./composeApp), 
 
 - Native SwiftUI entry point in [NuvioTVApp.swift](./tvosApp/NuvioTV/Sources/NuvioTVApp.swift).
 - Apple TV tab navigation for Profile, Home, Search, Library, and Settings.
-- Home rows for synced Nuvio collections and configured catalog lists.
-- Home focus selects one coordinated artwork source, while title information follows the focused movie, series, or collection card.
+- Home rows combine synced collections and configured catalogs with a featured-title carousel and profile-scoped Continue Watching cards showing playback progress and resume actions.
+- Home focus selects one coordinated artwork source, and focused-title information avoids repeating the currently featured title.
 - Catalog and metadata repository with configurable catalog, playback, and subtitle integrations.
 - User-configurable source integrations in Settings → Integrations → Add-ons.
 - Cloud library playback through supported connected services.

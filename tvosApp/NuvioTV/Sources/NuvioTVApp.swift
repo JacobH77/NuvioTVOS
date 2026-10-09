@@ -3418,22 +3418,26 @@ enum ProfileDisplayName {
     }
 }
 
+struct TVHomeVisibleSectionsSignature: Equatable {
+    let cwVisible: Bool
+    let continueWatchingRevision: UInt
+    /// Tracks local row replacements even when their item counts stay unchanged.
+    let localLibraryRevision: UInt
+    let storeRevision: UInt
+    let hideUnreleased: Bool
+    let cwLandscape: Bool
+    let landscapePosters: Bool
+}
+
+struct TVHomeContinueWatchingIdentity: Equatable {
+    let profileID: String?
+    let source: TraktWatchProgressSource
+}
+
+
 private final class TVHomeFocusWork {
-    struct VisibleSectionsSignature: Equatable {
-        let cwVisible: Bool
-        let cwCount: Int
-        let cwFirstId: String?
-        let upCount: Int
-        let upFirstId: String?
-        let localCount: Int
-        let jellyfinCount: Int
-        let storeRevision: UInt
-        let hideUnreleased: Bool
-        let cwLandscape: Bool
-        let landscapePosters: Bool
-    }
     struct CachedVisibleSections {
-        let signature: VisibleSectionsSignature
+        let signature: TVHomeVisibleSectionsSignature
         let sections: [TVHomeSection]
     }
     var cachedVisibleSections: CachedVisibleSections?
@@ -3716,6 +3720,10 @@ struct TVHomeView: View {
 
     @State private var localTitlesSection: TVHomeSection?
     @State private var jellyfinSection: TVHomeSection?
+    /// Invalidates the section snapshot when either local row is republished.
+    @State private var homeLibrarySectionsRevision: UInt = 0
+    @State private var didLoadLocalTitlesSection = false
+    @State private var didLoadJellyfinSection = false
     @State private var isLoading = true
     @State private var profileGateFailedLoadIdentity: TVHomeContentIdentity?
     @State private var focusedMeta: NuvioMeta?
@@ -3742,8 +3750,8 @@ struct TVHomeView: View {
     @State private var upcomingMetas: [NuvioMeta] = []
     @State private var continueWatchingByMetaId: [String: ContinueWatchingItem] = [:]
     @State private var continueWatchingIndexByMetaId: [String: Int] = [:]
-    @State private var continueWatchingIDs: [String] = []
-    @State private var displayedProgressSource: TraktWatchProgressSource?
+    @State private var continueWatchingRevision: UInt = 0
+    @State private var displayedProgressIdentity: TVHomeContinueWatchingIdentity?
     @State private var continueWatchingRefreshGeneration = 0
     @State private var continueWatchingRefreshTask: Task<Void, Never>?
     @State private var traktWatchedHistorySyncTask: Task<Void, Never>?
@@ -3772,6 +3780,7 @@ struct TVHomeView: View {
     @State private var focusedRowIndex: Int = 0
     @State private var browsingSection: TVHomeSection?
     @State private var gridHeroIndex = 0
+    @State private var gridHeroSelectedIdentity: TVHomeHeroPresentation.FeaturedItemIdentity?
     @State private var didRequestInitialGridHeroFocus = false
     /// The Grid hero owns its own focus state, so `focusedCardID` goes nil while
     /// it is focused. Home still holds focus then, and arming the focus restore
@@ -3844,6 +3853,21 @@ struct TVHomeView: View {
             nativeProfileFocusedCardKey = nil
             didNativeFocusGridHero = false
             reportProfileGateReadiness()
+        }
+        .onChange(of: contentIdentity.profileId) { _, _ in
+            continueWatchingRefreshTask?.cancel()
+            continueWatchingRefreshTask = nil
+            continueWatchingRefreshGeneration &+= 1
+            displayedProgressIdentity = nil
+            publishLocalTitlesSection(nil, isLoaded: false)
+            publishJellyfinSection(nil, isLoaded: false)
+            setContinueWatching([])
+            guard isActive && !isFullScreenOverlayPresented else { return }
+            if usesRemoteProgress {
+                scheduleContinueWatchingRefresh()
+            } else {
+                refreshContinueWatching()
+            }
         }
         .onChange(of: isFullScreenOverlayPresented) { oldVal, isPresented in
             if oldVal && !isPresented && isActive {
@@ -4584,6 +4608,7 @@ struct TVHomeView: View {
                     TVGridHeroSlideshowView(
                         items: gridHeroItems,
                         selectedIndex: $gridHeroIndex,
+                        selectedItemIdentity: $gridHeroSelectedIdentity,
                         focusRequestGeneration: gridHeroFocusRequestGeneration,
                         shouldRequestInitialFocus: store.lastFocusedCardID == nil && !didRequestInitialCardFocus,
                         onInitialFocusRequested: { didRequestInitialCardFocus = true },
@@ -4610,7 +4635,8 @@ struct TVHomeView: View {
 
                 if TVHomeHeroPresentation.showsFocusedTitleInformation(
                     heroEnabled: heroEnabled,
-                    showsFocusedTitle: showsFocusedTitleBanner
+                    showsFocusedTitle: showsFocusedTitleBanner,
+                    focusedTitleMatchesFeaturedTitle: focusedTitleMatchesFeaturedHero
                 ) {
                     focusedTitleHeroHeader
                 }
@@ -4670,6 +4696,7 @@ struct TVHomeView: View {
                                 TVGridHeroSlideshowView(
                                     items: heroItems,
                                     selectedIndex: $gridHeroIndex,
+                                    selectedItemIdentity: $gridHeroSelectedIdentity,
                                     focusRequestGeneration: gridHeroFocusRequestGeneration,
                                     shouldRequestInitialFocus: store.lastFocusedCardID == nil
                                         && !didRequestInitialCardFocus
@@ -4706,7 +4733,8 @@ struct TVHomeView: View {
 
                             if TVHomeHeroPresentation.showsFocusedTitleInformation(
                                 heroEnabled: heroEnabled,
-                                showsFocusedTitle: showsFocusedTitleBanner
+                                showsFocusedTitle: showsFocusedTitleBanner,
+                                focusedTitleMatchesFeaturedTitle: focusedTitleMatchesFeaturedHero
                             ) {
                                 focusedTitleHeroHeader
                             }
@@ -5531,6 +5559,7 @@ struct TVHomeView: View {
         focusedCardID = nil
         store.lastFocusedCardID = nil
         gridHeroIndex = 0
+        gridHeroSelectedIdentity = nil
         showsFocusedTitleBanner = false
         isGridHeroFocused = true
         scrollToTopGeneration &+= 1
@@ -5948,7 +5977,18 @@ struct TVHomeView: View {
     /// lazy viewport retry saved-focus preparation without comparing metadata
     /// arrays or rebuilding work for every card.
     private var initialFocusContentSignature: String {
-        "\(store.hasLoaded)_\(store.sectionsRevision)_\(continueWatchingVisible ? continueWatchingMetas.count : 0)_\(continueWatchingVisible ? upcomingMetas.count : 0)"
+        "\(store.hasLoaded)_\(store.sectionsRevision)_cw\(continueWatchingVisible ? continueWatchingRevision : 0)_library\(homeLibrarySectionsRevision)"
+    }
+
+    private func isWaitingForLocalSection(for focusKey: String?) -> Bool {
+        guard let focusKey else { return false }
+        if focusKey.hasPrefix("\(TVHomeSection.localTitlesId)\u{1}") {
+            return smbLocalRowEnabled && !didLoadLocalTitlesSection
+        }
+        if focusKey.hasPrefix("\(TVHomeSection.jellyfinId)\u{1}") {
+            return jellyfinLocalRowEnabled && !didLoadJellyfinSection
+        }
+        return false
     }
 
     /// Finds the saved card without assuming that section or card IDs contain
@@ -6040,15 +6080,15 @@ struct TVHomeView: View {
                 + "sections=\(sections.count) hasLoaded=\(store.hasLoaded)"
         )
         guard let location = initialFocusLocation(in: sections) else {
-            // Keep a saved target alive while progressive loading has not yet
-            // published its section. Once the final tree is known, fall back
-            // safely to normal first-row focus if that card truly disappeared.
-            if !store.hasLoaded {
+            // A saved local-row card may load after the catalog store is ready.
+            // Keep its target until that row finishes loading, then retry from
+            // `initialFocusContentSignature` when the section is republished.
+            if !store.hasLoaded || isWaitingForLocalSection(for: initialFocusCardKey) {
                 if pendingInitialFocusCardKey == nil {
                     pendingInitialFocusCardKey = store.lastFocusedCardID
                 }
                 TVHomeDebugTrace.log(
-                    "home.prepareInitialFocusViewport awaiting catalogs for target=\(pendingInitialFocusCardKey ?? "nil")"
+                    "home.prepareInitialFocusViewport awaiting sections for target=\(pendingInitialFocusCardKey ?? "nil")"
                 )
                 return
             }
@@ -6184,14 +6224,10 @@ struct TVHomeView: View {
     }
 
     private var visibleSections: [TVHomeSection] {
-        let signature = TVHomeFocusWork.VisibleSectionsSignature(
+        let signature = TVHomeVisibleSectionsSignature(
             cwVisible: continueWatchingVisible,
-            cwCount: continueWatchingVisible ? continueWatchingMetas.count : 0,
-            cwFirstId: continueWatchingVisible ? continueWatchingMetas.first?.id : nil,
-            upCount: continueWatchingVisible ? upcomingMetas.count : 0,
-            upFirstId: continueWatchingVisible ? upcomingMetas.first?.id : nil,
-            localCount: localTitlesSection?.items.count ?? 0,
-            jellyfinCount: jellyfinSection?.items.count ?? 0,
+            continueWatchingRevision: continueWatchingVisible ? continueWatchingRevision : 0,
+            localLibraryRevision: homeLibrarySectionsRevision,
             storeRevision: store.sectionsRevision,
             hideUnreleased: hideUnreleased,
             cwLandscape: continueWatchingLandscape,
@@ -6435,6 +6471,18 @@ struct TVHomeView: View {
             isFeaturedHeroFocused: isGridHeroFocused,
             showsFocusedTitle: showsFocusedTitleBanner
         )
+    }
+
+    private var focusedTitleMatchesFeaturedHero: Bool {
+        guard showsFocusedTitleBanner,
+              let focusedMeta = focusedHomePresentationMeta else { return false }
+        let selection = TVHomeHeroPresentation.featuredSelection(
+            identities: gridHeroItems.map { TVHomeHeroPresentation.FeaturedItemIdentity($0) },
+            selectedIdentity: gridHeroSelectedIdentity,
+            fallbackIndex: gridHeroIndex
+        )
+        guard gridHeroItems.indices.contains(selection.index) else { return false }
+        return focusedMeta.hasSameMediaIdentity(as: gridHeroItems[selection.index])
     }
 
     private var homeBackdropIdentity: String? {
@@ -7512,6 +7560,7 @@ struct TVHomeView: View {
         }
         appliedContinueWatchingSort = continueWatchingSort
         rawContinueWatchingItems = rawItems
+        continueWatchingRevision &+= 1
         let (items, upcoming): ([ContinueWatchingItem], [ContinueWatchingItem]) = {
             if continueWatchingSort == "Separate Upcoming Row" {
                 let released = ContinueWatchingSortPolicy.sorted(rawItems, preference: continueWatchingSort)
@@ -7555,7 +7604,6 @@ struct TVHomeView: View {
             upcomingMetas = upcoming.map { $0.meta.persistenceSnapshot }
             continueWatchingByMetaId = byMetaId
             continueWatchingIndexByMetaId = indexByMetaId
-            continueWatchingIDs = items.map(\.meta.id)
         }
     }
 
@@ -7563,9 +7611,13 @@ struct TVHomeView: View {
         TVHomeDebugTrace.measure("home.refreshContinueWatching") {
             guard !usesRemoteProgress else {
                 print("[ContinueWatching][Home] refreshContinueWatching: usesRemoteProgress=true (\(selectedProgressSource.rawValue))")
-                if displayedProgressSource != selectedProgressSource {
+                let identity = TVHomeContinueWatchingIdentity(
+                    profileID: ContinueWatchingStore.activeProfileId,
+                    source: selectedProgressSource
+                )
+                if displayedProgressIdentity != identity {
                     setContinueWatching([])
-                    displayedProgressSource = selectedProgressSource
+                    displayedProgressIdentity = identity
                 }
                 #if DEBUG
                 logRowWindow("remote progress source (\(selectedProgressSource.rawValue))")
@@ -7601,7 +7653,10 @@ struct TVHomeView: View {
             }
             print("[ContinueWatching][Home] refreshContinueWatching: paged=\(ContinueWatchingBuilder.pagedItems.count), stored=\(storedItems.count), merged=\(byId.count), visible=\(visibleItems.count) (\(visibleItems.map { "\($0.meta.id) (pos=\($0.position)/\($0.duration), upNext=\($0.isUpNextEntry))" }))")
             setContinueWatching(visibleItems)
-            displayedProgressSource = .nuvioSync
+            displayedProgressIdentity = TVHomeContinueWatchingIdentity(
+                profileID: ContinueWatchingStore.activeProfileId,
+                source: .nuvioSync
+            )
             #if DEBUG
             logRowWindow("after CW refresh (\(continueWatching.count) item(s), \(upcomingItems.count) upcoming)")
             #endif
@@ -7744,7 +7799,10 @@ struct TVHomeView: View {
         }
         print("[ContinueWatching][Home] refreshContinueWatchingFromSelectedSource: remote returned \(items.count) items -> visible \(visibleItems.count)")
         setContinueWatching(visibleItems)
-        displayedProgressSource = source
+        displayedProgressIdentity = TVHomeContinueWatchingIdentity(
+            profileID: profileID,
+            source: source
+        )
 
         // Continue Watching is visible now. Other providers own their own
         // watched snapshots; Trakt is refreshed independently above so its
@@ -7825,18 +7883,34 @@ struct TVHomeView: View {
     }
 
     @MainActor
+    private func publishLocalTitlesSection(_ section: TVHomeSection?, isLoaded: Bool = true) {
+        localTitlesSection = section
+        didLoadLocalTitlesSection = isLoaded
+        homeLibrarySectionsRevision &+= 1
+    }
+
+    @MainActor
+    private func publishJellyfinSection(_ section: TVHomeSection?, isLoaded: Bool = true) {
+        jellyfinSection = section
+        didLoadJellyfinSection = isLoaded
+        homeLibrarySectionsRevision &+= 1
+    }
+
+    @MainActor
     private func loadLocalTitlesSection() async {
-        guard contentIdentity.profileId != "none" && !contentIdentity.profileId.isEmpty else {
-            localTitlesSection = nil
+        didLoadLocalTitlesSection = false
+        let profileID = contentIdentity.profileId
+        guard profileID != "none" && !profileID.isEmpty else {
+            publishLocalTitlesSection(nil)
             return
         }
         guard smbLocalRowEnabled else {
-            localTitlesSection = nil
+            publishLocalTitlesSection(nil)
             return
         }
         let indexed = SMBLibraryIndex.shared.titles()
         guard !indexed.isEmpty else {
-            localTitlesSection = nil
+            publishLocalTitlesSection(nil)
             return
         }
         var metasByContentId: [String: NuvioMeta] = [:]
@@ -7855,31 +7929,37 @@ struct TVHomeView: View {
                 startNext()
             }
         }
+        guard !Task.isCancelled, contentIdentity.profileId == profileID else { return }
         let metas = indexed.compactMap { metasByContentId[$0.contentId] }
-        localTitlesSection = metas.isEmpty ? nil : TVHomeSection(
-            id: TVHomeSection.localTitlesId,
-            title: L10n.string("home_local_titles", fallback: "Local titles"),
-            items: metas
+        publishLocalTitlesSection(
+            metas.isEmpty ? nil : TVHomeSection(
+                id: TVHomeSection.localTitlesId,
+                title: L10n.string("home_local_titles", fallback: "Local titles"),
+                items: metas
+            )
         )
     }
 
     @MainActor
     private func loadJellyfinSection() async {
+        didLoadJellyfinSection = false
         guard contentIdentity.profileId != "none" && !contentIdentity.profileId.isEmpty else {
-            jellyfinSection = nil
+            publishJellyfinSection(nil)
             return
         }
         guard jellyfinLocalRowEnabled else {
-            jellyfinSection = nil
+            publishJellyfinSection(nil)
             return
         }
         let metas = JellyfinLibraryIndex.shared.titles().compactMap {
             JellyfinLibraryIndex.shared.meta(forContentId: $0.contentId)
         }
-        jellyfinSection = metas.isEmpty ? nil : TVHomeSection(
-            id: TVHomeSection.jellyfinId,
-            title: L10n.string("home_jellyfin_titles", fallback: "Jellyfin"),
-            items: metas
+        publishJellyfinSection(
+            metas.isEmpty ? nil : TVHomeSection(
+                id: TVHomeSection.jellyfinId,
+                title: L10n.string("home_jellyfin_titles", fallback: "Jellyfin"),
+                items: metas
+            )
         )
     }
 }
@@ -9360,6 +9440,7 @@ extension TVHeroView: Equatable {
 private struct TVGridHeroSlideshowView: View {
     let items: [NuvioMeta]
     @Binding var selectedIndex: Int
+    @Binding var selectedItemIdentity: TVHomeHeroPresentation.FeaturedItemIdentity?
     let focusRequestGeneration: Int
     let shouldRequestInitialFocus: Bool
     let onInitialFocusRequested: () -> Void
@@ -9378,15 +9459,41 @@ private struct TVGridHeroSlideshowView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     private enum Action: Hashable { case play, info, previous, next }
+    private struct ArtworkPrefetchIdentity: Equatable {
+        let items: [TVHomeHeroPresentation.ArtworkRequestIdentity]
+        let index: Int
+    }
+
     @FocusState private var focusedAction: Action?
     private var isFocused: Bool { focusedAction != nil }
 
-    private var index: Int {
-        guard !items.isEmpty else { return 0 }
-        return min(max(selectedIndex, 0), items.count - 1)
+    private var itemIdentities: [TVHomeHeroPresentation.FeaturedItemIdentity] {
+        items.map { TVHomeHeroPresentation.FeaturedItemIdentity($0) }
+    }
+
+    private var selection: TVHomeHeroPresentation.FeaturedSelection {
+        TVHomeHeroPresentation.featuredSelection(
+            identities: itemIdentities,
+            selectedIdentity: selectedItemIdentity,
+            fallbackIndex: selectedIndex
+        )
+    }
+
+    private var index: Int { selection.index }
+
+    private var artworkRequestIdentity: TVHomeHeroPresentation.ArtworkRequestIdentity? {
+        activeItem.map { TVHomeHeroPresentation.artworkRequestIdentity(for: $0) }
+    }
+
+    private var artworkPrefetchIdentity: ArtworkPrefetchIdentity {
+        ArtworkPrefetchIdentity(
+            items: items.map { TVHomeHeroPresentation.artworkRequestIdentity(for: $0) },
+            index: index
+        )
     }
 
     @State private var enrichedHero: NuvioMeta?
+    @State private var enrichedHeroIdentity: TVHomeHeroPresentation.ArtworkRequestIdentity?
 
     private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
 
@@ -9465,14 +9572,20 @@ private struct TVGridHeroSlideshowView: View {
         // hero's frame.
         .background {
             if showsArtwork, let activeItem {
-                artLayer(enrichedHero?.id == activeItem.id && enrichedHero?.type == activeItem.type ? (enrichedHero ?? activeItem) : activeItem)
+                let artworkItem = enrichedHeroIdentity == artworkRequestIdentity
+                    ? (enrichedHero ?? activeItem)
+                    : activeItem
+                artLayer(artworkItem)
             }
         }
-        .task(id: activeItem.map { "\($0.type):\($0.id)" }) {
+        .task(id: artworkRequestIdentity) {
+            let requestIdentity = artworkRequestIdentity
             enrichedHero = nil
+            enrichedHeroIdentity = nil
             guard let item = activeItem,
                   item.needsHeroMetadataEnrichment || item.supportsCanonicalHeroArtworkRefresh,
-                  !Task.isCancelled else { return }
+                  !Task.isCancelled,
+                  let requestIdentity else { return }
             let repository = CinemetaCatalogRepository()
             let lookupId = NuvioMeta.canonicalImdbID(from: item.imdbId ?? item.id) ?? item.id
             let full: NuvioMeta?
@@ -9486,8 +9599,9 @@ private struct TVGridHeroSlideshowView: View {
                   !Task.isCancelled,
                   item.hasSameMediaIdentity(as: full) else { return }
             enrichedHero = item.mergingHomeHeroMetadata(from: full)
+            enrichedHeroIdentity = requestIdentity
         }
-        .task(id: "\(items.map { "\($0.type):\($0.id)" }.joined(separator: "|"))|\(index)") {
+        .task(id: artworkPrefetchIdentity) {
             guard !items.isEmpty else { return }
             let nearby = (0..<min(2, items.count)).map { offset in
                 items[(index + offset) % items.count]
@@ -9509,6 +9623,7 @@ private struct TVGridHeroSlideshowView: View {
         }
         .contentShape(Rectangle())
         .onAppear {
+            reconcileSelection()
             guard shouldRequestInitialFocus else { return }
             onInitialFocusRequested()
             DispatchQueue.main.async { focusedAction = .play }
@@ -9530,9 +9645,8 @@ private struct TVGridHeroSlideshowView: View {
                 if !isFocused { setIndex((index + 1) % items.count) }
             }
         }
-        .onChange(of: items.count) { _, count in
-            if count == 0 { selectedIndex = 0 }
-            else if selectedIndex >= count { selectedIndex = count - 1 }
+        .onChange(of: itemIdentities) { _, _ in
+            reconcileSelection()
         }
     }
 
@@ -9623,10 +9737,24 @@ private struct TVGridHeroSlideshowView: View {
         if dotIndex == index { return AppFocusOutline.color }
         return isFocused ? AppFocusOutline.color.opacity(0.40) : Color.white.opacity(0.30)
     }
+    private func reconcileSelection() {
+        let updated = TVHomeHeroPresentation.featuredSelection(
+            identities: itemIdentities,
+            selectedIdentity: selectedItemIdentity,
+            fallbackIndex: selectedIndex
+        )
+        selectedIndex = updated.index
+        if selectedItemIdentity != updated.identity {
+            selectedItemIdentity = updated.identity
+        }
+    }
+
 
     private func setIndex(_ newIndex: Int) {
+        guard items.indices.contains(newIndex) else { return }
         withAnimation(.easeInOut(duration: 0.30)) {
             selectedIndex = newIndex
+            selectedItemIdentity = itemIdentities[newIndex]
         }
     }
 }

@@ -6837,21 +6837,22 @@ enum WatchedStore {
 
     static func sameContent(_ lhs: NuvioMeta, _ rhs: NuvioMeta) -> Bool {
         guard normalizedType(lhs.canonicalType) == normalizedType(rhs.canonicalType) else { return false }
-        if !contentIdentityKeys(for: lhs).isDisjoint(with: contentIdentityKeys(for: rhs)) {
+        let lhsKeys = contentIdentityKeys(for: lhs)
+        let rhsKeys = contentIdentityKeys(for: rhs)
+        if !lhsKeys.isDisjoint(with: rhsKeys) {
             return true
         }
+        // Conflicting IMDb/TMDB IDs must not be overridden by a title collision.
+        let lhsHasCanonicalCatalogID = lhsKeys.contains {
+            $0.hasPrefix("imdb:") || $0.hasPrefix("tmdb:")
+        }
+        let rhsHasCanonicalCatalogID = rhsKeys.contains {
+            $0.hasPrefix("imdb:") || $0.hasPrefix("tmdb:")
+        }
+        guard !lhsHasCanonicalCatalogID || !rhsHasCanonicalCatalogID else { return false }
+        // Series use a dedicated title fallback; movie titles alone are too ambiguous.
         if sameCatalogSeriesTitle(lhs, rhs) {
             return true
-        }
-        if lhs.isMovie && rhs.isMovie {
-            let leftTitle = normalizedCatalogTitle(lhs.name)
-            let rightTitle = normalizedCatalogTitle(rhs.name)
-            if !leftTitle.isEmpty && leftTitle == rightTitle {
-                if let y1 = lhs.year, let y2 = rhs.year {
-                    return y1 == y2
-                }
-                return true
-            }
         }
         return false
     }

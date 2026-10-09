@@ -2,6 +2,66 @@ import XCTest
 @testable import NuvioTV
 
 final class HomeHeroPresentationTests: XCTestCase {
+    private func makeMeta(
+        _ id: String,
+        type: String = "movie",
+        backgroundURL: String? = nil
+    ) throws -> NuvioMeta {
+        var payload: [String: Any] = ["id": id, "type": type, "name": id]
+        if let backgroundURL {
+            payload["backgroundUrl"] = backgroundURL
+        }
+        return try JSONDecoder().decode(
+            NuvioMeta.self,
+            from: JSONSerialization.data(withJSONObject: payload)
+        )
+    }
+
+    func testFeaturedSelectionFollowsTheSelectedItemAcrossReordering() {
+        let first = TVHomeHeroPresentation.FeaturedItemIdentity(type: "movie", id: "first")
+        let selected = TVHomeHeroPresentation.FeaturedItemIdentity(type: "series", id: "selected")
+        let initial = TVHomeHeroPresentation.featuredSelection(
+            identities: [first, selected],
+            selectedIdentity: selected,
+            fallbackIndex: 0
+        )
+        let reordered = TVHomeHeroPresentation.featuredSelection(
+            identities: [selected, first],
+            selectedIdentity: selected,
+            fallbackIndex: initial.index
+        )
+
+        XCTAssertEqual(initial, .init(index: 1, identity: selected))
+        XCTAssertEqual(reordered, .init(index: 0, identity: selected))
+    }
+
+    func testFeaturedSelectionFallsBackWhenSelectedItemDisappears() {
+        let remaining = TVHomeHeroPresentation.FeaturedItemIdentity(type: "movie", id: "remaining")
+        let fallback = TVHomeHeroPresentation.featuredSelection(
+            identities: [remaining],
+            selectedIdentity: TVHomeHeroPresentation.FeaturedItemIdentity(type: "series", id: "removed"),
+            fallbackIndex: 20
+        )
+        let empty = TVHomeHeroPresentation.featuredSelection(
+            identities: [],
+            selectedIdentity: remaining,
+            fallbackIndex: 20
+        )
+
+        XCTAssertEqual(fallback, .init(index: 0, identity: remaining))
+        XCTAssertEqual(empty, .init(index: 0, identity: nil))
+    }
+
+    func testHeroArtworkRequestIdentityChangesWhenTheArtworkURLChanges() throws {
+        let original = try makeMeta("same-title", backgroundURL: "https://example.test/old.jpg")
+        let refreshed = try makeMeta("same-title", backgroundURL: "https://example.test/new.jpg")
+
+        XCTAssertNotEqual(
+            TVHomeHeroPresentation.artworkRequestIdentity(for: original),
+            TVHomeHeroPresentation.artworkRequestIdentity(for: refreshed)
+        )
+    }
+
     func testPendingFocusImmediatelyReplacesSettledTitle() {
         XCTAssertEqual(
             TVHomeHeroPresentation.focusedValue(
@@ -29,7 +89,7 @@ final class HomeHeroPresentationTests: XCTestCase {
         )
     }
 
-    func testFocusedTitleInformationDoesNotSuppressFeaturedHero() {
+    func testFocusedTitleInformationDoesNotDuplicateFeaturedTitle() {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFeaturedHero(
                 heroEnabled: true,
@@ -39,7 +99,15 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: true
+                showsFocusedTitle: true,
+                focusedTitleMatchesFeaturedTitle: false
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.showsFocusedTitleInformation(
+                heroEnabled: true,
+                showsFocusedTitle: true,
+                focusedTitleMatchesFeaturedTitle: true
             )
         )
     }
@@ -54,7 +122,8 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: false
+                showsFocusedTitle: false,
+                focusedTitleMatchesFeaturedTitle: false
             )
         )
         XCTAssertFalse(
