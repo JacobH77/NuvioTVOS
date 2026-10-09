@@ -8738,6 +8738,7 @@ private struct AboutSettingsView: View {
     let accentColor: Color
     @State private var showingLicenses = false
     @State private var artworkDiagnostics: [String] = []
+    @State private var artworkDiagnosticPreview: PosterArtworkDiagnosticPreview?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -8778,6 +8779,26 @@ private struct AboutSettingsView: View {
                 title: "Artwork Diagnostics",
                 subtitle: "Recent poster URL, network, and decode results"
             ) {
+                if let preview = artworkDiagnosticPreview {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(uiImage: preview.image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 220, maxHeight: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        Text("Decoded preview · \(preview.url.host ?? "unknown") · \(preview.pixelDimensions) · \(preview.alphaDescription)")
+                            .font(.system(size: 16, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    SettingsInfoRow(
+                        title: "Decoded preview",
+                        value: "No cached image is available yet",
+                        isDiagnostic: true
+                    )
+                }
+
                 if artworkDiagnostics.isEmpty {
                     SettingsInfoRow(
                         title: "Artwork results",
@@ -8818,6 +8839,9 @@ private struct AboutSettingsView: View {
 
     private func refreshArtworkDiagnostics() {
         artworkDiagnostics = TVHomeDebugTrace.recentArtworkBreadcrumbs(count: 8)
+        Task { @MainActor in
+            artworkDiagnosticPreview = await PosterArtworkCache.shared.diagnosticPreview()
+        }
     }
 }
 

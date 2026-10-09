@@ -1927,6 +1927,11 @@ actor PosterArtworkCache {
 
     private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private var latestDiagnosticPreview: PosterArtworkDiagnosticPreview?
+
+    func diagnosticPreview() -> PosterArtworkDiagnosticPreview? {
+        latestDiagnosticPreview
+    }
 
     init() {
         let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
@@ -1977,11 +1982,16 @@ actor PosterArtworkCache {
         let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
 
         if let cached = cache.object(forKey: key) {
+            latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: cached)
             return cached
         }
 
         if let task = inFlight[key as String] {
-            return await task.value
+            let image = await task.value
+            if let image {
+                latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
+            }
+            return image
         }
 
         let isVolatile = PosterArtworkCachePolicy.isVolatile(url)
@@ -2037,8 +2047,31 @@ actor PosterArtworkCache {
             let cost = image.decodedByteCost
             cache.setObject(image, forKey: key, cost: cost)
             Self.tracker.recordInsertion(cost: cost)
+            latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
         }
         return image
+    }
+}
+
+struct PosterArtworkDiagnosticPreview {
+    let url: URL
+    let image: UIImage
+
+    var pixelDimensions: String {
+        guard let cgImage = image.cgImage else { return "no CGImage" }
+        return "\(cgImage.width)×\(cgImage.height)"
+    }
+
+    var alphaDescription: String {
+        guard let cgImage = image.cgImage else { return "unknown" }
+        switch cgImage.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return "opaque"
+        case .first, .last, .premultipliedFirst, .premultipliedLast, .alphaOnly:
+            return "alpha channel"
+        @unknown default:
+            return "unknown"
+        }
     }
 }
 
