@@ -234,7 +234,7 @@ index f2d90e8..e0629ed 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..5852ff6 100644
+index b6c20d9..a39eadc 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -326,7 +326,7 @@ index b6c20d9..5852ff6 100644
                  }
              }
              // Portrait poster fallbacks must be cropped inside the screen, not
-@@ -2720,18 +2763,44 @@ private struct CrossfadingBackdrop: View {
+@@ -2720,18 +2763,45 @@ private struct CrossfadingBackdrop: View {
              .frame(width: proxy.size.width, height: proxy.size.height)
              .clipped()
          }
@@ -357,12 +357,13 @@ index b6c20d9..5852ff6 100644
 +                outgoingOpacity = 0
 +                return
 +            }
++            let primaryURL = URL(string: url)
 +            var loadedImage: UIImage?
-+            if let imageURL = URL(string: url) {
++            if let imageURL = primaryURL {
 +                loadedImage = await BackdropImageCache.shared.image(for: imageURL)
 +            }
 +            if loadedImage == nil, !Task.isCancelled,
-+               let fallbackURL, let fallback = URL(string: fallbackURL), fallback != imageURL {
++               let fallbackURL, let fallback = URL(string: fallbackURL), fallback != primaryURL {
 +                loadedImage = await BackdropImageCache.shared.image(for: fallback)
 +            }
 +            guard let loaded = loadedImage else { return }
@@ -376,7 +377,7 @@ index b6c20d9..5852ff6 100644
              guard !Task.isCancelled else { return }
              let previousImage = image
              if previousImage != nil {
-@@ -2739,7 +2808,7 @@ private struct CrossfadingBackdrop: View {
+@@ -2739,7 +2809,7 @@ private struct CrossfadingBackdrop: View {
                  outgoingOpacity = 1
              }
              image = loaded
@@ -385,7 +386,7 @@ index b6c20d9..5852ff6 100644
              imageOpacity = previousImage == nil ? 1 : 0
  
              withAnimation(.easeInOut(duration: 0.30)) {
-@@ -2748,7 +2817,7 @@ private struct CrossfadingBackdrop: View {
+@@ -2748,7 +2818,7 @@ private struct CrossfadingBackdrop: View {
              }
  
              try? await Task.sleep(nanoseconds: 300_000_000)
@@ -394,7 +395,7 @@ index b6c20d9..5852ff6 100644
              outgoingImage = nil
              outgoingOpacity = 0
          }
-@@ -2770,7 +2839,9 @@ extension CrossfadingBackdrop: Equatable {
+@@ -2770,7 +2840,9 @@ extension CrossfadingBackdrop: Equatable {
      static func == (lhs: CrossfadingBackdrop, rhs: CrossfadingBackdrop) -> Bool {
          lhs.url == rhs.url
              && lhs.placeholder == rhs.placeholder
@@ -404,7 +405,7 @@ index b6c20d9..5852ff6 100644
      }
  }
  
-@@ -2964,6 +3035,7 @@ private struct TVMainTabView: View {
+@@ -2964,6 +3036,7 @@ private struct TVMainTabView: View {
      let onRequestAccountRefresh: () -> Void
      let onOpenCollectionFolder: (TVCollectionFolderItem, String) -> Void
      let onResumePlayback: (ContinueWatchingItem) -> Void
@@ -412,7 +413,7 @@ index b6c20d9..5852ff6 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -2976,7 +3048,7 @@ private struct TVMainTabView: View {
+@@ -2976,7 +3049,7 @@ private struct TVMainTabView: View {
      @AppStorage(SettingsKey.amoled) private var amoled = false
      @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
      @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -421,7 +422,7 @@ index b6c20d9..5852ff6 100644
      @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Nuvio User"
      @StateObject private var profileTabAvatar = ProfileTabAvatarRenderer()
      @State private var showingReauthSheet = false
-@@ -3016,7 +3088,6 @@ private struct TVMainTabView: View {
+@@ -3016,7 +3089,6 @@ private struct TVMainTabView: View {
              NativeSearchView(
                  viewModel: searchViewModel,
                  showDiscover: discoverLocation == "Search",
@@ -429,7 +430,7 @@ index b6c20d9..5852ff6 100644
                  isFullScreenOverlayPresented: isFullScreenOverlayPresented,
                  detailsDidDisappearGeneration: detailsDidDisappearGeneration,
                  onContentClick: onNavigateToDetails,
-@@ -3087,6 +3158,7 @@ private struct TVMainTabView: View {
+@@ -3087,6 +3159,7 @@ private struct TVMainTabView: View {
                  onNavigateToDetails: onNavigateToDetails,
                  onOpenCollectionFolder: onOpenCollectionFolder,
                  onResumePlayback: onResumePlayback,
@@ -437,7 +438,7 @@ index b6c20d9..5852ff6 100644
                  onPlayContinueWatchingManually: onPlayContinueWatchingManually,
                  onStartContinueWatchingFromBeginning: onStartContinueWatchingFromBeginning,
                  onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-@@ -3526,6 +3598,7 @@ struct TVHomeView: View {
+@@ -3526,6 +3599,7 @@ struct TVHomeView: View {
      let onNavigateToDetails: (String, String) -> Void
      let onOpenCollectionFolder: (TVCollectionFolderItem, String) -> Void
      let onResumePlayback: (ContinueWatchingItem) -> Void
@@ -445,7 +446,7 @@ index b6c20d9..5852ff6 100644
      var onPlayContinueWatchingManually: ((ContinueWatchingItem) -> Void)? = nil
      var onStartContinueWatchingFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
      var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
-@@ -3634,6 +3707,9 @@ struct TVHomeView: View {
+@@ -3634,6 +3708,9 @@ struct TVHomeView: View {
      /// there would let `defaultFocus` reclaim focus the moment Menu tries to
      /// hand it to the sidebar.
      @State private var isGridHeroFocused = false
@@ -455,7 +456,7 @@ index b6c20d9..5852ff6 100644
      @State private var nativeProfileFocusedCardKey: String?
      @State private var didNativeFocusGridHero = false
      @State private var gridHeroFocusRequestGeneration = 0
-@@ -3659,6 +3735,171 @@ struct TVHomeView: View {
+@@ -3659,6 +3736,171 @@ struct TVHomeView: View {
  
      var body: some View {
          let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
@@ -627,7 +628,7 @@ index b6c20d9..5852ff6 100644
          ZStack(alignment: .topLeading) {
              // Keep TVHomeView mounted in TabView across tab switches so that
              // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
-@@ -3669,9 +3910,11 @@ struct TVHomeView: View {
+@@ -3669,9 +3911,11 @@ struct TVHomeView: View {
              GeometryReader { proxy in
                  if fullscreenHeroBackdrop {
                      CrossfadingBackdrop(
@@ -641,7 +642,7 @@ index b6c20d9..5852ff6 100644
                      )
                      .equatable()
                      .frame(width: proxy.size.width, height: proxy.size.height)
-@@ -3684,9 +3927,11 @@ struct TVHomeView: View {
+@@ -3684,9 +3928,11 @@ struct TVHomeView: View {
                              .frame(maxWidth: .infinity, maxHeight: .infinity)
  
                          CrossfadingBackdrop(
@@ -655,7 +656,7 @@ index b6c20d9..5852ff6 100644
                          )
                          .equatable()
                          .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
-@@ -3759,7 +4004,9 @@ struct TVHomeView: View {
+@@ -3759,7 +4005,9 @@ struct TVHomeView: View {
                  .ignoresSafeArea()
              }
  
@@ -666,7 +667,7 @@ index b6c20d9..5852ff6 100644
              VStack(alignment: .leading, spacing: 0) {
                  if showsLoading {
                      TVLoadingView()
-@@ -3785,30 +4032,8 @@ struct TVHomeView: View {
+@@ -3785,30 +4033,8 @@ struct TVHomeView: View {
                          }
                      }
                  } else {
@@ -699,7 +700,7 @@ index b6c20d9..5852ff6 100644
                      // Android uses a LazyColumn of LazyRows: only viewport rows
                      // and cards own render work. Keep the vertical Home strip
                      // lazy as well; rows retain their horizontal position in
-@@ -3836,7 +4061,10 @@ struct TVHomeView: View {
+@@ -3836,7 +4062,10 @@ struct TVHomeView: View {
                              // outside the viewport without changing row geometry.
                              ScrollViewReader { verticalScrollProxy in
                                  ScrollView(.vertical, showsIndicators: false) {
@@ -711,7 +712,7 @@ index b6c20d9..5852ff6 100644
                                          if sessionNeedsReauthentication && !isBannerDismissed {
                                              TVReauthBannerView(
                                                  onSignIn: onRequestReauth,
-@@ -3847,9 +4075,16 @@ struct TVHomeView: View {
+@@ -3847,9 +4076,16 @@ struct TVHomeView: View {
                                                  }
                                              )
                                              .padding(.horizontal, horizontalEdgeInset)
@@ -728,7 +729,7 @@ index b6c20d9..5852ff6 100644
                                              let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
                                              if isNearFocusedRow {
                                                  homeSectionRow(
-@@ -3858,6 +4093,16 @@ struct TVHomeView: View {
+@@ -3858,6 +4094,16 @@ struct TVHomeView: View {
                                                      horizontalEdgeInset: horizontalEdgeInset,
                                                      verticalScrollProxy: verticalScrollProxy
                                                  )
@@ -745,7 +746,7 @@ index b6c20d9..5852ff6 100644
                                              } else {
                                                  Color.clear
                                                      .frame(
-@@ -3866,6 +4111,7 @@ struct TVHomeView: View {
+@@ -3866,6 +4112,7 @@ struct TVHomeView: View {
                                                      )
                                                      .id(section.id)
                                                      .accessibilityHidden(true)
@@ -753,7 +754,7 @@ index b6c20d9..5852ff6 100644
                                              }
                                          }
                                      }
-@@ -3877,6 +4123,31 @@ struct TVHomeView: View {
+@@ -3877,6 +4124,31 @@ struct TVHomeView: View {
                                      // ancestor is the UIScrollView that owns the row offset.
                                      .background(TVScrollViewFocusConfigurator())
                                      #endif
@@ -785,7 +786,7 @@ index b6c20d9..5852ff6 100644
                                      .onAppear {
                                          prepareInitialFocusViewport(
                                              for: sections,
-@@ -3908,7 +4179,9 @@ struct TVHomeView: View {
+@@ -3908,7 +4180,9 @@ struct TVHomeView: View {
                                              ? TVHomeLayout.fastVerticalScrollAnimation
                                              : TVHomeLayout.verticalScrollAnimation
                                          withAnimation(animation) {
@@ -796,7 +797,7 @@ index b6c20d9..5852ff6 100644
                                              if let targetId {
                                                  verticalScrollProxy.scrollTo(targetId, anchor: .top)
                                              }
-@@ -3925,6 +4198,7 @@ struct TVHomeView: View {
+@@ -3925,6 +4199,7 @@ struct TVHomeView: View {
                                          .frame(height: proxy.size.height + TVHomeLayout.finalRowScrollRunway)
                                          .accessibilityHidden(true)
                                  }
@@ -804,7 +805,7 @@ index b6c20d9..5852ff6 100644
                              }
                          }
                      }
-@@ -3947,6 +4221,10 @@ struct TVHomeView: View {
+@@ -3947,6 +4222,10 @@ struct TVHomeView: View {
                      .allowsHitTesting(false)
              }
          }
@@ -815,7 +816,7 @@ index b6c20d9..5852ff6 100644
          .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
              let isLoaded = store.isLoaded(for: contentIdentity)
              await loadWithAutomaticRetry(for: contentIdentity, forceReload: !isLoaded)
-@@ -4137,6 +4415,10 @@ struct TVHomeView: View {
+@@ -4137,6 +4416,10 @@ struct TVHomeView: View {
                  }
              }
          }
@@ -826,7 +827,7 @@ index b6c20d9..5852ff6 100644
          .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification).receive(on: RunLoop.main)) { _ in
              guard isActive && !isFullScreenOverlayPresented else { return }
              refreshWatchedTitles()
-@@ -4218,167 +4500,70 @@ struct TVHomeView: View {
+@@ -4218,167 +4501,70 @@ struct TVHomeView: View {
                  await load(for: identity, forceReload: true)
              }
          }
@@ -1051,7 +1052,7 @@ index b6c20d9..5852ff6 100644
      }
  
      /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
-@@ -4390,7 +4575,7 @@ struct TVHomeView: View {
+@@ -4390,7 +4576,7 @@ struct TVHomeView: View {
          let heroItems = heroEnabled ? gridHeroItems : []
          ScrollViewReader { verticalScrollProxy in
              ScrollView(.vertical) {
@@ -1060,7 +1061,7 @@ index b6c20d9..5852ff6 100644
                      if sessionNeedsReauthentication && !isBannerDismissed {
                          TVReauthBannerView(
                              onSignIn: onRequestReauth,
-@@ -4401,203 +4586,250 @@ struct TVHomeView: View {
+@@ -4401,203 +4587,249 @@ struct TVHomeView: View {
                              }
                          )
                          .padding(.horizontal, heroBleed)
@@ -1475,7 +1476,6 @@ index b6c20d9..5852ff6 100644
 +                            }
                          }
 -                    }
-+                        }
 +                        .padding(
 +                            .top,
 +                            index == 0
