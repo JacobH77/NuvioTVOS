@@ -199,7 +199,7 @@ index f2d90e8..3f8aa36 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..2ebf6f9 100644
+index b6c20d9..d4ae54c 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -301,10 +301,11 @@ index b6c20d9..2ebf6f9 100644
 +            guard let url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
 +                image = nil
 +                loadedRequestKey = nil
-+                outgoingImage = nil
-+                outgoingOpacity = 0
-+                return
-+            }
+                 outgoingImage = nil
+                 outgoingOpacity = 0
+                 return
+             }
+-            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
 +            let requestKey = "\(contentIdentity ?? "")\u{1f}\(url)"
 +                + "\u{1f}\(fallbackURL ?? "")"
 +            if requestKey != loadedRequestKey {
@@ -318,11 +319,10 @@ index b6c20d9..2ebf6f9 100644
 +                imageOpacity = 1
 +            }
 +            guard requestKey != loadedRequestKey, let imageURL = URL(string: url) else {
-                 outgoingImage = nil
-                 outgoingOpacity = 0
-                 return
-             }
--            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
++                outgoingImage = nil
++                outgoingOpacity = 0
++                return
++            }
 +            var loadedImage = await BackdropImageCache.shared.image(for: imageURL)
 +            if loadedImage == nil, !Task.isCancelled,
 +               let fallbackURL, let fallback = URL(string: fallbackURL), fallback != imageURL {
@@ -1157,30 +1157,63 @@ index b6c20d9..2ebf6f9 100644
      }
  
      private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
-@@ -6610,12 +6818,13 @@ struct TVHomeView: View {
-     /// feel responsive when parked, long enough that continuous left/right/up/down
-     /// focus does not kick off decode/crossfade every step.
+@@ -6606,25 +6814,38 @@ struct TVHomeView: View {
+         }.joined(separator: ";")
+     }
+ 
+-    /// Idle delay before hero text + full-screen backdrop swap. Short enough to
+-    /// feel responsive when parked, long enough that continuous left/right/up/down
+-    /// focus does not kick off decode/crossfade every step.
++    /// Idle delay before fetching full metadata for the focused title. Artwork
++    /// and visible information follow focus immediately; this only limits extra
++    /// network work while the user moves rapidly through cards.
      private var heroSettleNanoseconds: UInt64 {
 -        fastNavigation ? 0 : 300_000_000
 +        fastNavigation ? 0 : 120_000_000
      }
  
      /// Catalog title focus: card strip + row offset are immediate; hero/backdrop
-     /// publish only after the settle delay (and cancel if focus moves again).
+-    /// publish only after the settle delay (and cancel if focus moves again).
++    /// identity follows the focused title immediately. The settle delay only
++    /// gates enrichment requests so rapid remote movement does not fan out work.
      private func settleCatalogFocus(on meta: NuvioMeta, in sectionId: String) {
 +        showsFocusedTitleBanner = true
++        focusedSectionId = sectionId
++        focusedCollectionFolder = nil
++        if focusedMeta?.id != meta.id {
++            focusedMeta = meta
++        }
          focusWork.pendingFocusedMeta = meta
          focusWork.pendingFocusedFolder = nil
          focusWork.pendingSectionId = sectionId
-@@ -6625,6 +6834,7 @@ struct TVHomeView: View {
-     /// Collection folder focus: same freeze as catalog — keep previous hero art
-     /// until the user rests on a folder card.
+         scheduleHeroSettle()
+     }
+ 
+-    /// Collection folder focus: same freeze as catalog — keep previous hero art
+-    /// until the user rests on a folder card.
++    /// Collection folder focus follows the folder immediately; only enrichment
++    /// work is delayed, so the details panel can never describe another card.
      private func settleFolderFocus(_ folder: TVCollectionFolderItem, in sectionId: String) {
 +        showsFocusedTitleBanner = true
++        focusedSectionId = sectionId
++        focusedMeta = nil
++        if focusedCollectionFolder?.id != folder.id {
++            focusedCollectionFolder = folder
++        }
          focusWork.pendingFocusedMeta = nil
          focusWork.pendingFocusedFolder = folder
          focusWork.pendingSectionId = sectionId
-@@ -6696,7 +6906,8 @@ struct TVHomeView: View {
+@@ -6678,7 +6899,8 @@ struct TVHomeView: View {
+                   let targetSectionId,
+                   focusWork.pendingSectionId == targetSectionId else { return }
+ 
+-            // Leaving a folder hero: clear only after settle so backdrop stays frozen.
++            // Clear the folder context once a catalog title has remained focused
++            // long enough to qualify for full metadata enrichment.
+             focusedSectionId = targetSectionId
+             if focusedCollectionFolder != nil {
+                 focusedCollectionFolder = nil
+@@ -6696,7 +6918,8 @@ struct TVHomeView: View {
              // Third-party catalog responses are often intentionally compact
              // and omit runtime/status and shelf artwork. Once focus settles,
              // ask for the full metadata record in the background and fill the missing fields.
@@ -1190,7 +1223,7 @@ index b6c20d9..2ebf6f9 100644
              enrichSettledCatalogMeta(settledMeta, in: targetSectionId)
          }
      }
-@@ -6714,6 +6925,12 @@ struct TVHomeView: View {
+@@ -6714,6 +6937,12 @@ struct TVHomeView: View {
      ) async -> NuvioMeta? {
          await withTaskGroup(of: EnrichmentFetchOutcome.self) { group in
              group.addTask {
@@ -1203,7 +1236,7 @@ index b6c20d9..2ebf6f9 100644
                  let meta = try? await repository.getMetadata(id: id, type: type)
                  return .completed(meta)
              }
-@@ -6745,7 +6962,7 @@ struct TVHomeView: View {
+@@ -6745,7 +6974,7 @@ struct TVHomeView: View {
      private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) {
          let enrichmentKey = "\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
          if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
@@ -1212,7 +1245,7 @@ index b6c20d9..2ebf6f9 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -6765,7 +6982,7 @@ struct TVHomeView: View {
+@@ -6765,7 +6994,7 @@ struct TVHomeView: View {
              guard let fetched = await Task.detached(priority: .utility, operation: {
                  await Self.fetchMetadataWithTimeout(
                      repository: repository,
@@ -1221,7 +1254,7 @@ index b6c20d9..2ebf6f9 100644
                      type: targetType,
                      timeoutSeconds: 2.0
                  )
-@@ -6774,7 +6991,7 @@ struct TVHomeView: View {
+@@ -6774,7 +7003,7 @@ struct TVHomeView: View {
              }
              guard !Task.isCancelled else { return }
              focusWork.enrichedHeroMetadata[enrichmentKey] = fetched
@@ -1230,7 +1263,7 @@ index b6c20d9..2ebf6f9 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -8835,12 +9052,15 @@ private struct TVHeroView: View {
+@@ -8835,12 +9064,15 @@ private struct TVHeroView: View {
      var catalogTitle: String? = nil
      var catalogAddonName: String? = nil
      var showsCatalogAddonName: Bool = true
@@ -1247,7 +1280,7 @@ index b6c20d9..2ebf6f9 100644
      }
  
      private var hasCatalogTitle: Bool {
-@@ -8910,7 +9130,8 @@ private struct TVHeroView: View {
+@@ -8910,7 +9142,8 @@ private struct TVHeroView: View {
  
  extension TVHeroView: Equatable {
      static func == (lhs: TVHeroView, rhs: TVHeroView) -> Bool {
@@ -1257,7 +1290,7 @@ index b6c20d9..2ebf6f9 100644
              && lhs.meta.name == rhs.meta.name
              && lhs.meta.logoUrl == rhs.meta.logoUrl
              && lhs.meta.description == rhs.meta.description
-@@ -8940,18 +9161,24 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8940,18 +9173,24 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -1283,7 +1316,7 @@ index b6c20d9..2ebf6f9 100644
      private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
  
      /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
-@@ -8964,9 +9191,11 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8964,9 +9203,11 @@ private struct TVGridHeroSlideshowView: View {
  
          ZStack {
              CrossfadingBackdrop(
@@ -1297,7 +1330,7 @@ index b6c20d9..2ebf6f9 100644
              )
  
              LinearGradient(
-@@ -8999,7 +9228,6 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8999,7 +9240,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -1305,7 +1338,7 @@ index b6c20d9..2ebf6f9 100644
                      .transition(.opacity)
              }
  
-@@ -9022,48 +9250,63 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,48 +9262,63 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -1400,7 +1433,7 @@ index b6c20d9..2ebf6f9 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9369,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9381,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
