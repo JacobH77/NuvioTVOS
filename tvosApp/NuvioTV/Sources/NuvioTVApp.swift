@@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .search:
             return L10n.string("nav_search", fallback: "Search")
         case .library:
-            return L10n.string("nav_library", fallback: "Library")
+            return L10n.string("library_watchlist", fallback: "Watchlist")
         case .settings:
             return L10n.string("nav_settings", fallback: "Settings")
         }
@@ -291,7 +291,7 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .profile: return "person.crop.circle"
         case .home: return "house"
         case .search: return "magnifyingglass"
-        case .library: return "rectangle.stack"
+        case .library: return "bookmark"
         case .settings: return "gearshape"
         }
     }

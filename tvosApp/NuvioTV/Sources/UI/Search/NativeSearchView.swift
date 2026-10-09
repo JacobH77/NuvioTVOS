@@ -94,11 +94,11 @@ private enum NativeSearchGridMetrics {
     static let linearColumnCount: CGFloat = 7
     static let linearCardRowWidth = linearPosterWidth * linearColumnCount + linearPosterGap * (linearColumnCount - 1)
 
-    // Grid layout metrics (4 columns beside the keyboard)
+    // Grid layout metrics (5 columns beside the keyboard)
     static let gridPosterWidth: CGFloat = 210
     static let gridPosterHeight: CGFloat = 315
     static let gridPosterGap: CGFloat = 28
-    static let gridColumnCount: CGFloat = 4
+    static let gridColumnCount: CGFloat = 5
     static let gridCardRowWidth = gridPosterWidth * gridColumnCount + gridPosterGap * (gridColumnCount - 1)
 
     static let keyboardWidth: CGFloat = 520
@@ -587,7 +587,8 @@ struct NativeSearchView: View {
                             forceShowLabels: true,
                             onMove: { direction in
                                 if isGridMode {
-                                    if index % 4 == 0, direction == .left {
+                                    if index % Int(NativeSearchGridMetrics.gridColumnCount) == 0,
+                                       direction == .left {
                                         transferFocusToGridKeyboard()
                                     }
                                 } else {

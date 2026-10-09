@@ -6387,6 +6387,51 @@ enum WatchedStore {
         )
     }
 
+    /// Removes a finished title from the saved and selected remote watchlists.
+    /// Episode-level marks only count for a series after its aired regular
+    /// episodes are complete; compact watchlist metadata is resolved before
+    /// making that decision.
+    private static func removeCompletedTitleFromWatchlist(_ meta: NuvioMeta) {
+        let profileID = activeProfileId
+        let source = TraktSettingsStore.librarySourceMode
+        Task { @MainActor in
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID else { return }
+
+            var resolved = meta
+            if meta.isSeries,
+               !contains(meta: meta),
+               meta.videos == nil || meta.videos?.isEmpty == true {
+                guard let full = try? await CinemetaCatalogRepository().getMetadata(
+                    id: meta.id,
+                    type: meta.type
+                ) else { return }
+                resolved = full
+            }
+
+            // Metadata loading may have overlapped a profile or source change.
+            guard activeProfileId == profileID,
+                  LibraryStore.activeProfileId == profileID,
+                  TraktSettingsStore.librarySourceMode == source else { return }
+            let completed = contains(meta: resolved)
+                || (resolved.isSeries && hasSeriesWatchedState(resolved))
+            guard completed else { return }
+
+            if LibraryStore.contains(metaId: meta.id, type: meta.type) {
+                LibraryStore.remove(metaId: meta.id, type: meta.type)
+            }
+            if SelectedLibraryService.isSelectedAndAuthenticated {
+                let removed = await SelectedLibraryService.setWatchlist(meta, isInWatchlist: false)
+                if removed, activeProfileId == profileID {
+                    NotificationCenter.default.post(
+                        name: TraktSettingsStore.libraryChangedNotification,
+                        object: nil
+                    )
+                }
+            }
+        }
+    }
+
     /// Creates the local title marker and the episode rows needed for a
     /// completed-series mark in one durable write. Existing special and
     /// upcoming rows are intentionally retained, but eligible episode rows
@@ -6432,6 +6477,8 @@ enum WatchedStore {
             return !episodeKeys.contains(String(season) + ":" + String(episode))
         }
         guard persist(updated) else { return false }
+
+        removeCompletedTitleFromWatchlist(meta)
 
         clearTombstone(meta: meta, season: nil, episode: nil)
         for item in episodeItems {
@@ -6704,6 +6751,9 @@ enum WatchedStore {
         // completes every aired regular episode in the series, and removes it
         // again when any season is marked unwatched.
         reconcileWholeSeriesMarker(for: meta)
+        if isWatched {
+            removeCompletedTitleFromWatchlist(meta)
+        }
         return true
     }
 
@@ -6808,6 +6858,7 @@ enum WatchedStore {
 
         syncSeriesWatchedEpisodes(meta, episodesBySeason: episodesBySeason, isWatched: true)
         reconcileWholeSeriesMarker(for: meta)
+        removeCompletedTitleFromWatchlist(meta)
         return true
     }
 
@@ -6864,6 +6915,7 @@ enum WatchedStore {
                 && $0.season == season && $0.episode == episode)
         }
         guard persist(updated) else { return false }
+        removeCompletedTitleFromWatchlist(meta)
         // The mark is durable now, so it is safe to cancel any pending remote
         // delete. A failed watched-list write must leave that protection intact.
         clearTombstone(meta: meta, season: season, episode: episode)

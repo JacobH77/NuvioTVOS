@@ -15,6 +15,7 @@ public class LibraryViewModel: ObservableObject {
     /// returning restores that card instead of snapping to the top.
     public var lastFocusedItemID: String?
     private var libraryObserver: NSObjectProtocol?
+    private var watchedObserver: NSObjectProtocol?
     private var traktAuthObserver: NSObjectProtocol?
     private var simklAuthObserver: NSObjectProtocol?
     private var mdbListAuthObserver: NSObjectProtocol?
@@ -72,6 +73,15 @@ public class LibraryViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.loadLibrary()
+            }
+        }
+        watchedObserver = NotificationCenter.default.addObserver(
+            forName: WatchedStore.changedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.removeCompletedWatchlistItems()
             }
         }
         traktAuthObserver = NotificationCenter.default.addObserver(
@@ -152,7 +162,7 @@ public class LibraryViewModel: ObservableObject {
 
     deinit {
         for observer in [
-            libraryObserver, traktAuthObserver, simklAuthObserver, mdbListAuthObserver,
+            libraryObserver, watchedObserver, traktAuthObserver, simklAuthObserver, mdbListAuthObserver,
             wetrakrAuthObserver, traktSettingsObserver, traktMutationObserver,
             mdbListMutationObserver, wetrakrMutationObserver
         ].compactMap({ $0 }) {
@@ -181,6 +191,7 @@ public class LibraryViewModel: ObservableObject {
         storeItems.forEach { CinemetaCatalogRepository.cacheCatalogMetadata($0.meta) }
         items = storeItems.map(\.stremioMeta)
         validateFilters()
+        removeCompletedWatchlistItems()
     }
 
     public func refreshSelectedLibrary() async {
@@ -233,6 +244,7 @@ public class LibraryViewModel: ObservableObject {
             selectedMdbListListID = nil
         }
         validateFilters()
+        removeCompletedWatchlistItems()
     }
 
     public func selectMdbListList(_ listID: Int?) async {
@@ -265,10 +277,31 @@ public class LibraryViewModel: ObservableObject {
         usesRemoteLibrary else { return }
         items = listItems.map(\.stremioMeta)
         validateFilters()
+        removeCompletedWatchlistItems()
     }
 
     private var usesRemoteLibrary: Bool {
         SelectedLibraryService.isSelectedAndAuthenticated
+    }
+
+    /// Completed titles leave the active watchlist automatically. Keep the
+    /// local store and the selected remote watchlist in sync with watched marks.
+    private func removeCompletedWatchlistItems() {
+        let completedItems = items.filter {
+            WatchedStore.isWatchedForDisplay(meta: $0.asNuvioMeta)
+        }
+        guard !completedItems.isEmpty else { return }
+
+        let completedKeys = Set(completedItems.map { "\($0.contentType.lowercased())\u{1f}\($0.id)" })
+        items.removeAll {
+            completedKeys.contains("\($0.contentType.lowercased())\u{1f}\($0.id)")
+        }
+
+        if !usesRemoteLibrary {
+            for item in completedItems {
+                LibraryStore.remove(metaId: item.id, type: item.contentType)
+            }
+        }
     }
 
     /// The Android TV library updates its Trakt snapshot immediately after a
