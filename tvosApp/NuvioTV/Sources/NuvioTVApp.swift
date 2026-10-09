@@ -2730,8 +2730,7 @@ private struct ProfileScopedRootBackground: View {
 private struct CrossfadingBackdrop: View {
     let url: String?
     let placeholder: Color
-    /// Stable media identity prevents a previous title's decoded art from
-    /// lingering under a newly focused title while its URL is loading.
+    /// A decoded image is retained only while its media identity is current.
     var contentIdentity: String? = nil
     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
     /// (Android `Alignment.TopEnd`); title posters keep center.
@@ -2739,23 +2738,38 @@ private struct CrossfadingBackdrop: View {
     var fallbackURL: String? = nil
 
     @State private var image: UIImage?
+    @State private var imageContentIdentity: String?
     @State private var loadedRequestKey: String?
     @State private var outgoingImage: UIImage?
+    @State private var outgoingContentIdentity: String?
     @State private var outgoingOpacity = 0.0
-    @State private var imageOpacity = 1.0
+    @State private var imageOpacity = 0.0
+
+    private var requestKey: String {
+        "\(contentIdentity ?? "")\u{1f}\(url ?? "")\u{1f}\(fallbackURL ?? "")"
+    }
+
+    private var hasArtworkRequest: Bool {
+        url?.isEmpty == false || fallbackURL?.isEmpty == false
+    }
+
+    private func resolvedURL(from rawValue: String?) -> URL? {
+        guard let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return URL(string: value)
+    }
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
                 placeholder
-                if let outgoingImage {
+                if hasArtworkRequest, let outgoingImage, outgoingContentIdentity == contentIdentity {
                     backdropImage(outgoingImage, size: proxy.size)
                         .opacity(outgoingOpacity)
                 }
-                if let image {
+                if hasArtworkRequest, let image, imageContentIdentity == contentIdentity {
                     backdropImage(image, size: proxy.size)
                         .opacity(imageOpacity)
-                        .id(loadedRequestKey)
                 }
             }
             // Portrait poster fallbacks must be cropped inside the screen, not
@@ -2763,54 +2777,70 @@ private struct CrossfadingBackdrop: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
-        .task(id: "\(contentIdentity ?? "")|\(url ?? "")|\(fallbackURL ?? "")") {
-            guard let url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        .task(id: requestKey) {
+            let requestKey = self.requestKey
+            let requestedContentIdentity = contentIdentity
+            let primary = resolvedURL(from: url)
+            let fallback = resolvedURL(from: fallbackURL)
+
+            if imageContentIdentity != requestedContentIdentity {
                 image = nil
+                imageContentIdentity = nil
                 loadedRequestKey = nil
                 outgoingImage = nil
+                outgoingContentIdentity = nil
                 outgoingOpacity = 0
-                return
+                imageOpacity = 0
+            } else {
+                // A refresh for the same title may keep its current artwork
+                // until the replacement arrives. Finish an interrupted
+                // transition first so no third image layer can accumulate.
+                outgoingImage = nil
+                outgoingContentIdentity = nil
+                outgoingOpacity = 0
+                if image != nil { imageOpacity = 1 }
             }
-            let requestKey = "\(contentIdentity ?? "")\u{1f}\(url)"
-            if requestKey != loadedRequestKey {
-                // Clear stale art whenever the title or its selected artwork URL
-                // changes. Otherwise a bad catalog backdrop stays visible while
-                // a corrected image loads and appears attached to this title.
+
+            guard primary != nil || fallback != nil else {
                 image = nil
+                imageContentIdentity = nil
                 loadedRequestKey = nil
                 outgoingImage = nil
+                outgoingContentIdentity = nil
                 outgoingOpacity = 0
-                imageOpacity = 1
-            }
-            guard requestKey != loadedRequestKey else {
-                outgoingImage = nil
-                outgoingOpacity = 0
+                imageOpacity = 0
                 return
             }
-            let primaryURL = URL(string: url)
+            guard requestKey != loadedRequestKey else { return }
+
             var loadedImage: UIImage?
-            if let imageURL = primaryURL {
-                loadedImage = await BackdropImageCache.shared.image(for: imageURL)
+            if let primary {
+                loadedImage = await BackdropImageCache.shared.image(for: primary)
             }
             if loadedImage == nil, !Task.isCancelled,
-               let fallbackURL, let fallback = URL(string: fallbackURL), fallback != primaryURL {
+               let fallback, fallback != primary {
                 loadedImage = await BackdropImageCache.shared.image(for: fallback)
             }
-            guard let loaded = loadedImage else { return }
-            // Some catalog add-ons (including BetterPosters) only provide a
-            // poster URL. PosterCard uses that same image for its landscape
-            // state, so allow the full-screen aspect-fill to use it as well.
-            // `.task(id:)` cancels when the title or URL changes, so reaching
-            // here means this request is still the one the view wants.
-            guard !Task.isCancelled else { return }
+            guard let loaded = loadedImage,
+                  !Task.isCancelled,
+                  requestKey == self.requestKey else { return }
+
             let previousImage = image
-            if previousImage != nil {
+            if let previousImage,
+               imageContentIdentity == requestedContentIdentity,
+               previousImage !== loaded {
                 outgoingImage = previousImage
+                outgoingContentIdentity = requestedContentIdentity
                 outgoingOpacity = 1
+            } else {
+                outgoingImage = nil
+                outgoingContentIdentity = nil
+                outgoingOpacity = 0
             }
             image = loaded
+            imageContentIdentity = requestedContentIdentity
             loadedRequestKey = requestKey
-            imageOpacity = previousImage == nil ? 1 : 0
+            imageOpacity = 0
 
             withAnimation(.easeInOut(duration: 0.30)) {
                 imageOpacity = 1
@@ -2820,6 +2850,7 @@ private struct CrossfadingBackdrop: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, loadedRequestKey == requestKey else { return }
             outgoingImage = nil
+            outgoingContentIdentity = nil
             outgoingOpacity = 0
         }
     }
@@ -2863,12 +2894,17 @@ actor BackdropImageCache {
         }()
     )
 
+    private struct InFlightRequest {
+        let task: Task<UIImage?, Never>
+        var waiters: Set<UUID>
+    }
+
     static func telemetryMetrics() -> (count: Int, totalBytes: Int, maxCost: Int) {
         tracker.metrics()
     }
 
     private let cache = NSCache<NSString, UIImage>()
-    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private var inFlight: [String: InFlightRequest] = [:]
 
     init() {
         cache.totalCostLimit = Self.tracker.maxCost
@@ -2890,29 +2926,63 @@ actor BackdropImageCache {
 
     func purge() {
         cache.removeAllObjects()
+        for request in inFlight.values {
+            request.task.cancel()
+        }
+        inFlight.removeAll()
         Self.tracker.reset()
     }
 
     func image(for url: URL) async -> UIImage? {
-        let key = url.absoluteString as NSString
-        if let cached = cache.object(forKey: key) { return cached }
-        if let pending = inFlight[url.absoluteString] { return await pending.value }
-        let pixelSize = Self.maxPixelSize
-        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
-                  !Task.isCancelled,
-                  let http = response as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode),
-                  data.count > 512 else { return nil }
-            return downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+        let requestKey = url.absoluteString
+        let cacheKey = requestKey as NSString
+        if let cached = cache.object(forKey: cacheKey) { return cached }
+
+        let waiterID = UUID()
+        let task: Task<UIImage?, Never>
+        if var request = inFlight[requestKey] {
+            request.waiters.insert(waiterID)
+            inFlight[requestKey] = request
+            task = request.task
+        } else {
+            let pixelSize = Self.maxPixelSize
+            task = Task.detached(priority: .userInitiated) {
+                guard let (data, response) = try? await URLSession.shared.data(from: url),
+                      !Task.isCancelled,
+                      let http = response as? HTTPURLResponse,
+                      (200...299).contains(http.statusCode),
+                      data.count > 512 else { return nil }
+                return downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+            }
+            inFlight[requestKey] = InFlightRequest(task: task, waiters: [waiterID])
         }
-        inFlight[url.absoluteString] = task
-        defer { inFlight[url.absoluteString] = nil }
-        guard let decoded = await task.value else { return nil }
-        let cost = decoded.decodedByteCost
-        cache.setObject(decoded, forKey: key, cost: cost)
-        Self.tracker.recordInsertion(cost: cost)
+
+        let decoded = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task {
+                await self.releaseWaiter(for: requestKey, waiterID: waiterID)
+            }
+        }
+        defer { releaseWaiter(for: requestKey, waiterID: waiterID) }
+
+        guard !Task.isCancelled, let decoded else { return nil }
+        if cache.object(forKey: cacheKey) == nil {
+            cache.setObject(decoded, forKey: cacheKey, cost: decoded.decodedByteCost)
+            Self.tracker.recordInsertion(cost: decoded.decodedByteCost)
+        }
         return decoded
+    }
+
+    private func releaseWaiter(for requestKey: String, waiterID: UUID) {
+        guard var request = inFlight[requestKey],
+              request.waiters.remove(waiterID) != nil else { return }
+        if request.waiters.isEmpty {
+            inFlight.removeValue(forKey: requestKey)
+            request.task.cancel()
+        } else {
+            inFlight[requestKey] = request
+        }
     }
 }
 
@@ -3915,7 +3985,7 @@ struct TVHomeView: View {
                         placeholder: backdropColor,
                         contentIdentity: homeBackdropIdentity,
                         alignment: focusedCollectionFolder != nil ? .topTrailing : .center,
-                        fallbackURL: homeBackdropFallbackURL
+                        fallbackURL: shouldShowFocusedHomeArtwork ? homeBackdropFallbackURL : nil
                     )
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -3932,7 +4002,7 @@ struct TVHomeView: View {
                             placeholder: backdropColor,
                             contentIdentity: homeBackdropIdentity,
                             alignment: .topTrailing,
-                            fallbackURL: homeBackdropFallbackURL
+                            fallbackURL: shouldShowFocusedHomeArtwork ? homeBackdropFallbackURL : nil
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
@@ -4517,6 +4587,7 @@ struct TVHomeView: View {
                         focusRequestGeneration: gridHeroFocusRequestGeneration,
                         shouldRequestInitialFocus: store.lastFocusedCardID == nil && !didRequestInitialCardFocus,
                         onInitialFocusRequested: { didRequestInitialCardFocus = true },
+                        showsArtwork: shouldShowFeaturedHomeArtwork,
                         heroHeight: homeLayout == "Compact" ? CGFloat(720) : CGFloat(820),
                         onPlay: onPlayFeatured,
                         onFocusChange: { focused in
@@ -4608,6 +4679,7 @@ struct TVHomeView: View {
                                         didRequestInitialCardFocus = true
                                     },
                                     backdropBleed: heroBleed,
+                                    showsArtwork: shouldShowFeaturedHomeArtwork,
                                     onPlay: onPlayFeatured,
                                     onFocusChange: { focused in
                                         isGridHeroFocused = focused
@@ -6348,6 +6420,16 @@ struct TVHomeView: View {
         TVHomeHeroPresentation.showsFocusedArtwork(
             isLoading: showsLoading,
             isGridLayout: homeLayout == "Grid View",
+            heroEnabled: heroEnabled,
+            hasFeaturedTitles: !gridHeroItems.isEmpty,
+            isFeaturedHeroFocused: isGridHeroFocused,
+            showsFocusedTitle: showsFocusedTitleBanner
+        )
+    }
+
+    private var shouldShowFeaturedHomeArtwork: Bool {
+        TVHomeHeroPresentation.showsFeaturedArtwork(
+            isLoading: showsLoading,
             heroEnabled: heroEnabled,
             hasFeaturedTitles: !gridHeroItems.isEmpty,
             isFeaturedHeroFocused: isGridHeroFocused,
@@ -9285,6 +9367,9 @@ private struct TVGridHeroSlideshowView: View {
     /// widens — the hero's frame, its text, and the focus geometry stay inside
     /// the safe area.
     var backdropBleed: CGFloat = 0
+    /// The Home background coordinator owns artwork while a catalog card is
+    /// focused; the carousel remains mounted with its content and controls.
+    var showsArtwork: Bool = true
     var heroHeight: CGFloat = 820
     var onPlay: (NuvioMeta) -> Void = { _ in }
     var onFocusChange: ((Bool) -> Void)? = nil
@@ -9379,7 +9464,7 @@ private struct TVGridHeroSlideshowView: View {
         // After `clipped()`, so the widened artwork isn't trimmed back to the
         // hero's frame.
         .background {
-            if let activeItem {
+            if showsArtwork, let activeItem {
                 artLayer(enrichedHero?.id == activeItem.id && enrichedHero?.type == activeItem.type ? (enrichedHero ?? activeItem) : activeItem)
             }
         }

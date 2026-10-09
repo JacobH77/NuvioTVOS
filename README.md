@@ -131,6 +131,7 @@ The original shared mobile code is still present in [composeApp](./composeApp), 
 - Native SwiftUI entry point in [NuvioTVApp.swift](./tvosApp/NuvioTV/Sources/NuvioTVApp.swift).
 - Apple TV tab navigation for Profile, Home, Search, Library, and Settings.
 - Home rows for synced Nuvio collections and configured catalog lists.
+- Home focus selects one coordinated artwork source, while title information follows the focused movie, series, or collection card.
 - Catalog and metadata repository with configurable catalog, playback, and subtitle integrations.
 - User-configurable source integrations in Settings → Integrations → Add-ons.
 - Cloud library playback through supported connected services.

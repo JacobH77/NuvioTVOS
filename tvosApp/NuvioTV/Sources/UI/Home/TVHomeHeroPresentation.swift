@@ -23,6 +23,17 @@ enum TVHomeHeroPresentation {
         heroEnabled && showsFocusedTitle
     }
 
+    static func showsFeaturedArtwork(
+        isLoading: Bool,
+        heroEnabled: Bool,
+        hasFeaturedTitles: Bool,
+        isFeaturedHeroFocused: Bool,
+        showsFocusedTitle: Bool
+    ) -> Bool {
+        guard !isLoading, heroEnabled, hasFeaturedTitles else { return false }
+        return isFeaturedHeroFocused || !showsFocusedTitle
+    }
+
     static func showsFocusedArtwork(
         isLoading: Bool,
         isGridLayout: Bool,
@@ -33,9 +44,12 @@ enum TVHomeHeroPresentation {
     ) -> Bool {
         guard !isLoading else { return false }
         if isGridLayout && !showsFocusedTitle { return false }
-        if heroEnabled && hasFeaturedTitles && (isFeaturedHeroFocused || !showsFocusedTitle) {
-            return false
-        }
-        return true
+        return !showsFeaturedArtwork(
+            isLoading: isLoading,
+            heroEnabled: heroEnabled,
+            hasFeaturedTitles: hasFeaturedTitles,
+            isFeaturedHeroFocused: isFeaturedHeroFocused,
+            showsFocusedTitle: showsFocusedTitle
+        )
     }
 }

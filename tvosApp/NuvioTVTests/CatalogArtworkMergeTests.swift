@@ -402,7 +402,7 @@ final class CatalogArtworkMergeTests: XCTestCase {
     private func makeMeta(
         id: String,
         imdbId: String?,
-        tmdbId: Int?,
+        tmdbId: Int? = nil,
         type: String = "series",
         name: String = "Test Title",
         year: Int? = nil,

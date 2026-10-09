@@ -106,4 +106,105 @@ final class HomeHeroPresentationTests: XCTestCase {
             )
         }
     }
+
+    func testBackdropArtworkMovesBetweenFeaturedAndFocusedItem() {
+        for isGridLayout in [false, true] {
+            let featuredState = (
+                loading: false,
+                heroFocused: false,
+                titleFocused: false
+            )
+            XCTAssertTrue(
+                TVHomeHeroPresentation.showsFeaturedArtwork(
+                    isLoading: featuredState.loading,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: featuredState.heroFocused,
+                    showsFocusedTitle: featuredState.titleFocused
+                )
+            )
+            XCTAssertFalse(
+                TVHomeHeroPresentation.showsFocusedArtwork(
+                    isLoading: featuredState.loading,
+                    isGridLayout: isGridLayout,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: featuredState.heroFocused,
+                    showsFocusedTitle: featuredState.titleFocused
+                )
+            )
+
+            let cardFocusedState = (
+                loading: false,
+                heroFocused: false,
+                titleFocused: true
+            )
+            XCTAssertFalse(
+                TVHomeHeroPresentation.showsFeaturedArtwork(
+                    isLoading: cardFocusedState.loading,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: cardFocusedState.heroFocused,
+                    showsFocusedTitle: cardFocusedState.titleFocused
+                )
+            )
+            XCTAssertTrue(
+                TVHomeHeroPresentation.showsFocusedArtwork(
+                    isLoading: cardFocusedState.loading,
+                    isGridLayout: isGridLayout,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: cardFocusedState.heroFocused,
+                    showsFocusedTitle: cardFocusedState.titleFocused
+                )
+            )
+
+            let heroFocusedState = (
+                loading: false,
+                heroFocused: true,
+                titleFocused: false
+            )
+            XCTAssertTrue(
+                TVHomeHeroPresentation.showsFeaturedArtwork(
+                    isLoading: heroFocusedState.loading,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: heroFocusedState.heroFocused,
+                    showsFocusedTitle: heroFocusedState.titleFocused
+                )
+            )
+            XCTAssertFalse(
+                TVHomeHeroPresentation.showsFocusedArtwork(
+                    isLoading: heroFocusedState.loading,
+                    isGridLayout: isGridLayout,
+                    heroEnabled: true,
+                    hasFeaturedTitles: true,
+                    isFeaturedHeroFocused: heroFocusedState.heroFocused,
+                    showsFocusedTitle: heroFocusedState.titleFocused
+                )
+            )
+        }
+    }
+
+    func testLoadingNeverShowsEitherBackdropArtworkLayer() {
+        XCTAssertFalse(
+            TVHomeHeroPresentation.showsFeaturedArtwork(
+                isLoading: true,
+                heroEnabled: true,
+                hasFeaturedTitles: true,
+                isFeaturedHeroFocused: false,
+                showsFocusedTitle: true
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.showsFocusedArtwork(
+                isLoading: true,
+                isGridLayout: false,
+                heroEnabled: true,
+                hasFeaturedTitles: true,
+                isFeaturedHeroFocused: false,
+                showsFocusedTitle: true
+            )
+        )
+    }
 }
