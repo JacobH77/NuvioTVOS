@@ -3665,6 +3665,10 @@ struct TVHomeView: View {
     @FocusState private var focusedCardID: String?
 
     var body: some View {
+        homeFocusLifecycleView
+    }
+
+    private var homeVisualContent: some View {
         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
         ZStack(alignment: .topLeading) {
             // Keep TVHomeView mounted in TabView across tab switches so that
@@ -3777,6 +3781,10 @@ struct TVHomeView: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private var homeDataLifecycleView: some View {
+        homeVisualContent
         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
             let isLoaded = store.isLoaded(for: contentIdentity)
             await loadWithAutomaticRetry(for: contentIdentity, forceReload: !isLoaded)
@@ -3870,6 +3878,10 @@ struct TVHomeView: View {
         }
         // TabView can keep Home mounted while Settings is selected, so returning
         // to Home does not reliably produce another onAppear.
+    }
+
+    private var homeCatalogLifecycleView: some View {
+        homeDataLifecycleView
         .onChange(of: isActive) { oldActive, active in
             TVHomeDebugTrace.log(
                 "home.isActive changed from \(oldActive) to \(active) "
@@ -4050,6 +4062,10 @@ struct TVHomeView: View {
                 await load(for: identity, forceReload: true)
             }
         }
+    }
+
+    private var homeFocusLifecycleView: some View {
+        homeCatalogLifecycleView
         .onDisappear(perform: handleHomeDisappear)
         .onChange(of: isLoading) { _, loading in
             TVHomeDebugTrace.log("home.onChange(isLoading) loading=\(loading) showsLoading=\(showsLoading)")
@@ -5179,6 +5195,7 @@ struct TVHomeView: View {
             store.lastFocusedCardID = targetCardKey
             focusedCardID = targetCardKey
         }
+
     }
 
     private var homeForegroundContent: some View {
