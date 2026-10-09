@@ -1,0 +1,33 @@
+name: Build unsigned tvOS IPA
+
+on:
+  push:
+    branches:
+      - codex/watchlist-grid-search
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - name: Check out source and MPVKit
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Tuist
+        run: brew install tuist
+
+      - name: Build unsigned Apple TV IPA
+        run: bash scripts/build-ipa.sh
+
+      - name: Save IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-unsigned-Apple-TV
+          path: build-ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 14
