@@ -4632,7 +4632,6 @@ struct TVHomeView: View {
                 if TVHomeHeroPresentation.showsFocusedTitleInformation(
                     heroEnabled: heroEnabled,
                     showsFocusedTitle: showsFocusedTitleBanner,
-                    focusedTitleMatchesFeaturedTitle: focusedTitleMatchesFeaturedHero
                 ) {
                     focusedTitleHeroHeader
                 }
@@ -4730,8 +4729,7 @@ struct TVHomeView: View {
                             if TVHomeHeroPresentation.showsFocusedTitleInformation(
                                 heroEnabled: heroEnabled,
                                 showsFocusedTitle: showsFocusedTitleBanner,
-                                focusedTitleMatchesFeaturedTitle: focusedTitleMatchesFeaturedHero
-                            ) {
+                                        ) {
                                 focusedTitleHeroHeader
                             }
                         }
@@ -6467,18 +6465,6 @@ struct TVHomeView: View {
             isFeaturedHeroFocused: isGridHeroFocused,
             showsFocusedTitle: showsFocusedTitleBanner
         )
-    }
-
-    private var focusedTitleMatchesFeaturedHero: Bool {
-        guard showsFocusedTitleBanner,
-              let focusedMeta = focusedHomePresentationMeta else { return false }
-        let selection = TVHomeHeroPresentation.featuredSelection(
-            identities: gridHeroItems.map { TVHomeHeroPresentation.FeaturedItemIdentity($0) },
-            selectedIdentity: gridHeroSelectedIdentity,
-            fallbackIndex: gridHeroIndex
-        )
-        guard gridHeroItems.indices.contains(selection.index) else { return false }
-        return focusedMeta.hasSameMediaIdentity(as: gridHeroItems[selection.index])
     }
 
     private var homeBackdropIdentity: String? {
