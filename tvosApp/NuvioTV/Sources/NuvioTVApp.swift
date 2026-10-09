@@ -4631,7 +4631,7 @@ struct TVHomeView: View {
 
                 if TVHomeHeroPresentation.showsFocusedTitleInformation(
                     heroEnabled: heroEnabled,
-                    showsFocusedTitle: showsFocusedTitleBanner,
+                    showsFocusedTitle: showsFocusedTitleBanner
                 ) {
                     focusedTitleHeroHeader
                 }
@@ -4728,8 +4728,8 @@ struct TVHomeView: View {
 
                             if TVHomeHeroPresentation.showsFocusedTitleInformation(
                                 heroEnabled: heroEnabled,
-                                showsFocusedTitle: showsFocusedTitleBanner,
-                                        ) {
+                                showsFocusedTitle: showsFocusedTitleBanner
+                            ) {
                                 focusedTitleHeroHeader
                             }
                         }
