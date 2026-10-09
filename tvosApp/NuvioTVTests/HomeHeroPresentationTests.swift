@@ -89,7 +89,7 @@ final class HomeHeroPresentationTests: XCTestCase {
         )
     }
 
-    func testFocusedTitleInformationDoesNotDuplicateFeaturedTitle() {
+    func testFocusedTitleInformationShowsForAnyFocusedHomeCardIncludingFeaturedTitle() {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFeaturedHero(
                 heroEnabled: true,
@@ -99,15 +99,19 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: true,
-                focusedTitleMatchesFeaturedTitle: false
+                showsFocusedTitle: true
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.showsFocusedTitleInformation(
+                heroEnabled: false,
+                showsFocusedTitle: true
             )
         )
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: true,
-                focusedTitleMatchesFeaturedTitle: true
+                showsFocusedTitle: false
             )
         )
     }
