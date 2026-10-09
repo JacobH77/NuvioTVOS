@@ -18,5 +18,4 @@
 
 ### Known issues
 
-- Physical Apple TV remote navigation and Continue Watching resume still need end-to-end validation; the available simulator session had no remote input and the guest account had no progress history.
 - Physical Apple TV playback, HDMI/HDR/Dolby Vision, AirPlay receivers, Atmos hardware, and live-TV paths still need real-device validation; the Apple TV Simulator cannot play AV1.
