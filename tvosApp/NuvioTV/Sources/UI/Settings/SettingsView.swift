@@ -8776,8 +8776,8 @@ private struct AboutSettingsView: View {
             }
 
             SettingsGroup(
-                title: "Artwork Diagnostics",
-                subtitle: "Recent poster URL, network, and decode results"
+                title: "Better Posters Diagnostics",
+                subtitle: "Decoded image returned by the Better Posters artwork host"
             ) {
                 if let preview = artworkDiagnosticPreview {
                     VStack(alignment: .leading, spacing: 10) {
@@ -8793,8 +8793,8 @@ private struct AboutSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     SettingsInfoRow(
-                        title: "Decoded preview",
-                        value: "No cached image is available yet",
+                        title: "Better Posters preview",
+                        value: "No decoded image from btttr.cc is available yet",
                         isDiagnostic: true
                     )
                 }
@@ -8840,7 +8840,7 @@ private struct AboutSettingsView: View {
     private func refreshArtworkDiagnostics() {
         artworkDiagnostics = TVHomeDebugTrace.recentArtworkBreadcrumbs(count: 8)
         Task { @MainActor in
-            artworkDiagnosticPreview = await PosterArtworkCache.shared.diagnosticPreview()
+            artworkDiagnosticPreview = await PosterArtworkCache.shared.betterPostersDiagnosticPreview()
         }
     }
 }

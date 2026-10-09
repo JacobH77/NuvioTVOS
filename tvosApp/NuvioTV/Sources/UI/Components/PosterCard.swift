@@ -1927,10 +1927,16 @@ actor PosterArtworkCache {
 
     private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
-    private var latestDiagnosticPreview: PosterArtworkDiagnosticPreview?
+    private var latestBetterPostersPreview: PosterArtworkDiagnosticPreview?
 
-    func diagnosticPreview() -> PosterArtworkDiagnosticPreview? {
-        latestDiagnosticPreview
+    func betterPostersDiagnosticPreview() -> PosterArtworkDiagnosticPreview? {
+        latestBetterPostersPreview
+    }
+
+    private func rememberDiagnosticPreview(_ image: UIImage, for url: URL) {
+        guard let host = url.host?.lowercased(),
+              host == "btttr.cc" || host.hasSuffix(".btttr.cc") else { return }
+        latestBetterPostersPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
     }
 
     init() {
@@ -1982,14 +1988,14 @@ actor PosterArtworkCache {
         let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
 
         if let cached = cache.object(forKey: key) {
-            latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: cached)
+            rememberDiagnosticPreview(cached, for: url)
             return cached
         }
 
         if let task = inFlight[key as String] {
             let image = await task.value
             if let image {
-                latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
+                rememberDiagnosticPreview(image, for: url)
             }
             return image
         }
@@ -2047,7 +2053,7 @@ actor PosterArtworkCache {
             let cost = image.decodedByteCost
             cache.setObject(image, forKey: key, cost: cost)
             Self.tracker.recordInsertion(cost: cost)
-            latestDiagnosticPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
+            rememberDiagnosticPreview(image, for: url)
         }
         return image
     }
