@@ -25,7 +25,9 @@ jobs:
           submodules: recursive
       - name: Apply requested app changes
         run: |
-          if git apply --reverse --check NuvioTVOS-preferences.patch 2>/dev/null; then
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "Building the app sources from this pull request checkout"
+          elif git apply --reverse --check NuvioTVOS-preferences.patch 2>/dev/null; then
             echo "Preference changes are already applied"
           else
             git apply --check NuvioTVOS-preferences.patch
