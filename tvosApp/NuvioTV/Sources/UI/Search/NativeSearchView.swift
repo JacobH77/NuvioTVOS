@@ -345,7 +345,6 @@ struct NativeSearchView: View {
                             onContentClick: onContentClick,
                             isBesideKeyboard: true,
                             columnCount: 5,
-                            cardWidth: gridResultCardWidth,
                             onLongPress: onLongPress,
                             parentTransitionActive: $discoverOverlayTransitionActive
                         )
