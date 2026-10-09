@@ -2,6 +2,10 @@ name: Build custom Apple TV IPA
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - NuvioTVOS-preferences.patch
+      - .github/workflows/build-custom-ipa.yml
   push:
     branches: [main]
     paths:
