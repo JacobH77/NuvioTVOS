@@ -776,7 +776,7 @@ index b6c20d9..9adcdcd 100644
 +                                            transaction.disablesAnimations = true
 +                                            withTransaction(transaction) {
 +                                                if focusedRowIndex == 0, heroEnabled, !gridHeroItems.isEmpty {
-+                                                    verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                                                    verticalScrollProxy.scrollTo(sectionID, anchor: .top)
 +                                                } else {
 +                                                    verticalScrollProxy.scrollTo(sectionID, anchor: .top)
 +                                                }
@@ -1237,7 +1237,7 @@ index b6c20d9..9adcdcd 100644
 +                                        }
 +                                        focusedRowIndex = index
 +                                        if index == 0, heroEnabled, !heroItems.isEmpty {
-+                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
++                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                                        }
 +                                        focusedSectionId = section.id
 +                                        focusedCardID = cardKey
@@ -1300,7 +1300,7 @@ index b6c20d9..9adcdcd 100644
 +                                        }
 +                                        focusedRowIndex = index
 +                                        if index == 0, heroEnabled, !heroItems.isEmpty {
-+                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
++                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                                        }
 +                                        focusedSectionId = section.id
 +                                        focusedCardID = cardKey
@@ -1442,7 +1442,7 @@ index b6c20d9..9adcdcd 100644
 +                                        }
 +                                        focusedRowIndex = index
 +                                        if index == 0, heroEnabled, !heroItems.isEmpty {
-+                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
++                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                                        }
 +                                        focusedSectionId = section.id
 +                                        focusedCardID = cardKey
@@ -1465,7 +1465,7 @@ index b6c20d9..9adcdcd 100644
 +                                        acknowledgeNativeProfileCardFocus(cardKey)
 +                                        focusedRowIndex = index
 +                                        if index == 0, heroEnabled, !heroItems.isEmpty {
-+                                            verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
++                                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                                        }
 +                                        focusedSectionId = section.id
 +                                        focusedCardID = cardKey
@@ -1516,10 +1516,10 @@ index b6c20d9..9adcdcd 100644
 -                        proxy.scrollTo(sectionID, anchor: .top)
 +                        if homeLayout == "Grid View", sectionIndex == 0,
 +                           heroEnabled, !gridHeroItems.isEmpty {
-+                            proxy.scrollTo("home-grid-hero-top", anchor: .top)
++                            proxy.scrollTo(sectionID, anchor: .top)
 +                        } else if homeLayout != "Grid View", sectionIndex == 0,
 +                                  heroEnabled, !gridHeroItems.isEmpty {
-+                            proxy.scrollTo("featured-home-hero", anchor: .top)
++                            proxy.scrollTo(sectionID, anchor: .top)
 +                        } else {
 +                            proxy.scrollTo(sectionID, anchor: .top)
 +                        }
@@ -1544,7 +1544,7 @@ index b6c20d9..9adcdcd 100644
 +                        var transaction = Transaction(animation: nil)
 +                        transaction.disablesAnimations = true
 +                        withTransaction(transaction) {
-+                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                        }
 +                    } else if changedRow {
                          focusedRowIndex = index
@@ -1569,7 +1569,7 @@ index b6c20d9..9adcdcd 100644
 +                        var transaction = Transaction(animation: nil)
 +                        transaction.disablesAnimations = true
 +                        withTransaction(transaction) {
-+                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                        }
 +                    } else if changedRow {
                          focusedRowIndex = index
@@ -1594,7 +1594,7 @@ index b6c20d9..9adcdcd 100644
 +                        var transaction = Transaction(animation: nil)
 +                        transaction.disablesAnimations = true
 +                        withTransaction(transaction) {
-+                            verticalScrollProxy.scrollTo("featured-home-hero", anchor: .top)
++                            verticalScrollProxy.scrollTo(section.id, anchor: .top)
 +                        }
 +                    } else if changedRow {
                          focusedRowIndex = index

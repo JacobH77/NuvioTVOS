@@ -64,12 +64,27 @@ enum TVHomeHeroPresentation {
         heroEnabled && hasFeaturedTitles
     }
 
+    static func shouldReturnFocusToFeaturedHero(
+        directionIsUp: Bool,
+        focusedRowIndex: Int,
+        heroEnabled: Bool,
+        hasFeaturedTitles: Bool
+    ) -> Bool {
+        directionIsUp && focusedRowIndex == 0 && heroEnabled && hasFeaturedTitles
+    }
+
+    static func shouldFocusFeaturedHeroOnAppear(
+        shouldRequestInitialFocus: Bool,
+        focusRequestGeneration: Int
+    ) -> Bool {
+        shouldRequestInitialFocus || focusRequestGeneration > 0
+    }
+
     static func showsFocusedTitleInformation(
         heroEnabled: Bool,
-        showsFocusedTitle: Bool,
-        focusedTitleMatchesFeaturedTitle: Bool
+        showsFocusedTitle: Bool
     ) -> Bool {
-        heroEnabled && showsFocusedTitle && !focusedTitleMatchesFeaturedTitle
+        heroEnabled && showsFocusedTitle
     }
 
     static func showsFeaturedArtwork(

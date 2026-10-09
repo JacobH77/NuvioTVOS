@@ -1760,14 +1760,23 @@ struct CachedPosterArtwork<Placeholder: View>: View {
 
     var body: some View {
         ZStack(alignment: .center) {
+            placeholder
             if let image = displayedImage {
+                let imageAspect = image.size.width / max(image.size.height, 1)
+                let cardAspect = width / max(height, 1)
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    // Better Posters commonly supplies portrait artwork where
+                    // Home asks for a landscape-focused card. Filling that
+                    // wider frame crops most of the poster away, making a
+                    // successfully loaded image look missing. Preserve the
+                    // complete image when its orientation does not match the
+                    // card; use fill for matching poster/landscape artwork.
+                    .aspectRatio(
+                        contentMode: abs(imageAspect - cardAspect) < 0.08 ? .fill : .fit
+                    )
                     .frame(width: width, height: height, alignment: .center)
                     .clipped()
-            } else {
-                placeholder
             }
         }
         .task(id: cacheKey) {
@@ -1793,6 +1802,7 @@ struct CachedPosterArtwork<Placeholder: View>: View {
     private func load() async {
         guard let urlString,
               let url = URL(string: urlString) else {
+            TVHomeDebugTrace.artworkLog("card.skip missing-or-invalid-url")
             state.image = nil
             state.loadedKey = nil
             state.previousImage = nil
@@ -1848,6 +1858,9 @@ struct CachedPosterArtwork<Placeholder: View>: View {
             state.previousLoadedKey = state.loadedKey
             state.image = cached
             state.loadedKey = key
+            TVHomeDebugTrace.artworkLog("card.loaded host=\(url.host ?? "unknown")")
+        } else {
+            TVHomeDebugTrace.artworkLog("card.failed host=\(url.host ?? "unknown")")
         }
         if traceLoad {
             TVHomeDebugTrace.log(
@@ -1923,6 +1936,17 @@ actor PosterArtworkCache {
 
     private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private var latestBetterPostersPreview: PosterArtworkDiagnosticPreview?
+
+    func betterPostersDiagnosticPreview() -> PosterArtworkDiagnosticPreview? {
+        latestBetterPostersPreview
+    }
+
+    private func rememberDiagnosticPreview(_ image: UIImage, for url: URL) {
+        guard let host = url.host?.lowercased(),
+              host == "btttr.cc" || host.hasSuffix(".btttr.cc") else { return }
+        latestBetterPostersPreview = PosterArtworkDiagnosticPreview(url: url, image: image)
+    }
 
     init() {
         let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
@@ -1969,15 +1993,20 @@ actor PosterArtworkCache {
     }
 
     func image(for url: URL, maxPixelSize: Int) async -> UIImage? {
-        let boundedPixelSize = min(max(maxPixelSize, 160), 1400)
+        let boundedPixelSize = min(max(maxPixelSize, 160), 1920)
         let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
 
         if let cached = cache.object(forKey: key) {
+            rememberDiagnosticPreview(cached, for: url)
             return cached
         }
 
         if let task = inFlight[key as String] {
-            return await task.value
+            let image = await task.value
+            if let image {
+                rememberDiagnosticPreview(image, for: url)
+            }
+            return image
         }
 
         let isVolatile = PosterArtworkCachePolicy.isVolatile(url)
@@ -1985,34 +2014,44 @@ actor PosterArtworkCache {
         let task = Task.detached(priority: .utility) { () -> UIImage? in
             // Disk before network (Stale-While-Revalidate). The bytes are keyed by URL alone,
             // so one stored poster serves every size a card asks for.
-            if let stored = await PosterDiskCache.shared.data(for: url),
-               let image = await PosterDecodeLimiter.shared.image(
-                   from: stored.data,
-                   maxPixelSize: boundedPixelSize
-               ) {
+            if let stored = await PosterDiskCache.shared.data(for: url) {
+                if let image = await PosterDecodeLimiter.shared.image(
+                    from: stored.data,
+                    maxPixelSize: boundedPixelSize
+                ) {
                 // If it's a dynamic/volatile rating poster and the disk cache is stale (> 24h),
                 // silently revalidate in the background to refresh rating badges without blocking UI.
-                if isVolatile && !stored.isFresh {
-                    Task.detached(priority: .background) {
-                        guard let freshData = await downloadPosterData(url: url) else { return }
-                        await PosterDiskCache.shared.store(freshData, for: url)
-                        if let freshImage = await PosterDecodeLimiter.shared.image(
-                            from: freshData,
-                            maxPixelSize: boundedPixelSize
-                        ) {
-                            await PosterArtworkCache.shared.updateMemoryCache(freshImage, forKey: key)
+                    if isVolatile && !stored.isFresh {
+                        Task.detached(priority: .background) {
+                            guard let freshData = await downloadPosterData(url: url) else { return }
+                            await PosterDiskCache.shared.store(freshData, for: url)
+                            if let freshImage = await PosterDecodeLimiter.shared.image(
+                                from: freshData,
+                                maxPixelSize: boundedPixelSize
+                            ) {
+                                await PosterArtworkCache.shared.updateMemoryCache(freshImage, forKey: key)
+                            }
                         }
                     }
+                    return image
                 }
-                return image
+                TVHomeDebugTrace.artworkLog(
+                    "poster.disk-decode-failed host=\(url.host ?? "unknown") bytes=\(stored.data.count)"
+                )
             }
 
             guard let data = await downloadPosterData(url: url) else { return nil }
             await PosterDiskCache.shared.store(data, for: url)
-            return await PosterDecodeLimiter.shared.image(
+            let image = await PosterDecodeLimiter.shared.image(
                 from: data,
                 maxPixelSize: boundedPixelSize
             )
+            if image == nil {
+                TVHomeDebugTrace.artworkLog(
+                    "poster.decode-failed host=\(url.host ?? "unknown") bytes=\(data.count)"
+                )
+            }
+            return image
         }
 
         inFlight[key as String] = task
@@ -2023,8 +2062,31 @@ actor PosterArtworkCache {
             let cost = image.decodedByteCost
             cache.setObject(image, forKey: key, cost: cost)
             Self.tracker.recordInsertion(cost: cost)
+            rememberDiagnosticPreview(image, for: url)
         }
         return image
+    }
+}
+
+struct PosterArtworkDiagnosticPreview {
+    let url: URL
+    let image: UIImage
+
+    var pixelDimensions: String {
+        guard let cgImage = image.cgImage else { return "no CGImage" }
+        return "\(cgImage.width)×\(cgImage.height)"
+    }
+
+    var alphaDescription: String {
+        guard let cgImage = image.cgImage else { return "unknown" }
+        switch cgImage.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return "opaque"
+        case .first, .last, .premultipliedFirst, .premultipliedLast, .alphaOnly:
+            return "alpha channel"
+        @unknown default:
+            return "unknown"
+        }
     }
 }
 
@@ -2211,13 +2273,35 @@ private func downloadPosterData(url: URL, revalidate: Bool = false) async -> Dat
     request.timeoutInterval = 10
     if revalidate { request.cachePolicy = .reloadIgnoringLocalCacheData }
 
-    guard let (data, response) = try? await posterURLSession.data(for: request) else {
+    let data: Data
+    let response: URLResponse
+    do {
+        (data, response) = try await posterURLSession.data(for: request)
+    } catch {
+        let error = error as NSError
+        TVHomeDebugTrace.artworkLog(
+            "poster.request-failed host=\(url.host ?? "unknown") domain=\(error.domain) code=\(error.code)"
+        )
         return nil
     }
     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        TVHomeDebugTrace.artworkLog(
+            "poster.http-failed host=\(url.host ?? "unknown") status=\(http.statusCode)"
+        )
         return nil
     }
-    return data.isEmpty ? nil : data
+    guard !data.isEmpty else {
+        TVHomeDebugTrace.artworkLog("poster.empty-response host=\(url.host ?? "unknown")")
+        return nil
+    }
+    if let http = response as? HTTPURLResponse,
+       let contentType = http.value(forHTTPHeaderField: "Content-Type"),
+       contentType.localizedCaseInsensitiveContains("webp") {
+        TVHomeDebugTrace.artworkLog(
+            "poster.webp-response host=\(url.host ?? "unknown") type=\(contentType) bytes=\(data.count)"
+        )
+    }
+    return data
 }
 
 private func downsamplePosterImage(data: Data, maxPixelSize: Int) -> UIImage? {
@@ -2235,10 +2319,22 @@ private func downsamplePosterImage(data: Data, maxPixelSize: Int) -> UIImage? {
         kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
     ]
 
-    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-        return UIImage(data: data)
+    if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+        return UIImage(cgImage: cgImage)
     }
-    return UIImage(cgImage: cgImage)
+
+    // Some artwork services return WebP bytes from URLs ending in `.jpg`.
+    // ImageIO can identify those bytes from their container, but thumbnail
+    // creation may fail for otherwise decodable source types. Try a direct
+    // ImageIO decode before UIKit's convenience decoder.
+    if let cgImage = CGImageSourceCreateImageAtIndex(
+        source,
+        0,
+        [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+    ) {
+        return UIImage(cgImage: cgImage)
+    }
+    return UIImage(data: data)
 }
 
 #endif

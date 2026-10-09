@@ -89,7 +89,7 @@ final class HomeHeroPresentationTests: XCTestCase {
         )
     }
 
-    func testFocusedTitleInformationDoesNotDuplicateFeaturedTitle() {
+    func testFocusedTitleInformationShowsForAnyFocusedHomeCardIncludingFeaturedTitle() {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFeaturedHero(
                 heroEnabled: true,
@@ -99,15 +99,19 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertTrue(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: true,
-                focusedTitleMatchesFeaturedTitle: false
+                showsFocusedTitle: true
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.showsFocusedTitleInformation(
+                heroEnabled: false,
+                showsFocusedTitle: true
             )
         )
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: true,
-                focusedTitleMatchesFeaturedTitle: true
+                showsFocusedTitle: false
             )
         )
     }
@@ -122,8 +126,7 @@ final class HomeHeroPresentationTests: XCTestCase {
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedTitleInformation(
                 heroEnabled: true,
-                showsFocusedTitle: false,
-                focusedTitleMatchesFeaturedTitle: false
+                showsFocusedTitle: false
             )
         )
         XCTAssertFalse(
@@ -134,6 +137,58 @@ final class HomeHeroPresentationTests: XCTestCase {
                 hasFeaturedTitles: true,
                 isFeaturedHeroFocused: true,
                 showsFocusedTitle: false
+            )
+        )
+    }
+
+    func testUpFromFirstEligibleRowReturnsFocusToFeaturedHero() {
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+                directionIsUp: true,
+                focusedRowIndex: 0,
+                heroEnabled: true,
+                hasFeaturedTitles: true
+            )
+        )
+    }
+
+    func testFeaturedHeroFocusReturnRequiresUpAndAnAvailableHero() {
+        let unavailableCases: [(Bool, Int, Bool, Bool)] = [
+            (false, 0, true, true),
+            (true, 1, true, true),
+            (true, 0, false, true),
+            (true, 0, true, false)
+        ]
+
+        for (directionIsUp, focusedRowIndex, heroEnabled, hasFeaturedTitles) in unavailableCases {
+            XCTAssertFalse(
+                TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+                    directionIsUp: directionIsUp,
+                    focusedRowIndex: focusedRowIndex,
+                    heroEnabled: heroEnabled,
+                    hasFeaturedTitles: hasFeaturedTitles
+                )
+            )
+        }
+    }
+
+    func testFeaturedHeroHonorsFocusRequestWhenItIsRemounted() {
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: false,
+                focusRequestGeneration: 1
+            )
+        )
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: true,
+                focusRequestGeneration: 0
+            )
+        )
+        XCTAssertFalse(
+            TVHomeHeroPresentation.shouldFocusFeaturedHeroOnAppear(
+                shouldRequestInitialFocus: false,
+                focusRequestGeneration: 0
             )
         )
     }

@@ -8737,6 +8737,8 @@ private struct AdvancedSettingsView: View {
 private struct AboutSettingsView: View {
     let accentColor: Color
     @State private var showingLicenses = false
+    @State private var artworkDiagnostics: [String] = []
+    @State private var artworkDiagnosticPreview: PosterArtworkDiagnosticPreview?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -8772,6 +8774,56 @@ private struct AboutSettingsView: View {
                 }
                 .settingsEntryAnchor()
             }
+
+            SettingsGroup(
+                title: "Better Posters Diagnostics",
+                subtitle: "Decoded image returned by the Better Posters artwork host"
+            ) {
+                if let preview = artworkDiagnosticPreview {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(uiImage: preview.image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 220, maxHeight: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        Text("Decoded preview · \(preview.url.host ?? "unknown") · \(preview.pixelDimensions) · \(preview.alphaDescription)")
+                            .font(.system(size: 16, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    SettingsInfoRow(
+                        title: "Better Posters preview",
+                        value: "No decoded image from btttr.cc is available yet",
+                        isDiagnostic: true
+                    )
+                }
+
+                if artworkDiagnostics.isEmpty {
+                    SettingsInfoRow(
+                        title: "Artwork results",
+                        value: "No poster load results recorded yet",
+                        isDiagnostic: true
+                    )
+                } else {
+                    ForEach(Array(artworkDiagnostics.enumerated()), id: \.offset) { item in
+                        Text(item.element)
+                            .font(.system(size: 17, weight: .regular, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.78))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                SettingsActionRow(
+                    title: "Refresh Artwork Results",
+                    subtitle: "Show the latest image loading events",
+                    value: "Refresh",
+                    accentColor: accentColor
+                ) {
+                    refreshArtworkDiagnostics()
+                }
+            }
+            .onAppear(perform: refreshArtworkDiagnostics)
         }
         .sheet(isPresented: $showingLicenses) {
             LicensesAttributionsSheet(accentColor: accentColor)
@@ -8783,6 +8835,13 @@ private struct AboutSettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
         return "\(version) (\(build))"
+    }
+
+    private func refreshArtworkDiagnostics() {
+        artworkDiagnostics = TVHomeDebugTrace.recentArtworkBreadcrumbs(count: 8)
+        Task { @MainActor in
+            artworkDiagnosticPreview = await PosterArtworkCache.shared.betterPostersDiagnosticPreview()
+        }
     }
 }
 
