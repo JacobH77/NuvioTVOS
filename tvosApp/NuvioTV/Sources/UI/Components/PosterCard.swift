@@ -1969,7 +1969,7 @@ actor PosterArtworkCache {
     }
 
     func image(for url: URL, maxPixelSize: Int) async -> UIImage? {
-        let boundedPixelSize = min(max(maxPixelSize, 160), 1400)
+        let boundedPixelSize = min(max(maxPixelSize, 160), 1920)
         let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
 
         if let cached = cache.object(forKey: key) {

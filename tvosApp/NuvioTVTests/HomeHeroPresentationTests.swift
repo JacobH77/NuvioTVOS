@@ -141,6 +141,37 @@ final class HomeHeroPresentationTests: XCTestCase {
         )
     }
 
+    func testUpFromFirstEligibleRowReturnsFocusToFeaturedHero() {
+        XCTAssertTrue(
+            TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+                directionIsUp: true,
+                focusedRowIndex: 0,
+                heroEnabled: true,
+                hasFeaturedTitles: true
+            )
+        )
+    }
+
+    func testFeaturedHeroFocusReturnRequiresUpAndAnAvailableHero() {
+        let unavailableCases: [(Bool, Int, Bool, Bool)] = [
+            (false, 0, true, true),
+            (true, 1, true, true),
+            (true, 0, false, true),
+            (true, 0, true, false)
+        ]
+
+        for (directionIsUp, focusedRowIndex, heroEnabled, hasFeaturedTitles) in unavailableCases {
+            XCTAssertFalse(
+                TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+                    directionIsUp: directionIsUp,
+                    focusedRowIndex: focusedRowIndex,
+                    heroEnabled: heroEnabled,
+                    hasFeaturedTitles: hasFeaturedTitles
+                )
+            )
+        }
+    }
+
     func testGridBackdropStaysHiddenUntilAContentTitleIsFocused() {
         XCTAssertFalse(
             TVHomeHeroPresentation.showsFocusedArtwork(

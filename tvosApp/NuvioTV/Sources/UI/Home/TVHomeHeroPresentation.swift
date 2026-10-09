@@ -64,6 +64,15 @@ enum TVHomeHeroPresentation {
         heroEnabled && hasFeaturedTitles
     }
 
+    static func shouldReturnFocusToFeaturedHero(
+        directionIsUp: Bool,
+        focusedRowIndex: Int,
+        heroEnabled: Bool,
+        hasFeaturedTitles: Bool
+    ) -> Bool {
+        directionIsUp && focusedRowIndex == 0 && heroEnabled && hasFeaturedTitles
+    }
+
     static func showsFocusedTitleInformation(
         heroEnabled: Bool,
         showsFocusedTitle: Bool

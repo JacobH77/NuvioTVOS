@@ -2947,12 +2947,11 @@ actor BackdropImageCache {
         } else {
             let pixelSize = Self.maxPixelSize
             task = Task.detached(priority: .userInitiated) {
-                guard let (data, response) = try? await URLSession.shared.data(from: url),
-                      !Task.isCancelled,
-                      let http = response as? HTTPURLResponse,
-                      (200...299).contains(http.statusCode),
-                      data.count > 512 else { return nil }
-                return downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+                guard !Task.isCancelled else { return nil }
+                return await PosterArtworkCache.shared.image(
+                    for: url,
+                    maxPixelSize: Int(pixelSize)
+                )
             }
             inFlight[requestKey] = InFlightRequest(task: task, waiters: [waiterID])
         }
@@ -2983,30 +2982,6 @@ actor BackdropImageCache {
         } else {
             inFlight[requestKey] = request
         }
-    }
-}
-
-private func downsampleBackdropImage(data: Data, maxPixelSize: CGFloat) -> UIImage? {
-    TVHomeDebugTrace.measure("backdrop.downsampleBackdropImage dataBytes=\(data.count)", thresholdMs: 150.0) {
-        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
-        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else {
-            return nil
-        }
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: Int(ceil(maxPixelSize))
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(
-            source,
-            0,
-            thumbnailOptions as CFDictionary
-        ) else {
-            TVHomeDebugTrace.log("backdrop.downsample failed for dataBytes=\(data.count) maxPixelSize=\(Int(ceil(maxPixelSize)))")
-            return nil
-        }
-        return UIImage(cgImage: image)
     }
 }
 
@@ -4185,12 +4160,6 @@ struct TVHomeView: View {
                                                     horizontalEdgeInset: horizontalEdgeInset,
                                                     verticalScrollProxy: verticalScrollProxy
                                                 )
-                                                .onMoveCommand { direction in
-                                                    guard direction == .up, index == 0,
-                                                          heroEnabled, !gridHeroItems.isEmpty else { return }
-                                                    showsFocusedTitleBanner = false
-                                                    gridHeroFocusRequestGeneration &+= 1
-                                                }
                                                 .padding(.top, sectionTopSpacing)
                                             } else {
                                                 Color.clear
@@ -5647,6 +5616,18 @@ struct TVHomeView: View {
         }
     }
 
+    private func returnFocusToFeaturedHero(_ direction: MoveCommandDirection, fromRow rowIndex: Int) {
+        guard TVHomeHeroPresentation.shouldReturnFocusToFeaturedHero(
+            directionIsUp: direction == .up,
+            focusedRowIndex: rowIndex,
+            heroEnabled: heroEnabled,
+            hasFeaturedTitles: !gridHeroItems.isEmpty
+        ) else { return }
+
+        showsFocusedTitleBanner = false
+        gridHeroFocusRequestGeneration &+= 1
+    }
+
     @ViewBuilder
     private func homeSectionRow(
         index: Int,
@@ -5785,6 +5766,9 @@ struct TVHomeView: View {
                         restoreCardID: TVHomeCardIdentity.folderKey(rowID: section.id, folder: folder)
                     )
                 },
+                onMove: { direction in
+                    returnFocusToFeaturedHero(direction, fromRow: index)
+                }
             )
             .equatable()
             .frame(
@@ -5934,7 +5918,10 @@ struct TVHomeView: View {
                     onStartContinueWatchingFromBeginning?(item)
                 },
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
+                onRefreshCatalog: { refreshHomeSection(sectionId: section.id) },
+                onMove: { direction in
+                    returnFocusToFeaturedHero(direction, fromRow: index)
+                }
             )
             .equatable()
             .frame(
