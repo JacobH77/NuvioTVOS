@@ -1793,6 +1793,7 @@ struct CachedPosterArtwork<Placeholder: View>: View {
     private func load() async {
         guard let urlString,
               let url = URL(string: urlString) else {
+            TVHomeDebugTrace.artworkLog("card.skip missing-or-invalid-url")
             state.image = nil
             state.loadedKey = nil
             state.previousImage = nil
@@ -1848,6 +1849,9 @@ struct CachedPosterArtwork<Placeholder: View>: View {
             state.previousLoadedKey = state.loadedKey
             state.image = cached
             state.loadedKey = key
+            TVHomeDebugTrace.artworkLog("card.loaded host=\(url.host ?? "unknown")")
+        } else {
+            TVHomeDebugTrace.artworkLog("card.failed host=\(url.host ?? "unknown")")
         }
         if traceLoad {
             TVHomeDebugTrace.log(
@@ -2006,7 +2010,7 @@ actor PosterArtworkCache {
                     }
                     return image
                 }
-                TVHomeDebugTrace.log(
+                TVHomeDebugTrace.artworkLog(
                     "poster.disk-decode-failed host=\(url.host ?? "unknown") bytes=\(stored.data.count)"
                 )
             }
@@ -2018,7 +2022,7 @@ actor PosterArtworkCache {
                 maxPixelSize: boundedPixelSize
             )
             if image == nil {
-                TVHomeDebugTrace.log(
+                TVHomeDebugTrace.artworkLog(
                     "poster.decode-failed host=\(url.host ?? "unknown") bytes=\(data.count)"
                 )
             }
@@ -2227,25 +2231,25 @@ private func downloadPosterData(url: URL, revalidate: Bool = false) async -> Dat
         (data, response) = try await posterURLSession.data(for: request)
     } catch {
         let error = error as NSError
-        TVHomeDebugTrace.log(
+        TVHomeDebugTrace.artworkLog(
             "poster.request-failed host=\(url.host ?? "unknown") domain=\(error.domain) code=\(error.code)"
         )
         return nil
     }
     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-        TVHomeDebugTrace.log(
+        TVHomeDebugTrace.artworkLog(
             "poster.http-failed host=\(url.host ?? "unknown") status=\(http.statusCode)"
         )
         return nil
     }
     guard !data.isEmpty else {
-        TVHomeDebugTrace.log("poster.empty-response host=\(url.host ?? "unknown")")
+        TVHomeDebugTrace.artworkLog("poster.empty-response host=\(url.host ?? "unknown")")
         return nil
     }
     if let http = response as? HTTPURLResponse,
        let contentType = http.value(forHTTPHeaderField: "Content-Type"),
        contentType.localizedCaseInsensitiveContains("webp") {
-        TVHomeDebugTrace.log(
+        TVHomeDebugTrace.artworkLog(
             "poster.webp-response host=\(url.host ?? "unknown") type=\(contentType) bytes=\(data.count)"
         )
     }

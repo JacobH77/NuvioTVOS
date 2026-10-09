@@ -62,6 +62,8 @@ enum TVHomeDebugTrace {
     private static var breadcrumbLock = os_unfair_lock_s()
     private static var breadcrumbs: [Breadcrumb] = []
     private static let maxBreadcrumbs = 40
+    private static var artworkBreadcrumbs: [Breadcrumb] = []
+    private static let maxArtworkBreadcrumbs = 12
 
     static func now() -> UInt64 {
         DispatchTime.now().uptimeNanoseconds
@@ -93,6 +95,31 @@ enum TVHomeDebugTrace {
             let thread = b.isMainThread ? "Main" : "BG"
             return "[\(ageMs)ms ago][\(thread)] \(b.message)"
         }
+    }
+
+    static func recentArtworkBreadcrumbs(count: Int = 8) -> [String] {
+        os_unfair_lock_lock(&breadcrumbLock)
+        let copy = artworkBreadcrumbs
+        os_unfair_lock_unlock(&breadcrumbLock)
+        let current = now()
+        return copy.suffix(count).map { item in
+            let ageMs = String(format: "%.1f", Double(current - item.timestamp) / 1_000_000)
+            return "[\(ageMs)ms ago] \(item.message)"
+        }
+    }
+
+    static func artworkLog(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        let text = message()
+        let item = Breadcrumb(timestamp: now(), message: text, isMainThread: Thread.isMainThread)
+        os_unfair_lock_lock(&breadcrumbLock)
+        artworkBreadcrumbs.append(item)
+        if artworkBreadcrumbs.count > maxArtworkBreadcrumbs {
+            artworkBreadcrumbs.removeFirst(artworkBreadcrumbs.count - maxArtworkBreadcrumbs)
+        }
+        os_unfair_lock_unlock(&breadcrumbLock)
+        print("[Artwork] \(text)")
+        logger.notice("[Artwork] \(text, privacy: .public)")
     }
 
     static func log(_ message: @autoclosure () -> String) {
