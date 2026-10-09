@@ -55,11 +55,18 @@ struct WeTrakrMediaPayload: Codable, Equatable {
     let title: String?
     let year: Int?
     let ids: WeTrakrSyncIDs?
+    let status: String?
 
-    init(title: String? = nil, year: Int? = nil, ids: WeTrakrSyncIDs? = nil) {
+    init(
+        title: String? = nil,
+        year: Int? = nil,
+        ids: WeTrakrSyncIDs? = nil,
+        status: String? = nil
+    ) {
         self.title = title
         self.year = year
         self.ids = ids
+        self.status = status
     }
 }
 
@@ -84,6 +91,12 @@ struct WeTrakrScrobblePayload: Codable {
         case movie, show, episode, progress
         case appVersion = "app_version"
     }
+}
+
+struct WeTrakrCancelPlaybackPayload: Codable {
+    let movie: WeTrakrMediaPayload?
+    let show: WeTrakrMediaPayload?
+    let episode: WeTrakrEpisodePayload?
 }
 
 // MARK: - Tracking DTOs
@@ -180,9 +193,10 @@ struct WeTrakrEpisodeDTO: Codable {
     let overview: String?
     let runtime: Double?
     let seasonPosterPath: String?
+    let show: WeTrakrMediaDTO?
 
     enum CodingKeys: String, CodingKey {
-        case id, number, season, title, overview, runtime
+        case id, number, season, title, overview, runtime, show
         case seasonNumber = "season_number"
         case seasonPosterPath = "season_poster_path"
     }
@@ -195,7 +209,8 @@ struct WeTrakrEpisodeDTO: Codable {
         title: String? = nil,
         overview: String? = nil,
         runtime: Double? = nil,
-        seasonPosterPath: String? = nil
+        seasonPosterPath: String? = nil,
+        show: WeTrakrMediaDTO? = nil
     ) {
         self.id = id
         self.seasonNumber = seasonNumber
@@ -205,6 +220,7 @@ struct WeTrakrEpisodeDTO: Codable {
         self.overview = overview
         self.runtime = runtime
         self.seasonPosterPath = seasonPosterPath
+        self.show = show
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +233,7 @@ struct WeTrakrEpisodeDTO: Codable {
         overview = try container.decodeIfPresent(String.self, forKey: .overview)
         runtime = Self.flexibleDouble(in: container, forKey: .runtime)
         seasonPosterPath = try container.decodeIfPresent(String.self, forKey: .seasonPosterPath)
+        show = try container.decodeIfPresent(WeTrakrMediaDTO.self, forKey: .show)
     }
 
     private static func flexibleInt(
@@ -546,44 +563,132 @@ struct WeTrakrTrackingPlayingItemDTO: Codable {
 }
 
 struct WeTrakrTrackingHistoryItemDTO: Codable {
-    let id: Int?
+    let id: String?
     let media: WeTrakrMediaDTO?
+    let movie: WeTrakrMediaDTO?
     let episode: WeTrakrEpisodeDTO?
     let watchedAt: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, media, episode
+        case id, media, movie, episode
         case watchedAt = "watched_at"
+    }
+
+    init(
+        id: String? = nil,
+        media: WeTrakrMediaDTO? = nil,
+        movie: WeTrakrMediaDTO? = nil,
+        episode: WeTrakrEpisodeDTO? = nil,
+        watchedAt: String? = nil
+    ) {
+        self.id = id
+        self.media = media
+        self.movie = movie
+        self.episode = episode
+        self.watchedAt = watchedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let str = try? container.decode(String.self, forKey: .id) {
+            id = str
+        } else if let num = try? container.decode(Int.self, forKey: .id) {
+            id = String(num)
+        } else {
+            id = nil
+        }
+        media = try container.decodeIfPresent(WeTrakrMediaDTO.self, forKey: .media)
+        movie = try container.decodeIfPresent(WeTrakrMediaDTO.self, forKey: .movie)
+        episode = try container.decodeIfPresent(WeTrakrEpisodeDTO.self, forKey: .episode)
+        watchedAt = try container.decodeIfPresent(String.self, forKey: .watchedAt)
     }
 }
 
 // MARK: - Mutate Tracking Payloads
 
 struct WeTrakrTrackingAddPayload: Codable {
-    let status: String
     let movies: [WeTrakrMediaPayload]?
     let shows: [WeTrakrShowTrackingPayload]?
+    let allowRewatch: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case movies, shows
+        case allowRewatch = "allow_rewatch"
+    }
+
+    init(
+        movies: [WeTrakrMediaPayload]? = nil,
+        shows: [WeTrakrShowTrackingPayload]? = nil,
+        allowRewatch: Bool? = nil
+    ) {
+        self.movies = movies
+        self.shows = shows
+        self.allowRewatch = allowRewatch
+    }
 }
 
 struct WeTrakrShowTrackingPayload: Codable {
     let title: String?
     let year: Int?
     let ids: WeTrakrSyncIDs?
+    let status: String?
     let seasons: [WeTrakrSeasonTrackingPayload]?
+
+    init(
+        title: String? = nil,
+        year: Int? = nil,
+        ids: WeTrakrSyncIDs? = nil,
+        status: String? = nil,
+        seasons: [WeTrakrSeasonTrackingPayload]? = nil
+    ) {
+        self.title = title
+        self.year = year
+        self.ids = ids
+        self.status = status
+        self.seasons = seasons
+    }
 }
 
 struct WeTrakrSeasonTrackingPayload: Codable {
     let number: Int
+    let status: String?
     let episodes: [WeTrakrEpisodeTrackingPayload]?
+
+    init(
+        number: Int,
+        status: String? = nil,
+        episodes: [WeTrakrEpisodeTrackingPayload]? = nil
+    ) {
+        self.number = number
+        self.status = status
+        self.episodes = episodes
+    }
 }
 
 struct WeTrakrEpisodeTrackingPayload: Codable {
     let number: Int
+    let status: String?
+
+    init(
+        number: Int,
+        status: String? = nil
+    ) {
+        self.number = number
+        self.status = status
+    }
 }
 
 struct WeTrakrTrackingRemovePayload: Codable {
     let movies: [WeTrakrMediaPayload]?
     let shows: [WeTrakrShowTrackingPayload]?
+
+    init(
+        movies: [WeTrakrMediaPayload]? = nil,
+        shows: [WeTrakrShowTrackingPayload]? = nil
+    ) {
+        self.movies = movies
+        self.shows = shows
+    }
 }
 
 struct WeTrakrWatchAllSeasonPayload: Codable {
@@ -674,6 +779,129 @@ struct WeTrakrProgressService {
             print("[WeTrakrProgressService] reportPlayback failed: \(error.localizedDescription)")
             return false
         }
+    }
+
+    @discardableResult
+    static func removePlayback(
+        for item: ContinueWatchingItem,
+        store: UserDefaults = ProfileSettings.current
+    ) async -> Bool {
+        guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
+              !token.isEmpty else {
+            return false
+        }
+        let clientID = WeTrakrConfig.clientID(in: store)
+        let meta = item.meta
+        let ids = wetrakrIDs(for: meta)
+
+        guard ids.hasUsableIdentifier else {
+            return false
+        }
+
+        let seasonNum = item.season ?? item.episodeNumbers?.season
+        let epNum = item.episode ?? item.episodeNumbers?.episode
+
+        // 1. Cancel playback session in scrobble engine: DELETE /scrobble/playing
+        let cancelPayload: WeTrakrCancelPlaybackPayload
+        if meta.isSeries {
+            let s = seasonNum ?? 1
+            let ep = epNum ?? 1
+            cancelPayload = WeTrakrCancelPlaybackPayload(
+                movie: nil,
+                show: WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids),
+                episode: WeTrakrEpisodePayload(season: s, number: ep)
+            )
+        } else {
+            cancelPayload = WeTrakrCancelPlaybackPayload(
+                movie: WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids),
+                show: nil,
+                episode: nil
+            )
+        }
+
+        do {
+            _ = try await client.deleteRaw(
+                path: "/scrobble/playing",
+                body: cancelPayload,
+                accessToken: token,
+                clientID: clientID
+            )
+        } catch {
+            print("[WeTrakrProgressService] cancel scrobble session failed: \(error.localizedDescription)")
+        }
+
+        // Also cancel session with no body as fallback to guarantee active session is dropped
+        _ = try? await client.deleteRaw(
+            path: "/scrobble/playing",
+            accessToken: token,
+            clientID: clientID
+        )
+
+        // 2. Remove item from "playing" tracking list: POST /sync/tracking/remove with status: "playing"
+        let removePayload: WeTrakrTrackingRemovePayload
+        if meta.isSeries {
+            if let seasonNum, let epNum {
+                let showPayload = WeTrakrShowTrackingPayload(
+                    title: meta.name,
+                    year: meta.year,
+                    ids: ids,
+                    status: "playing",
+                    seasons: [
+                        WeTrakrSeasonTrackingPayload(
+                            number: seasonNum,
+                            status: "playing",
+                            episodes: [
+                                WeTrakrEpisodeTrackingPayload(number: epNum, status: "playing")
+                            ]
+                        )
+                    ]
+                )
+                removePayload = WeTrakrTrackingRemovePayload(
+                    movies: nil,
+                    shows: [showPayload]
+                )
+            } else {
+                let showPayload = WeTrakrShowTrackingPayload(
+                    title: meta.name,
+                    year: meta.year,
+                    ids: ids,
+                    status: "playing"
+                )
+                removePayload = WeTrakrTrackingRemovePayload(
+                    movies: nil,
+                    shows: [showPayload]
+                )
+            }
+        } else {
+            let moviePayload = WeTrakrMediaPayload(
+                title: meta.name,
+                year: meta.year,
+                ids: ids,
+                status: "playing"
+            )
+            removePayload = WeTrakrTrackingRemovePayload(
+                movies: [moviePayload],
+                shows: nil
+            )
+        }
+
+        do {
+            let result: WeTrakrHTTPResult<Data> = try await client.postRaw(
+                path: "/sync/tracking/remove",
+                body: removePayload,
+                accessToken: token,
+                clientID: clientID
+            )
+            _ = try result.valueOrThrow()
+        } catch {
+            print("[WeTrakrProgressService] remove from playing tracking list failed: \(error.localizedDescription)")
+        }
+
+        NotificationCenter.default.post(
+            name: TraktSettingsStore.continueWatchingChangedNotification,
+            object: nil
+        )
+        return true
     }
 
     private static var externalIDCache: [String: String] = [:]
@@ -965,6 +1193,7 @@ struct WeTrakrProgressService {
         meta: NuvioMeta,
         season: Int? = nil,
         episode: Int? = nil,
+        episodes: [Int]? = nil,
         store: UserDefaults = ProfileSettings.current
     ) async -> Bool {
         guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
@@ -975,30 +1204,51 @@ struct WeTrakrProgressService {
 
         let payload: WeTrakrTrackingAddPayload
         if meta.isSeries {
-            let seasonNum = season ?? 1
-            let epNum = episode ?? 1
+            let episodeList: [Int]? = {
+                if let episodes, !episodes.isEmpty { return episodes }
+                if let ep = episode { return [ep] }
+                return nil
+            }()
+
+            let seasonsPayload: [WeTrakrSeasonTrackingPayload]? = {
+                guard let s = season else { return nil }
+                if let eps = episodeList {
+                    return [
+                        WeTrakrSeasonTrackingPayload(
+                            number: s,
+                            status: "watched",
+                            episodes: eps.map { WeTrakrEpisodeTrackingPayload(number: $0, status: "watched") }
+                        )
+                    ]
+                } else {
+                    return [
+                        WeTrakrSeasonTrackingPayload(
+                            number: s,
+                            status: "watched",
+                            episodes: nil
+                        )
+                    ]
+                }
+            }()
+
             payload = WeTrakrTrackingAddPayload(
-                status: "watched",
                 movies: nil,
                 shows: [
                     WeTrakrShowTrackingPayload(
                         title: meta.name,
                         year: meta.year,
                         ids: ids,
-                        seasons: [
-                            WeTrakrSeasonTrackingPayload(
-                                number: seasonNum,
-                                episodes: [WeTrakrEpisodeTrackingPayload(number: epNum)]
-                            )
-                        ]
+                        status: "watched",
+                        seasons: seasonsPayload
                     )
-                ]
+                ],
+                allowRewatch: true
             )
         } else {
             payload = WeTrakrTrackingAddPayload(
-                status: "watched",
-                movies: [WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids)],
-                shows: nil
+                movies: [WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids, status: "watched")],
+                shows: nil,
+                allowRewatch: true
             )
         }
 
@@ -1010,8 +1260,13 @@ struct WeTrakrProgressService {
                 clientID: clientID
             )
             _ = try result.valueOrThrow()
+            NotificationCenter.default.post(
+                name: TraktSettingsStore.continueWatchingChangedNotification,
+                object: nil
+            )
             return true
         } catch {
+            print("[WeTrakrProgressService] markWatched failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -1020,6 +1275,7 @@ struct WeTrakrProgressService {
         meta: NuvioMeta,
         season: Int? = nil,
         episode: Int? = nil,
+        episodes: [Int]? = nil,
         store: UserDefaults = ProfileSettings.current
     ) async -> Bool {
         guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
@@ -1030,8 +1286,33 @@ struct WeTrakrProgressService {
 
         let payload: WeTrakrTrackingRemovePayload
         if meta.isSeries {
-            let seasonNum = season ?? 1
-            let epNum = episode ?? 1
+            let episodeList: [Int]? = {
+                if let episodes, !episodes.isEmpty { return episodes }
+                if let ep = episode { return [ep] }
+                return nil
+            }()
+
+            let seasonsPayload: [WeTrakrSeasonTrackingPayload]? = {
+                guard let s = season else { return nil }
+                if let eps = episodeList {
+                    return [
+                        WeTrakrSeasonTrackingPayload(
+                            number: s,
+                            status: "watched",
+                            episodes: eps.map { WeTrakrEpisodeTrackingPayload(number: $0, status: "watched") }
+                        )
+                    ]
+                } else {
+                    return [
+                        WeTrakrSeasonTrackingPayload(
+                            number: s,
+                            status: "watched",
+                            episodes: nil
+                        )
+                    ]
+                }
+            }()
+
             payload = WeTrakrTrackingRemovePayload(
                 movies: nil,
                 shows: [
@@ -1039,32 +1320,33 @@ struct WeTrakrProgressService {
                         title: meta.name,
                         year: meta.year,
                         ids: ids,
-                        seasons: [
-                            WeTrakrSeasonTrackingPayload(
-                                number: seasonNum,
-                                episodes: [WeTrakrEpisodeTrackingPayload(number: epNum)]
-                            )
-                        ]
+                        status: "watched",
+                        seasons: seasonsPayload
                     )
                 ]
             )
         } else {
             payload = WeTrakrTrackingRemovePayload(
-                movies: [WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids)],
+                movies: [WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids, status: "watched")],
                 shows: nil
             )
         }
 
         do {
             let result: WeTrakrHTTPResult<Data> = try await client.postRaw(
-                path: "/sync/tracking/remove",
+                path: "/sync/tracking/remove/all",
                 body: payload,
                 accessToken: token,
                 clientID: clientID
             )
             _ = try result.valueOrThrow()
+            NotificationCenter.default.post(
+                name: TraktSettingsStore.continueWatchingChangedNotification,
+                object: nil
+            )
             return true
         } catch {
+            print("[WeTrakrProgressService] markUnwatched failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -1074,29 +1356,148 @@ struct WeTrakrProgressService {
         season: Int,
         store: UserDefaults = ProfileSettings.current
     ) async -> Bool {
-        guard let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
-              !token.isEmpty else { return false }
-        let clientID = WeTrakrConfig.clientID(in: store)
-        let ids = wetrakrIDs(for: meta)
-        guard ids.hasUsableIdentifier else { return false }
+        await markWatched(meta: meta, season: season, episode: nil, episodes: nil, store: store)
+    }
 
-        let payload = WeTrakrWatchAllSeasonPayload(
-            show: WeTrakrMediaPayload(title: meta.name, year: meta.year, ids: ids),
-            seasonNumber: season
-        )
+    static func markSeasonUnwatched(
+        meta: NuvioMeta,
+        season: Int,
+        store: UserDefaults = ProfileSettings.current
+    ) async -> Bool {
+        await markUnwatched(meta: meta, season: season, episode: nil, episodes: nil, store: store)
+    }
 
-        do {
-            let result: WeTrakrHTTPResult<Data> = try await client.postRaw(
-                path: "/sync/tracking/season/watch-all",
-                body: payload,
-                accessToken: token,
-                clientID: clientID
-            )
-            _ = try result.valueOrThrow()
-            return true
-        } catch {
+    private static var previousWatchedSnapshots: [String: [WatchedStoreItem]] = [:]
+
+    @discardableResult
+    static func syncWatchedHistory(
+        store: UserDefaults = ProfileSettings.current
+    ) async -> Bool {
+        guard ProfileSettings.isActiveStore(store),
+              TraktSettingsStore.watchProgressSource(in: store) == .wetrakr,
+              let token = WeTrakrRuntimeSession.authenticatedState(store: store)?.accessToken,
+              !token.isEmpty else {
             return false
         }
+        let clientID = WeTrakrConfig.clientID(in: store)
+        let syncStartedAt = Date()
+        let profileScope = ProfileSettings.activeProfileID ?? "default"
+
+        var remoteItems: [WatchedStoreItem] = []
+        var anySuccess = false
+
+        // 1. Fetch watched history for movies (up to 5 pages / 500 items)
+        for page in 1...5 {
+            let query = [
+                URLQueryItem(name: "page", value: "\(page)"),
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "extended", value: "movie_level_1")
+            ]
+            let res: WeTrakrHTTPResult<[WeTrakrTrackingHistoryItemDTO]> = (try? await client.get(
+                path: "/sync/tracking/watched/history/movies",
+                accessToken: token,
+                clientID: clientID,
+                queryItems: query
+            )) ?? WeTrakrHTTPResult(statusCode: 500, value: nil, rawData: Data(), errorMessage: nil)
+
+            if let plays = try? res.valueOrThrow() {
+                anySuccess = true
+                for play in plays {
+                    guard let media = play.movie ?? play.media else { continue }
+                    guard media.id != nil || media.ids?.hasUsableIdentifier == true else { continue }
+                    let meta = makeNuvioMeta(from: media, isSeries: false)
+                    let watchedAt = dateFromISO8601(play.watchedAt) ?? Date()
+                    remoteItems.append(
+                        WatchedStoreItem(
+                            meta: meta.persistenceSnapshot,
+                            watchedAt: watchedAt,
+                            sources: [TraktWatchProgressSource.wetrakr.rawValue]
+                        )
+                    )
+                }
+                if plays.count < 100 { break }
+            } else {
+                break
+            }
+        }
+
+        // 2. Fetch watched movies list for whole-title marks
+        if let moviesResult: WeTrakrHTTPResult<[WeTrakrTrackingPlayingItemDTO]> = try? await client.get(
+            path: "/sync/tracking/watched/movies",
+            accessToken: token,
+            clientID: clientID,
+            queryItems: [URLQueryItem(name: "extended", value: "movie_level_1"), URLQueryItem(name: "limit", value: "100")]
+        ), let movies = try? moviesResult.valueOrThrow() {
+            anySuccess = true
+            for item in movies {
+                let media = item.resolvedMedia
+                guard media.id != nil || media.ids?.hasUsableIdentifier == true else { continue }
+                let meta = makeNuvioMeta(from: media, isSeries: false)
+                let watchedAt = dateFromISO8601(item.watchedAt ?? item.trackedAt ?? item.updatedAt) ?? Date()
+                remoteItems.append(
+                    WatchedStoreItem(
+                        meta: meta.persistenceSnapshot,
+                        watchedAt: watchedAt,
+                        sources: [TraktWatchProgressSource.wetrakr.rawValue]
+                    )
+                )
+            }
+        }
+
+        // 3. Fetch watched history for episodes (up to 10 pages / 1000 items)
+        for page in 1...10 {
+            let query = [
+                URLQueryItem(name: "page", value: "\(page)"),
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "extended", value: "show_level_1,episode_level_1")
+            ]
+            let res: WeTrakrHTTPResult<[WeTrakrTrackingHistoryItemDTO]> = (try? await client.get(
+                path: "/sync/tracking/watched/history/episodes",
+                accessToken: token,
+                clientID: clientID,
+                queryItems: query
+            )) ?? WeTrakrHTTPResult(statusCode: 500, value: nil, rawData: Data(), errorMessage: nil)
+
+            if let plays = try? res.valueOrThrow() {
+                anySuccess = true
+                for play in plays {
+                    guard let ep = play.episode,
+                          let show = ep.show ?? play.media else { continue }
+                    guard show.id != nil || show.ids?.hasUsableIdentifier == true else { continue }
+                    let meta = makeNuvioMeta(from: show, isSeries: true)
+                    let watchedAt = dateFromISO8601(play.watchedAt) ?? Date()
+                    let season = ep.seasonNumber ?? ep.season ?? 1
+                    let number = ep.number ?? 1
+                    remoteItems.append(
+                        WatchedStoreItem(
+                            meta: meta.persistenceSnapshot,
+                            watchedAt: watchedAt,
+                            season: season,
+                            episode: number,
+                            sources: [TraktWatchProgressSource.wetrakr.rawValue]
+                        )
+                    )
+                }
+                if plays.count < 100 { break }
+            } else {
+                break
+            }
+        }
+
+        guard anySuccess else { return false }
+
+        let previous = previousWatchedSnapshots[profileScope]
+            ?? WatchedStore.items().filter { $0.isVisible(under: .wetrakr) }
+        let merged = WatchedStore.mergedByIdentity(remoteItems)
+        guard WatchedStore.reconcileWeTrakrSnapshot(
+            merged,
+            previousRemoteItems: previous,
+            syncStartedAt: syncStartedAt
+        ) else { return false }
+
+        previousWatchedSnapshots[profileScope] = merged
+        NotificationCenter.default.post(name: WatchedStore.changedNotification, object: nil)
+        return true
     }
 
     nonisolated static func wetrakrIDs(for meta: NuvioMeta) -> WeTrakrSyncIDs {

@@ -68,6 +68,8 @@ protocol WeTrakrTokenStorage: AnyObject {
 
 final class WeTrakrKeychainTokenStorage: WeTrakrTokenStorage {
     private let service = "com.nuvio.tv.wetrakr.auth"
+    private static let lock = NSLock()
+    private static var tokenCache: [String: String] = [:]
 
     func accessToken(for profileScope: String) -> String? {
         readToken(accountType: "accessToken", profileScope: profileScope, fallbackKey: SettingsKey.wetrakrAccessToken)
@@ -86,6 +88,11 @@ final class WeTrakrKeychainTokenStorage: WeTrakrTokenStorage {
     }
 
     private func readToken(accountType: String, profileScope: String, fallbackKey: String) -> String? {
+        let cacheKey = "\(accountType):\(profileScope)"
+        if let cached = Self.lock.withLock({ Self.tokenCache[cacheKey] }), !cached.isEmpty {
+            return cached
+        }
+
         var query = keychainQuery(for: profileScope, accountType: accountType)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -94,6 +101,7 @@ final class WeTrakrKeychainTokenStorage: WeTrakrTokenStorage {
         if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
            let data = item as? Data,
            let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            Self.lock.withLock { Self.tokenCache[cacheKey] = token }
             return token
         }
 
@@ -106,6 +114,14 @@ final class WeTrakrKeychainTokenStorage: WeTrakrTokenStorage {
     }
 
     private func writeToken(_ token: String?, accountType: String, profileScope: String, mirrorKey: String) {
+        let cacheKey = "\(accountType):\(profileScope)"
+        Self.lock.withLock {
+            if let token, !token.isEmpty {
+                Self.tokenCache[cacheKey] = token
+            } else {
+                Self.tokenCache.removeValue(forKey: cacheKey)
+            }
+        }
         SecItemDelete(keychainQuery(for: profileScope, accountType: accountType) as CFDictionary)
         let store = ProfileSettings.store(for: profileScope)
         if let token, !token.isEmpty {
@@ -596,6 +612,73 @@ final class WeTrakrAuthService {
         }
     }
 
+    func fetchUserStats() async -> WeTrakrCachedStats? {
+        let state = currentState
+        guard let token = state.accessToken, !token.isEmpty else { return nil }
+        let clientID = WeTrakrConfig.clientID(in: store)
+
+        var moviesCount = 0
+        var episodesCount = 0
+        var showIds = Set<String>()
+        var totalMinutes: Double = 0
+
+        if let moviesRes: WeTrakrHTTPResult<[WeTrakrTrackingHistoryItemDTO]> = try? await client.get(
+            path: "/sync/tracking/watched/history/movies",
+            accessToken: token,
+            clientID: clientID,
+            queryItems: [URLQueryItem(name: "limit", value: "100")]
+        ), let movies = try? moviesRes.valueOrThrow(), !movies.isEmpty {
+            moviesCount = movies.count
+            for m in movies {
+                if let rt = m.movie?.runtime ?? m.media?.runtime, rt > 0 {
+                    totalMinutes += Double(rt > 600 ? rt / 60 : rt)
+                } else {
+                    totalMinutes += 105
+                }
+            }
+        } else if let moviesListRes: WeTrakrHTTPResult<[WeTrakrTrackingPlayingItemDTO]> = try? await client.get(
+            path: "/sync/tracking/watched/movies",
+            accessToken: token,
+            clientID: clientID,
+            queryItems: [URLQueryItem(name: "limit", value: "100")]
+        ), let movies = try? moviesListRes.valueOrThrow() {
+            moviesCount = movies.count
+            totalMinutes += Double(moviesCount * 105)
+        }
+
+        if let epRes: WeTrakrHTTPResult<[WeTrakrTrackingHistoryItemDTO]> = try? await client.get(
+            path: "/sync/tracking/watched/history/episodes",
+            accessToken: token,
+            clientID: clientID,
+            queryItems: [
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "extended", value: "show_level_1,episode_level_1")
+            ]
+        ), let episodes = try? epRes.valueOrThrow() {
+            episodesCount = episodes.count
+            for ep in episodes {
+                if let show = ep.episode?.show ?? ep.media {
+                    let id = show.id.map(String.init) ?? show.ids?.imdb ?? show.ids?.tmdb.map(String.init) ?? show.title ?? ""
+                    if !id.isEmpty { showIds.insert(id) }
+                }
+                if let rt = ep.episode?.runtime ?? ep.media?.runtime, rt > 0 {
+                    totalMinutes += Double(rt > 600 ? rt / 60 : rt)
+                } else {
+                    totalMinutes += 45
+                }
+            }
+        }
+
+        let stats = WeTrakrCachedStats(
+            moviesWatched: moviesCount,
+            showsWatched: showIds.count,
+            episodesWatched: episodesCount,
+            totalWatchedHours: Int(totalMinutes / 60.0)
+        )
+        WeTrakrAuthStore.saveCachedStats(stats, store: store)
+        return stats
+    }
+
     func disconnect() {
         WeTrakrAuthStore.clearAuth(profileScope: profileScope, store: store, tokenStorage: tokenStorage)
     }
@@ -749,7 +832,11 @@ final class WeTrakrSettingsViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.service.refreshAccountProfile()
+            let stats = await self.service.fetchUserStats()
             await MainActor.run {
+                if let stats {
+                    self.connectedStats = stats
+                }
                 self.isStatsLoading = false
                 self.reload()
             }
@@ -757,7 +844,23 @@ final class WeTrakrSettingsViewModel: ObservableObject {
     }
 
     func refreshNow() {
-        loadConnectedData()
+        guard mode == .connected, !isLoading else { return }
+        isLoading = true
+        isStatsLoading = true
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await WeTrakrProgressService.syncWatchedHistory()
+            await self.service.refreshAccountProfile()
+            let stats = await self.service.fetchUserStats()
+            await MainActor.run {
+                if let stats {
+                    self.connectedStats = stats
+                }
+                self.isLoading = false
+                self.isStatsLoading = false
+                self.reload()
+            }
+        }
     }
 
     func cancelLogin() {
@@ -773,6 +876,13 @@ final class WeTrakrSettingsViewModel: ObservableObject {
         pollTask?.cancel()
         isPolling = false
         service.disconnect()
+        username = nil
+        displayName = nil
+        accountPlan = nil
+        accountID = nil
+        avatarURL = nil
+        connectedStats = nil
+        statusMessage = "Disconnected from WeTrakr."
         reload()
     }
 }

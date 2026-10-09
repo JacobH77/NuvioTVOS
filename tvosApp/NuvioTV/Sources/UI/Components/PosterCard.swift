@@ -222,9 +222,8 @@ struct PosterCard: View {
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
 
-#if os(tvOS)
-    @FocusState private var localFocusRequested: Bool
-    @State private var nativeFocusIsActive = false
+    #if os(tvOS)
+    @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @State private var landscapeArtworkPrepared = false
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
@@ -238,20 +237,6 @@ struct PosterCard: View {
     /// for every card passed over. Arm that preload only after focus has settled,
     /// matching Home's hero debounce.
     @State private var landscapePreloadArmed = false
-
-    private var isFocused: Bool {
-        externalFocus == nil ? localFocusRequested : nativeFocusIsActive
-    }
-
-    private var focusIdentity: String { externalFocusValue ?? meta.id }
-
-    private func requestFocus() {
-        if let externalFocus {
-            externalFocus.wrappedValue = focusIdentity
-        } else {
-            localFocusRequested = true
-        }
-    }
     #else
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
@@ -267,15 +252,11 @@ struct PosterCard: View {
                 posterContent
             }
             .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
-                nativeFocusIsActive = focused
                 if focused { onFocus?(meta) } else { onBlur?(meta) }
             }))
             .disabled(!allowsFocus)
-            .modifier(ExternalFocusBinding(
-                binding: externalFocus,
-                id: focusIdentity,
-                localBinding: $localFocusRequested
-            ))
+            .focused($isFocused)
+            .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
             .nuvioFocusEffectDisabledIfAvailable()
             .modifier(OptionalMoveCommandHandler(handler: onMove))
             .titleActionsContextMenu(
@@ -306,7 +287,7 @@ struct PosterCard: View {
             .task(id: isFocused) {
                 guard isFocused else { return }
                 do {
-                    try await Task.sleep(nanoseconds: 300_000_000)
+                    try await Task.sleep(nanoseconds: 350_000_000)
                 } catch {
                     return
                 }
@@ -324,14 +305,18 @@ struct PosterCard: View {
 
                 didRequestInitialFocus = true
                 onInitialFocusRequested?()
-                DispatchQueue.main.async { requestFocus() }
+                DispatchQueue.main.async {
+                    isFocused = true
+                }
             }
             .onChange(of: shouldRequestInitialFocus) { _, shouldRequest in
                 if shouldRequest {
                     guard !didRequestInitialFocus else { return }
                     didRequestInitialFocus = true
                     onInitialFocusRequested?()
-                    DispatchQueue.main.async { requestFocus() }
+                    DispatchQueue.main.async {
+                        isFocused = true
+                    }
                 } else {
                     didRequestInitialFocus = false
                 }
@@ -1279,8 +1264,7 @@ struct PosterGridCard: View {
     var onMove: ((MoveCommandDirection) -> Void)? = nil
     let action: () -> Void
 
-    @FocusState private var localFocusRequested: Bool
-    @State private var nativeFocusIsActive = false
+    @FocusState private var focused: Bool
     @State private var didRequestInitialFocus = false
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
@@ -1288,21 +1272,7 @@ struct PosterGridCard: View {
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
-    private var focused: Bool {
-        externalFocus == nil ? localFocusRequested : nativeFocusIsActive
-    }
-
     private var showsFocusedAppearance: Bool { focused || retainFocusAppearance }
-
-    private var focusIdentity: String { focusValue ?? meta.id }
-
-    private func requestFocus() {
-        if let externalFocus {
-            externalFocus.wrappedValue = focusIdentity
-        } else {
-            localFocusRequested = true
-        }
-    }
 
     private var cardCornerRadius: CGFloat {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)
@@ -1371,14 +1341,10 @@ struct PosterGridCard: View {
                 .scaleEffect(showsFocusedAppearance ? 1.06 : 1.0)
         }
         .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
-            nativeFocusIsActive = focused
             if focused { onFocus?(meta) } else { onBlur?(meta) }
         }))
-        .modifier(ExternalFocusBinding(
-            binding: externalFocus,
-            id: focusIdentity,
-            localBinding: $localFocusRequested
-        ))
+        .focused($focused)
+        .modifier(ExternalFocusBinding(binding: externalFocus, id: focusValue ?? meta.id))
         .focusEffectDisabledIfAvailable()
         .modifier(OptionalMoveCommandHandler(handler: onMove))
         .titleActionsContextMenu(
@@ -1390,14 +1356,14 @@ struct PosterGridCard: View {
             guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
             didRequestInitialFocus = true
             onInitialFocusRequested?()
-            DispatchQueue.main.async { requestFocus() }
+            DispatchQueue.main.async { focused = true }
         }
         .onChange(of: shouldRequestInitialFocus) { _, shouldRequest in
             if shouldRequest {
                 guard !didRequestInitialFocus else { return }
                 didRequestInitialFocus = true
                 onInitialFocusRequested?()
-                DispatchQueue.main.async { requestFocus() }
+                DispatchQueue.main.async { focused = true }
             } else {
                 didRequestInitialFocus = false
             }
@@ -2516,18 +2482,15 @@ extension View {
     }
 }
 
-/// Uses the shared focus identity when provided, otherwise the card's local
-/// focus binding. A button must never have competing focus-state bindings.
+/// Binds a view's focus to a shared `FocusState<String?>` (no-op when nil),
+/// so a parent can track/restore which card is focused.
 struct ExternalFocusBinding: ViewModifier {
     let binding: FocusState<String?>.Binding?
     let id: String
-    var localBinding: FocusState<Bool>.Binding? = nil
 
     func body(content: Content) -> some View {
         if let binding {
             content.focused(binding, equals: id)
-        } else if let localBinding {
-            content.focused(localBinding)
         } else {
             content
         }
@@ -2685,8 +2648,8 @@ struct TitleActionsMenuContent: View {
             } label: {
                 Label(
                     inLibrary
-                        ? L10n.string("watchlist_remove", fallback: "Remove from watchlist")
-                        : L10n.string("watchlist_add", fallback: "Add to watchlist"),
+                        ? L10n.string("action_remove_from_library", fallback: "Remove from library")
+                        : L10n.string("action_add_to_library", fallback: "Add to library"),
                     systemImage: inLibrary ? "checkmark" : "plus"
                 )
             }

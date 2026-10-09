@@ -42,7 +42,7 @@ class NetflixSearchViewModel: ObservableObject {
             .store(in: &cancellables)
 
         $searchText
-            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
+            .debounce(for: .milliseconds(350), scheduler: DispatchQueue.main)
             .removeDuplicates()
             .sink { [weak self] text in
                 self?.performSearch(query: text)

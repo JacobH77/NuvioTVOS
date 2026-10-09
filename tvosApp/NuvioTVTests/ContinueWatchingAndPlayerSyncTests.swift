@@ -2,6 +2,33 @@ import XCTest
 @testable import NuvioTV
 
 final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
+    private let dismissalTestProfileId = "continue-watching-sync-\(UUID().uuidString)"
+    private var previousDismissalProfileId: String?
+
+    override func setUp() {
+        super.setUp()
+        previousDismissalProfileId = ContinueWatchingDismissStore.activeProfileId
+        ContinueWatchingDismissStore.setActiveProfile(dismissalTestProfileId)
+        ContinueWatchingDismissStore.eraseProfile(dismissalTestProfileId)
+    }
+
+    override func tearDown() {
+        ContinueWatchingDismissStore.eraseProfile(dismissalTestProfileId)
+        ContinueWatchingDismissStore.setActiveProfile(previousDismissalProfileId)
+        super.tearDown()
+    }
+
+    private func makeDismissalTestItem(contentId: String) -> ContinueWatchingItem {
+        ContinueWatchingItem(
+            meta: NuvioMeta(id: contentId, name: "Dismiss test", type: "series"),
+            streamUrl: "",
+            position: 100,
+            duration: 1_800,
+            lastWatchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            season: 1,
+            episode: 1
+        )
+    }
 
     // MARK: - Continue Watching Sync Tests
 
@@ -40,7 +67,10 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
     }
 
     func testContinueWatchingExportPreservesAuxiliaryFields() {
-        ContinueWatchingDismissStore.replaceKeys(["tt1234567|1|1", "tt7654321|2|3"], profileId: nil)
+        ContinueWatchingDismissStore.replaceKeys(
+            ["tt1234567|1|1", "tt7654321|2|3"],
+            profileId: dismissalTestProfileId
+        )
         let existingPayload = """
         {
             "isVisible": false,
@@ -53,6 +83,7 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         """
 
         let payload = ContinueWatchingSyncMapper.exportPayload(
+            localProfileId: dismissalTestProfileId,
             upNextFromFurthestEpisode: false,
             showUnairedNextUp: true,
             continueWatchingSort: "Streaming Style",
@@ -84,9 +115,10 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         }
         """
         // But local store only has tt1234567|1|1 because tt33546863 was cleared on watch
-        ContinueWatchingDismissStore.replaceKeys(["tt1234567|1|1"], profileId: nil)
+        ContinueWatchingDismissStore.replaceKeys(["tt1234567|1|1"], profileId: dismissalTestProfileId)
 
         let payload = ContinueWatchingSyncMapper.exportPayload(
+            localProfileId: dismissalTestProfileId,
             upNextFromFurthestEpisode: true,
             showUnairedNextUp: true,
             continueWatchingSort: "Default",
@@ -121,6 +153,257 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         XCTAssertEqual(showUnaired, false)
         XCTAssertEqual(sortMode, "Streaming Style")
         XCTAssertEqual(dismissedKeys, ["tt1234567|1|1"])
+    }
+
+    func testAndroidTraktDismissalStringSetRoundTripPreservesOtherPreferences() {
+        let existing: [String: Any] = [
+            "sync_enabled": ["type": "boolean", "value": true],
+            "sort_order": ["type": "string", "value": "recent"]
+        ]
+        let exported = ContinueWatchingSyncMapper.exportAndroidTraktFeature(
+            existing: existing,
+            dismissedKeys: [
+                "tt-plain",
+                "tt-legacy|1|2",
+                "tt-unit\u{1f}3\u{1f}4"
+            ]
+        )
+        let entry = exported[ContinueWatchingSyncMapper.androidDismissedNextUpKeysKey] as? [String: Any]
+        XCTAssertEqual(entry?["type"] as? String, "string_set")
+        XCTAssertEqual(entry?["value"] as? [String], ["tt-legacy", "tt-plain", "tt-unit"])
+        XCTAssertEqual((exported["sync_enabled"] as? [String: Any])?["value"] as? Bool, true)
+        XCTAssertEqual((exported["sort_order"] as? [String: Any])?["value"] as? String, "recent")
+
+        let imported = ContinueWatchingSyncMapper.androidDismissalKeys(from: exported)
+        XCTAssertTrue(imported.isPresent)
+        XCTAssertEqual(
+            imported.keys,
+            Set(["tt-legacy|-1|-1", "tt-plain|-1|-1", "tt-unit|-1|-1"])
+        )
+    }
+
+    func testAndroidTraktDismissalImportNormalizesPlainAndLegacyIDs() {
+        let feature: [String: Any] = [
+            ContinueWatchingSyncMapper.androidDismissedNextUpKeysKey: [
+                "type": "string_set",
+                "value": [
+                    " tt-plain ",
+                    "tt-pipe|2|4",
+                    "tt-unit\u{1f}3\u{1f}5"
+                ]
+            ]
+        ]
+
+        let imported = ContinueWatchingSyncMapper.androidDismissalKeys(from: feature)
+        XCTAssertTrue(imported.isPresent)
+        XCTAssertEqual(
+            imported.keys,
+            Set(["tt-plain|-1|-1", "tt-pipe|-1|-1", "tt-unit|-1|-1"])
+        )
+    }
+
+    func testAndroidEmptyDismissalSetOverridesStaleLegacyPayload() {
+        let androidFeature: [String: Any] = [
+            ContinueWatchingSyncMapper.androidDismissedNextUpKeysKey: [
+                "type": "string_set",
+                "value": [String]()
+            ]
+        ]
+        let legacyPayload: [String: Any] = [
+            "dismissedNextUpKeys": ["tt-stale|-1|-1"]
+        ]
+
+        let imported = ContinueWatchingSyncMapper.dismissalKeysForImport(
+            androidTraktFeature: androidFeature,
+            legacyPayload: legacyPayload
+        )
+
+        XCTAssertTrue(imported.isPresent)
+        XCTAssertEqual(imported.keys, [])
+    }
+
+    func testMalformedAndroidDismissalEntryDoesNotFallBackToStaleLegacyPayload() {
+        let malformedFeatures: [[String: Any]] = [
+            [
+                ContinueWatchingSyncMapper.androidDismissedNextUpKeysKey: [
+                    "type": "string",
+                    "value": ["tt-android"]
+                ]
+            ],
+            [
+                ContinueWatchingSyncMapper.androidDismissedNextUpKeysKey: [
+                    "type": "string_set",
+                    "value": ["tt-android", 7]
+                ]
+            ]
+        ]
+        let legacyPayload: [String: Any] = [
+            "dismissedNextUpKeys": ["tt-stale|-1|-1"]
+        ]
+
+        for feature in malformedFeatures {
+            let imported = ContinueWatchingSyncMapper.dismissalKeysForImport(
+                androidTraktFeature: feature,
+                legacyPayload: legacyPayload
+            )
+            XCTAssertTrue(imported.isPresent)
+            XCTAssertNil(imported.keys)
+        }
+    }
+
+    func testAbsentAndroidDismissalEntryFallsBackToLegacyPayload() {
+        let legacyPayload: [String: Any] = [
+            "dismissedNextUpKeys": ["tt-legacy|2|3"]
+        ]
+
+        let imported = ContinueWatchingSyncMapper.dismissalKeysForImport(
+            androidTraktFeature: ["other_setting": true],
+            legacyPayload: legacyPayload
+        )
+
+        XCTAssertTrue(imported.isPresent)
+        XCTAssertEqual(imported.keys, ["tt-legacy|2|3"])
+    }
+
+    func testClearedDismissalFiltersStaleImportedKeysAndExport() {
+        let contentId = "tt-resumed-dismissal"
+        ContinueWatchingDismissStore.dismiss(makeDismissalTestItem(contentId: contentId))
+        ContinueWatchingDismissStore.clear(contentId: contentId)
+
+        ContinueWatchingDismissStore.replaceKeys(
+            ["\(contentId)|4|5", "tt-unrelated|1|1"],
+            profileId: dismissalTestProfileId
+        )
+
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId), ["tt-unrelated|1|1"])
+        let payload = ContinueWatchingSyncMapper.exportPayload(
+            localProfileId: dismissalTestProfileId,
+            upNextFromFurthestEpisode: false,
+            showUnairedNextUp: true,
+            continueWatchingSort: "Default",
+            existingPayload: nil
+        )
+        let json = try! XCTUnwrap(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        XCTAssertEqual(json["dismissedNextUpKeys"] as? [String], ["tt-unrelated|1|1"])
+    }
+
+    func testClearWithoutLocalDismissalPersistsMarkerAndBlocksStaleImport() {
+        let contentId = "tt-clear-before-import"
+        ContinueWatchingDismissStore.clear(contentId: " \(contentId) ")
+
+        let markerStorageKey = "nuvio.tv.continueWatching.resumedContentIDs.\(dismissalTestProfileId)"
+        XCTAssertEqual(UserDefaults.standard.stringArray(forKey: markerStorageKey), [contentId])
+
+        ContinueWatchingDismissStore.replaceKeys(
+            ["\(contentId)|-1|-1", "tt-preserved|2|3"],
+            profileId: dismissalTestProfileId
+        )
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId), ["tt-preserved|2|3"])
+
+        ContinueWatchingDismissStore.eraseProfile(dismissalTestProfileId)
+        XCTAssertNil(UserDefaults.standard.object(forKey: markerStorageKey))
+    }
+
+    func testPersistedResumeMarkerLoadsAndFiltersExportedKeys() {
+        let profileId = "\(dismissalTestProfileId)-persisted"
+        defer { ContinueWatchingDismissStore.eraseProfile(profileId) }
+        let contentId = "tt-persisted-resume-marker"
+        let markerStorageKey = "nuvio.tv.continueWatching.resumedContentIDs.\(profileId)"
+        let dismissalStorageKey = "nuvio.tv.continueWatching.dismissedKeys.\(profileId)"
+        UserDefaults.standard.set([contentId], forKey: markerStorageKey)
+        UserDefaults.standard.set(["\(contentId)|-1|-1", "tt-persisted-unrelated|1|1"], forKey: dismissalStorageKey)
+
+        let payload = ContinueWatchingSyncMapper.exportPayload(
+            localProfileId: profileId,
+            upNextFromFurthestEpisode: false,
+            showUnairedNextUp: true,
+            continueWatchingSort: "Default",
+            existingPayload: nil
+        )
+        let json = try! XCTUnwrap(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        XCTAssertEqual(json["dismissedNextUpKeys"] as? [String], ["tt-persisted-unrelated|1|1"])
+    }
+
+    func testEraseAllProfilesRemovesResumeMarkersAndRestoresOtherStoredProfiles() {
+        let defaults = UserDefaults.standard
+        let relevantPrefixes = [
+            "nuvio.tv.continueWatching.dismissedKeys",
+            "nuvio.tv.continueWatching.pendingDismissedKeys",
+            "nuvio.tv.continueWatching.resumedContentIDs"
+        ]
+        let previousValues = defaults.dictionaryRepresentation().filter { key, _ in
+            relevantPrefixes.contains(where: key.hasPrefix)
+        }
+        defer {
+            defaults.dictionaryRepresentation().keys
+                .filter { key in relevantPrefixes.contains(where: key.hasPrefix) }
+                .forEach { defaults.removeObject(forKey: $0) }
+            previousValues.forEach { defaults.set($0.value, forKey: $0.key) }
+        }
+
+        let markerStorageKey = "nuvio.tv.continueWatching.resumedContentIDs.\(dismissalTestProfileId)"
+        defaults.set(["tt-erase-all-marker"], forKey: markerStorageKey)
+        ContinueWatchingDismissStore.eraseAllProfiles()
+
+        XCTAssertNil(defaults.object(forKey: markerStorageKey))
+    }
+
+    func testClearMatchesCanonicalLegacyBareAndWildcardKeysButPreservesOtherTitles() {
+        let legacyId = "tt-legacy-resumed"
+        let bareId = "tt-bare-resumed"
+        let wildcardId = "tt-wildcard-resumed"
+        let canonicalId = "tt-canonical-resumed"
+        [legacyId, bareId, wildcardId, canonicalId].forEach {
+            ContinueWatchingDismissStore.clear(contentId: $0)
+        }
+
+        let legacySeparator = "\u{1f}"
+        let importedKeys: Set<String> = [
+            "\(legacyId)\(legacySeparator)1\(legacySeparator)2",
+            bareId,
+            "\(wildcardId)|-1|-1",
+            "\(canonicalId)|3|4",
+            "tt-kept-canonical|1|2",
+            "tt-kept-legacy\(legacySeparator)4\(legacySeparator)5",
+            " tt-kept-bare "
+        ]
+
+        ContinueWatchingDismissStore.replaceKeys(importedKeys, profileId: dismissalTestProfileId)
+
+        XCTAssertEqual(
+            ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId),
+            ["tt-kept-canonical|1|2", "tt-kept-legacy\(legacySeparator)4\(legacySeparator)5", " tt-kept-bare "]
+        )
+    }
+
+    func testExplicitRedismissThroughBothOverloadsRemovesResumeMarker() {
+        let itemId = "tt-redismiss-item"
+        ContinueWatchingDismissStore.clear(contentId: itemId)
+        ContinueWatchingDismissStore.dismiss(makeDismissalTestItem(contentId: itemId))
+        ContinueWatchingDismissStore.replaceKeys(["\(itemId)|2|3"], profileId: dismissalTestProfileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId), ["\(itemId)|2|3"])
+
+        let contentId = "tt-redismiss-content-id"
+        ContinueWatchingDismissStore.clear(contentId: contentId)
+        ContinueWatchingDismissStore.dismiss(contentId: contentId)
+        ContinueWatchingDismissStore.replaceKeys(["\(contentId)|2|3"], profileId: dismissalTestProfileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId), ["\(contentId)|2|3"])
+    }
+
+    func testResumeMarkersAreIsolatedByProfile() {
+        let otherProfileId = "\(dismissalTestProfileId)-other"
+        defer { ContinueWatchingDismissStore.eraseProfile(otherProfileId) }
+        let contentId = "tt-profile-resume-marker"
+        let staleKey = "\(contentId)|1|1"
+
+        ContinueWatchingDismissStore.clear(contentId: contentId)
+        ContinueWatchingDismissStore.setActiveProfile(otherProfileId)
+        ContinueWatchingDismissStore.replaceKeys([staleKey], profileId: otherProfileId)
+        XCTAssertEqual(ContinueWatchingDismissStore.keys(profileId: otherProfileId), [staleKey])
+
+        ContinueWatchingDismissStore.setActiveProfile(dismissalTestProfileId)
+        ContinueWatchingDismissStore.replaceKeys([staleKey], profileId: dismissalTestProfileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.keys(profileId: dismissalTestProfileId).isEmpty)
     }
 
     // MARK: - Player Settings Sync Tests
@@ -753,5 +1036,3 @@ final class ContinueWatchingAndPlayerSyncTests: XCTestCase {
         XCTAssertEqual(controller.positionMs, 0)
     }
 }
-
-

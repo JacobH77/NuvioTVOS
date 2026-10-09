@@ -364,5 +364,236 @@ final class WeTrakrAuthServiceTests: XCTestCase {
 
         XCTAssertTrue(WatchedStore.sameContent(meta1, meta2), "Items with matching normalized series title and year should be treated as same content")
     }
+
+    func testTrackingPayloadEncodability() throws {
+        let movieAdd = WeTrakrTrackingAddPayload(
+            movies: [
+                WeTrakrMediaPayload(
+                    title: "Inception",
+                    year: 2010,
+                    ids: WeTrakrSyncIDs(imdb: "tt1375666", tmdb: 27205),
+                    status: "watched"
+                )
+            ],
+            shows: nil,
+            allowRewatch: true
+        )
+
+        let encoder = JSONEncoder()
+        let movieData = try encoder.encode(movieAdd)
+        let movieJson = try JSONSerialization.jsonObject(with: movieData) as? [String: Any]
+
+        XCTAssertEqual(movieJson?["allow_rewatch"] as? Bool, true)
+        let moviesArray = movieJson?["movies"] as? [[String: Any]]
+        XCTAssertEqual(moviesArray?.count, 1)
+        XCTAssertEqual(moviesArray?.first?["status"] as? String, "watched")
+        XCTAssertEqual(moviesArray?.first?["title"] as? String, "Inception")
+
+        let showAdd = WeTrakrTrackingAddPayload(
+            movies: nil,
+            shows: [
+                WeTrakrShowTrackingPayload(
+                    title: "Severance",
+                    year: 2022,
+                    ids: WeTrakrSyncIDs(imdb: "tt11280740"),
+                    status: "watched",
+                    seasons: [
+                        WeTrakrSeasonTrackingPayload(
+                            number: 1,
+                            status: "watched",
+                            episodes: [
+                                WeTrakrEpisodeTrackingPayload(number: 1, status: "watched")
+                            ]
+                        )
+                    ]
+                )
+            ],
+            allowRewatch: true
+        )
+
+        let showData = try encoder.encode(showAdd)
+        let showJson = try JSONSerialization.jsonObject(with: showData) as? [String: Any]
+        let showsArray = showJson?["shows"] as? [[String: Any]]
+        XCTAssertEqual(showsArray?.count, 1)
+        XCTAssertEqual(showsArray?.first?["status"] as? String, "watched")
+        let seasonsArray = showsArray?.first?["seasons"] as? [[String: Any]]
+        XCTAssertEqual(seasonsArray?.first?["number"] as? Int, 1)
+        XCTAssertEqual(seasonsArray?.first?["status"] as? String, "watched")
+        let episodesArray = seasonsArray?.first?["episodes"] as? [[String: Any]]
+        XCTAssertEqual(episodesArray?.first?["number"] as? Int, 1)
+        XCTAssertEqual(episodesArray?.first?["status"] as? String, "watched")
+
+        let watchlistPlanning = WeTrakrTrackingAddPayload(
+            movies: [
+                WeTrakrMediaPayload(
+                    title: "Dune",
+                    year: 2021,
+                    ids: WeTrakrSyncIDs(imdb: "tt1160419"),
+                    status: "planning"
+                )
+            ],
+            shows: nil,
+            allowRewatch: nil
+        )
+        let planningData = try encoder.encode(watchlistPlanning)
+        let planningJson = try JSONSerialization.jsonObject(with: planningData) as? [String: Any]
+        let planningMovies = planningJson?["movies"] as? [[String: Any]]
+        XCTAssertEqual(planningMovies?.first?["status"] as? String, "planning")
+    }
+
+    func testWeTrakrHistoryDTODecoding() throws {
+        let jsonStr = """
+        [
+            {
+                "id": "6aa9d0450aa463e732ebd373",
+                "watched_at": "2026-09-15T21:09:53.772Z",
+                "episode": {
+                    "id": 5092071,
+                    "season_number": 1,
+                    "number": 1,
+                    "show": {
+                        "id": 1333953,
+                        "title": "Margo's Got Money Troubles",
+                        "ids": {
+                            "tmdb": 245318,
+                            "imdb": "tt31137273"
+                        }
+                    }
+                }
+            },
+            {
+                "id": "6aa9d0450aa463e732ebd374",
+                "watched_at": "2026-09-16T12:00:00.000Z",
+                "movie": {
+                    "id": 12345,
+                    "title": "Inception",
+                    "year": 2010,
+                    "ids": {
+                        "imdb": "tt1375666",
+                        "tmdb": 27205
+                    }
+                }
+            }
+        ]
+        """
+
+        let data = jsonStr.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode([WeTrakrTrackingHistoryItemDTO].self, from: data)
+
+        XCTAssertEqual(decoded.count, 2)
+        XCTAssertEqual(decoded[0].id, "6aa9d0450aa463e732ebd373")
+        XCTAssertEqual(decoded[0].episode?.seasonNumber, 1)
+        XCTAssertEqual(decoded[0].episode?.number, 1)
+        XCTAssertEqual(decoded[0].episode?.show?.title, "Margo's Got Money Troubles")
+        XCTAssertEqual(decoded[0].episode?.show?.ids?.imdb, "tt31137273")
+
+        XCTAssertEqual(decoded[1].id, "6aa9d0450aa463e732ebd374")
+        XCTAssertEqual(decoded[1].movie?.title, "Inception")
+        XCTAssertEqual(decoded[1].movie?.ids?.tmdb, 27205)
+    }
+
+    func testReconcileWeTrakrSnapshot() {
+        let originalSource = TraktSettingsStore.watchProgressSource
+        TraktSettingsStore.watchProgressSource = .wetrakr
+        defer {
+            TraktSettingsStore.watchProgressSource = originalSource
+        }
+
+        let meta = NuvioMeta(
+            id: "tt1375666",
+            name: "Inception",
+            type: "movie",
+            year: 2010
+        )
+        let item = WatchedStoreItem(
+            meta: meta,
+            watchedAt: Date(),
+            sources: [TraktWatchProgressSource.wetrakr.rawValue]
+        )
+
+        let success = WatchedStore.reconcileWeTrakrSnapshot(
+            [item],
+            previousRemoteItems: [],
+            syncStartedAt: Date()
+        )
+        XCTAssertTrue(success)
+        XCTAssertTrue(WatchedStore.contains(meta: meta))
+    }
+
+    func testCancelPlaybackPayloadEncoding() throws {
+        let movieCancel = WeTrakrCancelPlaybackPayload(
+            movie: WeTrakrMediaPayload(
+                title: "Inception",
+                year: 2010,
+                ids: WeTrakrSyncIDs(imdb: "tt1375666", tmdb: 27205)
+            ),
+            show: nil,
+            episode: nil
+        )
+        let encoder = JSONEncoder()
+        let movieData = try encoder.encode(movieCancel)
+        let movieJson = try JSONSerialization.jsonObject(with: movieData) as? [String: Any]
+        XCTAssertNotNil(movieJson?["movie"])
+        XCTAssertNil(movieJson?["show"])
+        XCTAssertNil(movieJson?["episode"])
+        XCTAssertNil(movieJson?["progress"])
+
+        let showCancel = WeTrakrCancelPlaybackPayload(
+            movie: nil,
+            show: WeTrakrMediaPayload(
+                title: "Breaking Bad",
+                year: 2008,
+                ids: WeTrakrSyncIDs(imdb: "tt0903747")
+            ),
+            episode: WeTrakrEpisodePayload(season: 1, number: 1)
+        )
+        let showData = try encoder.encode(showCancel)
+        let showJson = try JSONSerialization.jsonObject(with: showData) as? [String: Any]
+        XCTAssertNil(showJson?["movie"])
+        XCTAssertNotNil(showJson?["show"])
+        let epJson = showJson?["episode"] as? [String: Any]
+        XCTAssertEqual(epJson?["season"] as? Int, 1)
+        XCTAssertEqual(epJson?["number"] as? Int, 1)
+    }
+
+    func testRemovePlaybackTrackingPayloadEncoding() throws {
+        let payload = WeTrakrTrackingRemovePayload(
+            movies: [
+                WeTrakrMediaPayload(
+                    title: "Inception",
+                    year: 2010,
+                    ids: WeTrakrSyncIDs(imdb: "tt1375666"),
+                    status: "playing"
+                )
+            ],
+            shows: [
+                WeTrakrShowTrackingPayload(
+                    title: "Severance",
+                    year: 2022,
+                    ids: WeTrakrSyncIDs(imdb: "tt11280740"),
+                    status: "playing",
+                    seasons: [
+                        WeTrakrSeasonTrackingPayload(
+                            number: 1,
+                            status: "playing",
+                            episodes: [
+                                WeTrakrEpisodeTrackingPayload(number: 1, status: "playing")
+                            ]
+                        )
+                    ]
+                )
+            ]
+        )
+        let data = try JSONEncoder().encode(payload)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let movies = json?["movies"] as? [[String: Any]]
+        XCTAssertEqual(movies?.first?["status"] as? String, "playing")
+        let shows = json?["shows"] as? [[String: Any]]
+        XCTAssertEqual(shows?.first?["status"] as? String, "playing")
+        let seasons = shows?.first?["seasons"] as? [[String: Any]]
+        XCTAssertEqual(seasons?.first?["status"] as? String, "playing")
+        let episodes = seasons?.first?["episodes"] as? [[String: Any]]
+        XCTAssertEqual(episodes?.first?["status"] as? String, "playing")
+    }
 }
 

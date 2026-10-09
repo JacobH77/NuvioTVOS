@@ -13,7 +13,6 @@ struct DiscoverSection: View {
     let onContentClick: (String, String) -> Void
     let isBesideKeyboard: Bool
     let columnCount: Int?
-    let cardWidth: CGFloat?
     var onLongPress: ((NuvioMeta) -> Void)? = nil
     /// Lets an embedded host react to moving into a card or out of the
     /// Discover controls entirely (the Netflix Search host uses this to
@@ -49,7 +48,6 @@ struct DiscoverSection: View {
         onContentClick: @escaping (String, String) -> Void,
         isBesideKeyboard: Bool = false,
         columnCount: Int? = nil,
-        cardWidth: CGFloat? = nil,
         onLongPress: ((NuvioMeta) -> Void)? = nil,
         onCardFocus: (() -> Void)? = nil,
         onFilterFocus: (() -> Void)? = nil,
@@ -59,7 +57,6 @@ struct DiscoverSection: View {
         self.onContentClick = onContentClick
         self.isBesideKeyboard = isBesideKeyboard
         self.columnCount = columnCount
-        self.cardWidth = cardWidth
         self.onLongPress = onLongPress
         self.onCardFocus = onCardFocus
         self.onFilterFocus = onFilterFocus
@@ -301,11 +298,11 @@ struct DiscoverSection: View {
         .defaultFocusIfAvailable($focusedCardID, shouldRestoreFocus ? lastFocusedCardID : nil)
     }
 
-    private var posterWidth: CGFloat { cardWidth ?? DiscoverGridMetrics.posterWidth }
+    private var posterWidth: CGFloat { DiscoverGridMetrics.posterWidth }
     private var posterGap: CGFloat { isBesideKeyboard || columnCount != nil ? 24 : DiscoverGridMetrics.posterGap }
 
     private var columns: [GridItem] {
-        if let count = columnCount ?? (isBesideKeyboard ? 4 : nil) {
+        if let count = isBesideKeyboard ? 5 : columnCount {
             return Array(repeating: GridItem(.fixed(posterWidth), spacing: posterGap, alignment: .top), count: count)
         }
         return [GridItem(

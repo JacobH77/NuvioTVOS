@@ -122,21 +122,25 @@ Simkl's PIN flow does not need a Client Secret. The Client ID stays on that Appl
 
 ## About
 
-This repository started as a fork of the Nuvio mobile app. The focus of this fork is now the tvOS version: a native SwiftUI Apple TV app under [tvosApp](./tvosApp) with Apple TV navigation, focus handling, profile selection, catalog browsing, details screens, search, library/watchlist surfaces, and playback controls designed for the Siri Remote.
+This repository started as a fork of the Nuvio mobile app. The focus of this fork is now the tvOS version: a native SwiftUI Apple TV app under [tvosApp](./tvosApp) with Apple TV navigation, focus handling, profile selection, catalog browsing, details screens, search, watchlist surfaces, and playback controls designed for the Siri Remote. This branch restores the tvOS source from the original [bobsupra/NuvioTVOS](https://github.com/bobsupra/NuvioTVOS) upstream; its Apple TV display name is Shiv Mode while its Nuvio identity, bundle identifier, and existing profile data remain intact.
 
 The original shared mobile code is still present in [composeApp](./composeApp), with the inherited iOS app under [iosApp](./iosApp). The active tvOS development surface is [tvosApp/NuvioTV](./tvosApp/NuvioTV).
 
 ## Current tvOS App
 
 - Native SwiftUI entry point in [NuvioTVApp.swift](./tvosApp/NuvioTV/Sources/NuvioTVApp.swift).
-- Apple TV tab navigation for Profile, Home, Search, Library, and Settings.
+- Apple TV tab navigation for Profile, Home, Search, Watchlist, and Settings.
 - Home rows combine synced collections and configured catalogs with a featured-title carousel and profile-scoped Continue Watching cards showing playback progress and resume actions.
-- Home focus selects one coordinated artwork source, and focused-title information avoids repeating the currently featured title.
+- The Home hero uses configurable catalog sources from Home settings, switches to focused-title artwork, and restores the selected hero artwork when focus returns to the hero.
+- Continue Watching remains a separate Home row and persisted store; it does not share Watchlist entries.
+- Watchlist data persists per profile and syncs through the selected library source. Completed movies are removed; a series stays until all aired regular episodes in its loaded guide are watched.
+- Search defaults to a Nuvio-styled Cinematic layout with responsive results and Siri Remote focus navigation.
+- Search uses the native tvOS [`searchable`](https://developer.apple.com/documentation/swiftui/view/searchable(text:placement:prompt:)) field and keyboard dictation. tvOS does not expose app-wide Siri-button interception, and App Intents [`searchInApp`](https://developer.apple.com/documentation/appintents/appschema/systemintent/searchinapp) is unavailable on tvOS; voice dictation begins after opening the Search field.
 - Catalog and metadata repository with configurable catalog, playback, and subtitle integrations.
 - User-configurable source integrations in Settings → Integrations → Add-ons.
 - Cloud library playback through supported connected services.
 - Apple TV Top Shelf extension backed by the active Continue Watching row.
-- Long-press quick actions for poster cards, including details, library toggle, and watched toggle.
+- Long-press quick actions for poster cards, including details, Watchlist toggle, and watched toggle.
 - QR-code and email login flow backed by Supabase configuration in [AuthConfig.swift](./tvosApp/NuvioTV/Sources/Core/Auth/AuthConfig.swift).
 - tvOS profile/account sync for profiles, add-ons, settings, library, watched state, and progress. Settings follow the selected profile across Apple TVs; device-only app credentials stay local.
 - Trakt device-code login using a user-provided Client ID and Client Secret, stored locally on the Apple TV.

@@ -1281,6 +1281,7 @@ extension PlayerControlsSettingsTests {
     func testSwipeWhilePlayingDoesNotSeekOnlyTapSeeks() {
         let coordinator = PlaybackSessionCoordinator(aetherControllerFactory: { nil })
         let vm = PlayerViewModel(sessionCoordinator: coordinator)
+        vm.seekStepSeconds = 10
         vm.time = PlayerTime(current: 100, duration: 1000)
         vm.status = .playing
         vm.showControls = false

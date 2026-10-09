@@ -15,7 +15,6 @@ import Foundation
 /// `ContinueWatchingStore.items()` call — and that runs on every Home refresh,
 /// resume lookup and Top Shelf write. Later pages live in memory for the
 /// session, exactly as a catalog row's later pages do.
-@MainActor
 enum ContinueWatchingBuilder {
     /// Long-lived so its in-memory metadata cache survives across rebuilds.
     private static let repository = CinemetaCatalogRepository()
@@ -28,12 +27,32 @@ enum ContinueWatchingBuilder {
     static let initialResolutionLimit = 36
     private static let metadataConcurrency = 4
 
+    private static let lock = NSLock()
     private static var rebuildTask: Task<Void, Never>?
     private static var generation: UInt = 0
 
+    private static func nextGeneration() -> UInt {
+        lock.lock()
+        defer { lock.unlock() }
+        generation &+= 1
+        return generation
+    }
+
+    private static func currentGen() -> UInt {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    private static func isCurrentGeneration(_ gen: UInt) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return gen == generation
+    }
+
     /// One entry per title to render, newest first. `isSeed` marks a finished
     /// episode that becomes a "Next Up" card rather than resume progress.
-    struct PlanEntry: Equatable {
+    struct PlanEntry: Equatable, Sendable {
         let record: WatchProgressRecord
         let isSeed: Bool
     }
@@ -57,10 +76,10 @@ enum ContinueWatchingBuilder {
         ).sorted { $0.record.lastWatchedAt > $1.record.lastWatchedAt }
     }
 
-    private static var plan: [PlanEntry] = []
-    private static var materialized: [ContinueWatchingItem] = []
-    private static var consumedEntries = 0
-    private static var isLoadingPage = false
+    @MainActor private static var plan: [PlanEntry] = []
+    @MainActor private static var materialized: [ContinueWatchingItem] = []
+    @MainActor private static var consumedEntries = 0
+    @MainActor private static var isLoadingPage = false
     /// Whose history `plan` and `materialized` describe.
     ///
     /// This state is static while the profile it belongs to is not, and Home
@@ -68,41 +87,60 @@ enum ContinueWatchingBuilder {
     /// the store immediately, so without an owner to check against, the outgoing
     /// profile's cards keep rendering under the new profile's name until some
     /// later rebuild happens to replace them.
-    private static var materializedProfileId: String?
+    @MainActor private static var materializedProfileId: String?
 
     /// Every item built so far, including pages beyond the persisted first one —
     /// empty unless they belong to the profile that is active now.
+    @MainActor
     static var pagedItems: [ContinueWatchingItem] {
         materializedProfileId == WatchProgressLedger.activeProfileId ? materialized : []
     }
 
     /// True while the ledger still holds titles that have not been rendered.
+    @MainActor
     static var canLoadMore: Bool {
         materializedProfileId == WatchProgressLedger.activeProfileId
             && consumedEntries < plan.count
     }
 
     /// Last outcome, for the on-screen sync diagnostic.
+    @MainActor
     static private(set) var diagnostic = "not built"
 
-    /// Coalesces rebuild requests; the newest request wins.
-    static func scheduleRebuild(reason: String) {
+    /// Coalesces rebuild requests; the newest request wins. Debounced slightly by default to avoid duplicate builds.
+    static func scheduleRebuild(reason: String, delayMs: UInt64 = 150) {
+        lock.lock()
         rebuildTask?.cancel()
-        rebuildTask = Task.detached(priority: .utility) {
-            await rebuild(reason: reason)
+        generation &+= 1
+        let gen = generation
+        let task = Task.detached(priority: .utility) {
+            if delayMs > 0 {
+                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            await rebuild(reason: reason, expectedGeneration: gen)
         }
+        rebuildTask = task
+        lock.unlock()
     }
 
     /// Invalidates deferred and in-flight builds when their account or profile
     /// context is no longer current.
     static func cancelScheduledRebuild() {
+        lock.lock()
         rebuildTask?.cancel()
         rebuildTask = nil
         generation &+= 1
+        lock.unlock()
     }
 
     static func rebuild(reason: String) async {
-        guard !Task.isCancelled else { return }
+        let gen = nextGeneration()
+        await rebuild(reason: reason, expectedGeneration: gen)
+    }
+
+    private static func rebuild(reason: String, expectedGeneration: UInt) async {
+        guard !Task.isCancelled, isCurrentGeneration(expectedGeneration) else { return }
         let rebuildStarted = TVHomeDebugTrace.now()
         TVHomeDebugTrace.log("cw.builder.rebuild.begin reason=\(reason)")
         print("[ContinueWatchingBuilder] rebuild started: reason=\(reason)")
@@ -117,11 +155,7 @@ enum ContinueWatchingBuilder {
             return
         }
 
-        let currentGeneration = await MainActor.run { () -> UInt in
-            generation &+= 1
-            return generation
-        }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, isCurrentGeneration(expectedGeneration) else { return }
         let profileId = WatchProgressLedger.activeProfileId
         // Metadata resolution below suspends. Keep the exact ledger input so a
         // playback save that lands while it is in flight cannot be overwritten
@@ -138,19 +172,17 @@ enum ContinueWatchingBuilder {
         print("[ContinueWatchingBuilder] rebuild: profile=\(profileId ?? "nil"), ledger records=\(ledgerSnapshot.count), candidates=\(candidates.count) (\(candidates.map(\.progressKey))), seeds=\(seeds.count) (\(seeds.map(\.progressKey)))")
         guard !candidates.isEmpty || !seeds.isEmpty else {
             print("[ContinueWatchingBuilder] rebuild: ledger empty -> setting empty CW store")
+            guard !Task.isCancelled, isCurrentGeneration(expectedGeneration), profileId == WatchProgressLedger.activeProfileId else { return }
             await MainActor.run {
+                guard isCurrentGeneration(expectedGeneration), profileId == WatchProgressLedger.activeProfileId else { return }
                 diagnostic = "\(reason): ledger empty"
                 plan = []
                 materialized = []
                 consumedEntries = 0
                 materializedProfileId = profileId
+                ContinueWatchingStore.replaceAll([])
             }
-            ContinueWatchingStore.replaceAll([])
             return
-        }
-
-        for candidate in candidates where !WatchProgressLedger.isComplete(candidate) && candidate.position > 5 {
-            ContinueWatchingDismissStore.clear(contentId: candidate.contentId)
         }
 
         let currentPlan = planEntries(candidates: candidates, seeds: seeds)
@@ -163,13 +195,11 @@ enum ContinueWatchingBuilder {
             startingAt: 0,
             targetCount: targetCount,
             existingItems: existingItems,
-            generation: currentGeneration,
+            generation: expectedGeneration,
             profileId: profileId
         )
-        guard !Task.isCancelled else { return }
-        let isCurrentGen = await MainActor.run { currentGeneration == generation }
-        guard isCurrentGen else {
-            print("[ContinueWatchingBuilder] rebuild: generation outdated (\(currentGeneration) != \(generation)) -> cancelling this pass")
+        guard !Task.isCancelled, isCurrentGeneration(expectedGeneration), profileId == WatchProgressLedger.activeProfileId else {
+            print("[ContinueWatchingBuilder] rebuild: generation outdated or profile changed -> cancelling this pass")
             return
         }
 
@@ -182,26 +212,27 @@ enum ContinueWatchingBuilder {
             print("[ContinueWatchingBuilder] rebuild: ledger snapshot changed during materializeSlice! Retrying...")
             await MainActor.run {
                 diagnostic = "\(reason): ledger changed while building, retrying"
-                scheduleRebuild(reason: "\(reason) (ledger changed)")
             }
+            scheduleRebuild(reason: "\(reason) (ledger changed)")
             return
         }
 
         print("[ContinueWatchingBuilder] rebuild: materialization finished, updating ContinueWatchingStore with \(page.items.count) items (failed lookups: \(page.failedLookups))")
-        // Only the first page is persisted; it is what a cold start renders.
-        ContinueWatchingStore.replaceAll(page.items)
+
         let diagText = "\(reason): ledger \(WatchProgressLedger.records().count), "
             + "candidates \(candidates.count), seeds \(seeds.count), plan \(currentPlan.count), "
-            + "page 1 built \(page.items.count), showing \(ContinueWatchingStore.items().count), "
+            + "page 1 built \(page.items.count), showing \(page.items.count), "
             + "lookups failed \(page.failedLookups)"
 
         await MainActor.run {
-            guard currentGeneration == generation else { return }
+            guard isCurrentGeneration(expectedGeneration), profileId == WatchProgressLedger.activeProfileId else { return }
             plan = currentPlan
             materialized = page.items
             consumedEntries = page.consumed
             materializedProfileId = profileId
             diagnostic = diagText
+            // Only the first page is persisted; it is what a cold start renders.
+            ContinueWatchingStore.replaceAll(page.items)
         }
 
         TVHomeDebugTrace.log(
@@ -222,28 +253,33 @@ enum ContinueWatchingBuilder {
 
     /// Renders the next page of titles. Returns every item built so far so the
     /// caller can replace its row wholesale rather than reconcile an append.
+    @MainActor
     @discardableResult
     static func loadNextPage() async -> [ContinueWatchingItem] {
         guard !isLoadingPage, canLoadMore else { return materialized }
         isLoadingPage = true
         defer { isLoadingPage = false }
 
-        let currentGeneration = generation
+        let currentGeneration = currentGen()
         let profileId = WatchProgressLedger.activeProfileId
         let currentConsumed = consumedEntries
         guard currentConsumed < plan.count else { return materialized }
 
         let existingItems = ContinueWatchingStore.items() + materialized
+        let planSnapshot = plan
 
-        let page = await materializePage(
-            from: plan,
-            startingAt: currentConsumed,
-            targetCount: pageSize,
-            existingItems: existingItems,
-            generation: currentGeneration,
-            profileId: profileId
-        )
-        guard !Task.isCancelled, currentGeneration == generation,
+        let page = await Task.detached(priority: .utility) {
+            await materializePage(
+                from: planSnapshot,
+                startingAt: currentConsumed,
+                targetCount: pageSize,
+                existingItems: existingItems,
+                generation: currentGeneration,
+                profileId: profileId
+            )
+        }.value
+
+        guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
               profileId == WatchProgressLedger.activeProfileId else {
             return materialized
         }
@@ -277,7 +313,8 @@ enum ContinueWatchingBuilder {
         let maxBatchScan = min(plan.count, startIndex + 60)
 
         while accumulatedItems.count < targetCount, cursor < plan.count, cursor < maxBatchScan {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+                  profileId == WatchProgressLedger.activeProfileId else { break }
             let needed = targetCount - accumulatedItems.count
             let batchSize = max(needed, min(10, plan.count - cursor))
             let sliceEnd = min(cursor + batchSize, plan.count)
@@ -290,7 +327,8 @@ enum ContinueWatchingBuilder {
                 generation: currentGeneration,
                 profileId: profileId
             )
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+                  profileId == WatchProgressLedger.activeProfileId else { break }
 
             accumulatedItems.append(contentsOf: result.items)
             totalFailedLookups += result.failedLookups
@@ -323,6 +361,10 @@ enum ContinueWatchingBuilder {
     ) async -> PageResult {
         let pageStarted = TVHomeDebugTrace.now()
         guard !slice.isEmpty else { return PageResult(items: [], failedLookups: 0) }
+        guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+              profileId == WatchProgressLedger.activeProfileId else {
+            return PageResult(items: [], failedLookups: 0)
+        }
 
         // Already-rendered rows double as the metadata cache — they persist full
         // metadata including the episode guide.
@@ -348,13 +390,18 @@ enum ContinueWatchingBuilder {
             needsFetch.append((record.contentId, record.contentType, needsVideos))
         }
 
-        let fetched = await fetchMetadata(needsFetch)
+        let fetched = await fetchMetadata(
+            needsFetch,
+            generation: currentGeneration,
+            profileId: profileId
+        )
         TVHomeDebugTrace.log(
             "cw.builder.page slice=\(slice.count) metadataRequests=\(needsFetch.count) "
                 + "resolved=\(fetched.count) "
                 + "fetchMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: pageStarted))"
         )
-        guard !Task.isCancelled, profileId == WatchProgressLedger.activeProfileId else {
+        guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+              profileId == WatchProgressLedger.activeProfileId else {
             return PageResult(items: [], failedLookups: 0)
         }
         metaById.merge(fetched) { _, new in new }
@@ -474,16 +521,19 @@ enum ContinueWatchingBuilder {
 
         // Concurrent TMDB Episode enrichment
         var tmdbEpisodesBySpecIndex: [Int: EpisodeMetadataEnrichment.Episode] = [:]
-        if !enrichmentRequests.isEmpty {
+        if !enrichmentRequests.isEmpty && !Task.isCancelled && isCurrentGeneration(currentGeneration) && profileId == WatchProgressLedger.activeProfileId {
             await withTaskGroup(of: (Int, EpisodeMetadataEnrichment.Episode?).self) { group in
                 var index = 0
                 var inFlight = 0
                 func addNext() {
                     guard index < enrichmentRequests.count else { return }
+                    guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+                          profileId == WatchProgressLedger.activeProfileId else { return }
                     let req = enrichmentRequests[index]
                     index += 1
                     inFlight += 1
                     group.addTask {
+                        guard !Task.isCancelled else { return (req.specIndex, nil) }
                         let ep = await EpisodeMetadataEnrichment.fetch(
                             meta: req.meta,
                             season: req.season,
@@ -497,9 +547,18 @@ enum ContinueWatchingBuilder {
                     guard let (idx, ep) = await group.next() else { break }
                     inFlight -= 1
                     if let ep { tmdbEpisodesBySpecIndex[idx] = ep }
-                    addNext()
+                    if !Task.isCancelled && isCurrentGeneration(currentGeneration) && profileId == WatchProgressLedger.activeProfileId {
+                        addNext()
+                    } else {
+                        group.cancelAll()
+                    }
                 }
             }
+        }
+
+        guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+              profileId == WatchProgressLedger.activeProfileId else {
+            return PageResult(items: [], failedLookups: failedLookups)
         }
 
         // Assemble page items
@@ -573,7 +632,9 @@ enum ContinueWatchingBuilder {
     // MARK: - Metadata
 
     private static func fetchMetadata(
-        _ requests: [(id: String, type: String, needsVideos: Bool)]
+        _ requests: [(id: String, type: String, needsVideos: Bool)],
+        generation currentGeneration: UInt,
+        profileId: String?
     ) async -> [String: NuvioMeta] {
         guard !requests.isEmpty else { return [:] }
         var resolved: [String: NuvioMeta] = [:]
@@ -584,16 +645,20 @@ enum ContinueWatchingBuilder {
 
             func addNext() {
                 guard index < requests.count else { return }
+                guard !Task.isCancelled, isCurrentGeneration(currentGeneration),
+                      profileId == WatchProgressLedger.activeProfileId else { return }
                 let request = requests[index]
                 index += 1
                 inFlight += 1
                 group.addTask {
+                    guard !Task.isCancelled else { return (request.id, nil) }
                     // A seed needs a real episode guide, so bypass the cache for
                     // those; a plain resume row is happy with whatever is cached.
                     let rawMeta = request.needsVideos
                         ? try? await repository.refreshMetadata(id: request.id, type: request.type)
                         : try? await repository.getMetadata(id: request.id, type: request.type)
                     if let rawMeta {
+                        guard !Task.isCancelled else { return (request.id, nil) }
                         let localized = await TmdbDetailsService.localizedMetadata(for: rawMeta)
                         return (request.id, localized)
                     }
@@ -606,7 +671,11 @@ enum ContinueWatchingBuilder {
                 guard let (id, meta) = await group.next() else { break }
                 inFlight -= 1
                 if let meta { resolved[id] = meta }
-                addNext()
+                if !Task.isCancelled && isCurrentGeneration(currentGeneration) && profileId == WatchProgressLedger.activeProfileId {
+                    addNext()
+                } else {
+                    group.cancelAll()
+                }
             }
         }
         return resolved

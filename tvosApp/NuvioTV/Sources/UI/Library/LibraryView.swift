@@ -93,7 +93,7 @@ public struct LibraryView: View {
             Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 24) {
-                Text(L10n.string("watchlist_title", fallback: "Watchlist"))
+                Text(L10n.string("library_watchlist", fallback: "Watchlist"))
                     .font(.system(size: 46, weight: .bold))
                     .foregroundColor(.white)
 

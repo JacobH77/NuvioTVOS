@@ -335,40 +335,6 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: SettingsKey.continueWatchingVisible))
     }
 
-    func testVisibleSectionsCacheSignatureTracksContentUpdatesAtStableCounts() {
-        func signature(revision: UInt, libraryRevision: UInt = 0) -> TVHomeVisibleSectionsSignature {
-            TVHomeVisibleSectionsSignature(
-                cwVisible: true,
-                continueWatchingRevision: revision,
-                localLibraryRevision: libraryRevision,
-                storeRevision: 0,
-                hideUnreleased: false,
-                cwLandscape: false,
-                landscapePosters: false
-            )
-        }
-
-        XCTAssertNotEqual(signature(revision: 4), signature(revision: 5))
-        XCTAssertNotEqual(signature(revision: 5), signature(revision: 5, libraryRevision: 1))
-    }
-
-    func testContinueWatchingPresentationOwnershipIncludesProfileAndSource() {
-        let active = TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .trakt)
-
-        XCTAssertEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .trakt)
-        )
-        XCTAssertNotEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-b", source: .trakt)
-        )
-        XCTAssertNotEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .simkl)
-        )
-    }
-
     func testFullscreenHeroBackdropSettingsKeyDefined() {
         XCTAssertEqual(SettingsKey.fullscreenHeroBackdrop, "nuvio.tv.settings.layout.fullscreenHeroBackdrop")
         XCTAssertTrue(SettingsKey.all.contains(SettingsKey.fullscreenHeroBackdrop))
@@ -984,6 +950,39 @@ final class HomeLayoutSettingsTests: XCTestCase {
         let rows = TVHomeCatalogOrder.snapshotRows()
         XCTAssertTrue(rows.contains(where: { $0.id == manifestCatalog1.id }))
         XCTAssertTrue(rows.contains(where: { $0.id == manifestCatalog2.id }))
+
+        // Clean up
+        TVHomeCatalogOrder.clearOrder()
+    }
+
+    func testBatchReplaceSnapshotRowsAtomicallyAppliesMultipleAddonUpdates() {
+        let addon1Catalog = TVHomeCatalogOrder.SnapshotRow(
+            id: "addon_org.stremio.addon1_movie_top",
+            title: "Addon1 Top Movies",
+            addonName: "Addon1",
+            addonId: "org.stremio.addon1",
+            contentType: "movie",
+            catalogId: "top",
+            settingsKey: "org.stremio.addon1_movie_top"
+        )
+        let addon2Catalog = TVHomeCatalogOrder.SnapshotRow(
+            id: "addon_org.stremio.addon2_series_popular",
+            title: "Addon2 Popular Series",
+            addonName: "Addon2",
+            addonId: "org.stremio.addon2",
+            contentType: "series",
+            catalogId: "popular",
+            settingsKey: "org.stremio.addon2_series_popular"
+        )
+
+        TVHomeCatalogOrder.batchReplaceSnapshotRows([
+            (addonID: "org.stremio.addon1", addonName: "Addon1", additions: [addon1Catalog]),
+            (addonID: "org.stremio.addon2", addonName: "Addon2", additions: [addon2Catalog])
+        ])
+
+        let rows = TVHomeCatalogOrder.snapshotRows()
+        XCTAssertTrue(rows.contains(where: { $0.id == addon1Catalog.id }))
+        XCTAssertTrue(rows.contains(where: { $0.id == addon2Catalog.id }))
 
         // Clean up
         TVHomeCatalogOrder.clearOrder()
@@ -1889,6 +1888,55 @@ final class HomeLayoutSettingsTests: XCTestCase {
 
     func testForceRefreshNotificationDefined() {
         XCTAssertEqual(TVHomeCatalogOrder.forceRefreshNotification.rawValue, "nuvio.tv.homeCatalog.forceRefresh")
+    }
+
+    func testTVHomeGridLayoutRowsAndPreviewItemCount() {
+        XCTAssertEqual(TVHomeGridLayout.columns, 7)
+        XCTAssertEqual(TVHomeGridLayout.defaultRows, 3)
+        XCTAssertEqual(TVHomeGridLayout.rows, 3)
+        XCTAssertEqual(TVHomeGridLayout.minRows, 1)
+        XCTAssertEqual(TVHomeGridLayout.maxRows, 10)
+
+        // Default 3 rows: 7 * 3 - 1 = 20 preview items + 1 See All card = 21 total items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount, 20)
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 3), 20)
+
+        // 1 row: 7 * 1 - 1 = 6 preview items + 1 See All card = 7 total items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 1), 6)
+
+        // 2 rows: 7 * 2 - 1 = 13 preview items + 1 See All card = 14 total items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 2), 13)
+
+        // 4 rows: 7 * 4 - 1 = 27 preview items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 4), 27)
+
+        // 5 rows: 7 * 5 - 1 = 34 preview items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 5), 34)
+
+        // 10 rows: 7 * 10 - 1 = 69 preview items
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 10), 69)
+
+        // Boundary checks (clamped to minRows...maxRows)
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 0), 6)
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: -5), 6)
+        XCTAssertEqual(TVHomeGridLayout.previewItemCount(rows: 15), 69)
+    }
+
+    func testGridRowsSettingKeyAndDefaults() {
+        XCTAssertEqual(SettingsKey.gridRows, "nuvio.tv.settings.layout.gridRows")
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.gridRows))
+
+        let defaults = UserDefaults(suiteName: "GridRowsSettingsTestsDefaults")!
+        defaults.removePersistentDomain(forName: "GridRowsSettingsTestsDefaults")
+
+        let defaultRows = defaults.object(forKey: SettingsKey.gridRows) as? Int ?? TVHomeGridLayout.defaultRows
+        XCTAssertEqual(defaultRows, 3)
+
+        defaults.set(1, forKey: SettingsKey.gridRows)
+        XCTAssertEqual(defaults.integer(forKey: SettingsKey.gridRows), 1)
+
+        defaults.set(5, forKey: SettingsKey.gridRows)
+        XCTAssertEqual(defaults.integer(forKey: SettingsKey.gridRows), 5)
     }
 }
 

@@ -36,19 +36,19 @@ struct ActionButtons: View {
                     Image(systemName: isInWatchlist ? "checkmark" : "plus")
                         .accessibilityHidden(true)
                     Text(isInWatchlist
-                        ? L10n.string("watchlist_in", fallback: "In watchlist")
-                        : L10n.string("watchlist_title", fallback: "Watchlist"))
+                        ? L10n.string("details_in_library", fallback: "In Library")
+                        : L10n.string("details_library", fallback: "Library"))
                 }
                 .frame(height: 56)
                 .padding(.horizontal, 20)
             }
             .buttonStyle(.bordered)
             .accessibilityLabel(isInWatchlist
-                ? L10n.string("watchlist_in", fallback: "In watchlist")
-                : L10n.string("watchlist_add", fallback: "Add to watchlist"))
+                ? L10n.string("details_in_library", fallback: "In library")
+                : L10n.string("details_add_to_library", fallback: "Add to library"))
             .accessibilityHint(isInWatchlist
-                ? L10n.string("watchlist_remove_hint", fallback: "Removes this title from your watchlist")
-                : L10n.string("watchlist_add_hint", fallback: "Adds this title to your watchlist"))
+                ? L10n.string("details_remove_from_library_hint", fallback: "Removes this title from your library")
+                : L10n.string("details_add_to_library_hint", fallback: "Adds this title to your library"))
 
             Button(action: onWatchedClick) {
                 Image(systemName: isWatched ? "eye.fill" : "eye.slash.fill")

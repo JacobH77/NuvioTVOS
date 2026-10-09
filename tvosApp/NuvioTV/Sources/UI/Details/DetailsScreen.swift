@@ -3614,40 +3614,19 @@ private struct TvDetailsBackdrop: View {
 
     var body: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
-        let posterURL = meta.posterUrl.flatMap { value -> URL? in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : URL(string: trimmed)
-        }
-        let backgroundURL = meta.backgroundUrl.flatMap { value -> URL? in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : URL(string: trimmed)
-        }
-        let primaryURL = backgroundURL ?? posterURL
 
         ZStack {
-            if let url = primaryURL {
+            if let imageUrl = meta.backgroundUrl ?? meta.posterUrl,
+               let url = URL(string: imageUrl.trimmingCharacters(in: .whitespacesAndNewlines)) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()
                             .scaledToFill()
-                    } else if case .failure = phase,
-                              let posterURL,
-                              posterURL != url {
-                        AsyncImage(url: posterURL) { posterPhase in
-                            if case .success(let image) = posterPhase {
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                backdropColor
-                            }
-                        }
                     } else {
                         backdropColor
                     }
                 }
-                .id("\(meta.type.lowercased()):\(meta.id)|\(url.absoluteString)")
                 .blur(radius: blurRadius, opaque: true)
                 .animation(.easeInOut(duration: 0.35), value: blurRadius)
                 .ignoresSafeArea()
@@ -3775,11 +3754,11 @@ private struct TvDetailsActionRow: View {
                 title: nil,
                 systemName: isInWatchlist ? "checkmark" : "plus",
                 accessibilityLabel: isInWatchlist
-                    ? L10n.string("watchlist_in", fallback: "In watchlist")
-                    : L10n.string("watchlist_add", fallback: "Add to watchlist"),
+                    ? L10n.string("details_in_library", fallback: "In library")
+                    : L10n.string("details_add_to_library", fallback: "Add to library"),
                 accessibilityHint: isInWatchlist
-                    ? L10n.string("watchlist_remove_hint", fallback: "Removes this title from your watchlist")
-                    : L10n.string("watchlist_add_hint", fallback: "Adds this title to your watchlist"),
+                    ? L10n.string("details_remove_from_library_hint", fallback: "Removes this title from your library")
+                    : L10n.string("details_add_to_library_hint", fallback: "Adds this title to your library"),
                 isPrimary: false,
                 focus: focus,
                 tag: .watchlist,
