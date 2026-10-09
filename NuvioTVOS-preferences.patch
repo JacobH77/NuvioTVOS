@@ -234,7 +234,7 @@ index f2d90e8..e0629ed 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..a39eadc 100644
+index b6c20d9..9adcdcd 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -1061,7 +1061,7 @@ index b6c20d9..a39eadc 100644
                      if sessionNeedsReauthentication && !isBannerDismissed {
                          TVReauthBannerView(
                              onSignIn: onRequestReauth,
-@@ -4401,203 +4587,249 @@ struct TVHomeView: View {
+@@ -4401,202 +4587,249 @@ struct TVHomeView: View {
                              }
                          )
                          .padding(.horizontal, heroBleed)
@@ -1475,7 +1475,6 @@ index b6c20d9..a39eadc 100644
 +                                .id(section.id)
 +                            }
                          }
--                    }
 +                        .padding(
 +                            .top,
 +                            index == 0
@@ -1484,10 +1483,10 @@ index b6c20d9..a39eadc 100644
 +                                ? 0
 +                                : TVHomeGridLayout.sectionSpacing
 +                        )
+                     }
                  }
                  // The poster grids have a narrower intrinsic width than the screen.
-                 // Without this, LazyVStack proposes that width to the hero too,
-@@ -4641,6 +4873,8 @@ struct TVHomeView: View {
+@@ -4641,6 +4874,8 @@ struct TVHomeView: View {
                      withAnimation(animation) {
                          if heroEnabled && !heroItems.isEmpty && isGridHeroFocused {
                              verticalScrollProxy.scrollTo("home-grid-hero-top", anchor: .top)
@@ -1496,7 +1495,7 @@ index b6c20d9..a39eadc 100644
                          } else if let targetId = targetScrollToTopSectionId ?? firstFocusableSectionId {
                              verticalScrollProxy.scrollTo(targetId, anchor: .top)
                          }
-@@ -4648,11 +4882,8 @@ struct TVHomeView: View {
+@@ -4648,11 +4883,8 @@ struct TVHomeView: View {
                  }
              }
              .scrollIndicators(.hidden)
@@ -1510,7 +1509,7 @@ index b6c20d9..a39eadc 100644
          }
      }
  
-@@ -5027,7 +5258,15 @@ struct TVHomeView: View {
+@@ -5027,7 +5259,15 @@ struct TVHomeView: View {
                      var transaction = Transaction()
                      transaction.animation = nil
                      withTransaction(transaction) {
@@ -1527,7 +1526,7 @@ index b6c20d9..a39eadc 100644
                          focusedCardID = key
                      }
                  }
-@@ -5219,6 +5458,7 @@ struct TVHomeView: View {
+@@ -5219,6 +5459,7 @@ struct TVHomeView: View {
          focusedCardID = nil
          store.lastFocusedCardID = nil
          gridHeroIndex = 0
@@ -1535,7 +1534,7 @@ index b6c20d9..a39eadc 100644
          isGridHeroFocused = true
          scrollToTopGeneration &+= 1
      }
-@@ -5356,7 +5596,14 @@ struct TVHomeView: View {
+@@ -5356,7 +5597,14 @@ struct TVHomeView: View {
                          "🎯 [PLACEHOLDER_ROW_FOCUS] section=\(section.id) targetRow=\(index) currentRow=\(focusedRowIndex) changedRow=\(changedRow) isFastScrolling=\(isFastScrolling)"
                      )
                      focusedSectionId = section.id
@@ -1551,7 +1550,7 @@ index b6c20d9..a39eadc 100644
                          focusedRowIndex = index
                          let animation = (isFastScrolling || fastNavigation)
                              ? TVHomeLayout.fastVerticalScrollAnimation
-@@ -5384,7 +5631,7 @@ struct TVHomeView: View {
+@@ -5384,7 +5632,7 @@ struct TVHomeView: View {
              TVCollectionFolderRow(
                  id: section.id,
                  title: section.title,
@@ -1560,7 +1559,7 @@ index b6c20d9..a39eadc 100644
                  horizontalEdgeInset: horizontalEdgeInset,
                  folders: section.collectionFolders,
                  initialScrollIndex: rowScrollStore.index(for: section.id),
-@@ -5418,7 +5665,14 @@ struct TVHomeView: View {
+@@ -5418,7 +5666,14 @@ struct TVHomeView: View {
                          "🎯 [FOLDER_ROW_FOCUS] section=\(section.id) targetRow=\(index) currentRow=\(focusedRowIndex) changedRow=\(changedRow) isFastScrolling=\(isFastScrolling)"
                      )
                      focusedSectionId = section.id
@@ -1576,7 +1575,7 @@ index b6c20d9..a39eadc 100644
                          focusedRowIndex = index
                          if suppressReturnFocusAnimations || pendingInitialFocusCardKey != nil {
                              var transaction = Transaction(animation: nil)
-@@ -5470,7 +5724,7 @@ struct TVHomeView: View {
+@@ -5470,7 +5725,7 @@ struct TVHomeView: View {
                  title: section.title,
                  addonName: section.addonName,
                  showAddonName: catalogAddonNames,
@@ -1585,7 +1584,7 @@ index b6c20d9..a39eadc 100644
                  horizontalEdgeInset: horizontalEdgeInset,
                  items: section.items,
                  progressByItemId: (section.id == TVHomeSection.continueWatchingId || section.id == TVHomeSection.upcomingId)
-@@ -5510,7 +5764,14 @@ struct TVHomeView: View {
+@@ -5510,7 +5765,14 @@ struct TVHomeView: View {
                          "home.focus.begin section=\(section.id) meta=\(meta.id) changedRow=\(changedRow) fromRow=\(focusedRowIndex) toRow=\(index)"
                      )
                      focusedSectionId = section.id
@@ -1601,7 +1600,7 @@ index b6c20d9..a39eadc 100644
                          focusedRowIndex = index
                          if suppressReturnFocusAnimations || pendingInitialFocusCardKey != nil {
                              var transaction = Transaction(animation: nil)
-@@ -5770,19 +6031,17 @@ struct TVHomeView: View {
+@@ -5770,19 +6032,17 @@ struct TVHomeView: View {
          }
      }
  
@@ -1624,7 +1623,7 @@ index b6c20d9..a39eadc 100644
      }
  
      /// Collection folder row estimate. Curated templates may hide every folder
-@@ -5791,7 +6050,7 @@ struct TVHomeView: View {
+@@ -5791,7 +6051,7 @@ struct TVHomeView: View {
          let imageHeight: CGFloat = homeLayout == "Compact" ? 255 : 315
          let showsLabels = posterLabels && section.collectionFolders.contains { !$0.hideTitle }
          let stripHeight = imageHeight + (showsLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
@@ -1633,7 +1632,7 @@ index b6c20d9..a39eadc 100644
      }
  
      private func estimatedHeight(for section: TVHomeSection) -> CGFloat {
-@@ -5937,11 +6196,32 @@ struct TVHomeView: View {
+@@ -5937,11 +6197,32 @@ struct TVHomeView: View {
      /// actually in the Continue Watching / Upcoming row. The same title can also appear in
      /// catalog rows (Popular etc.), where the hero should stay generic.
      private func heroContinueItem(for meta: NuvioMeta) -> ContinueWatchingItem? {
@@ -1668,7 +1667,7 @@ index b6c20d9..a39eadc 100644
      private var visibleHero: NuvioMeta? {
          guard let hero = store.hero, isVisible(hero) else { return visibleSections.first?.items.first }
          return hero
-@@ -5978,14 +6258,14 @@ struct TVHomeView: View {
+@@ -5978,14 +6259,14 @@ struct TVHomeView: View {
      }
  
      private var heroCollectionSection: TVHomeSection? {
@@ -1686,7 +1685,7 @@ index b6c20d9..a39eadc 100644
          })
      }
  
-@@ -6042,11 +6322,42 @@ struct TVHomeView: View {
+@@ -6042,11 +6323,42 @@ struct TVHomeView: View {
      private var homeBackdropURL: String? {
          // Collection folder focus uses its own hero backdrop (Android Modern
          // Home parity). Fall back to the focused/hero title poster otherwise.
@@ -1733,7 +1732,7 @@ index b6c20d9..a39eadc 100644
      }
  
      private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
-@@ -6606,25 +6917,38 @@ struct TVHomeView: View {
+@@ -6606,25 +6918,38 @@ struct TVHomeView: View {
          }.joined(separator: ";")
      }
  
@@ -1779,7 +1778,7 @@ index b6c20d9..a39eadc 100644
          focusWork.pendingFocusedMeta = nil
          focusWork.pendingFocusedFolder = folder
          focusWork.pendingSectionId = sectionId
-@@ -6678,7 +7002,8 @@ struct TVHomeView: View {
+@@ -6678,7 +7003,8 @@ struct TVHomeView: View {
                    let targetSectionId,
                    focusWork.pendingSectionId == targetSectionId else { return }
  
@@ -1789,7 +1788,7 @@ index b6c20d9..a39eadc 100644
              focusedSectionId = targetSectionId
              if focusedCollectionFolder != nil {
                  focusedCollectionFolder = nil
-@@ -6696,7 +7021,8 @@ struct TVHomeView: View {
+@@ -6696,7 +7022,8 @@ struct TVHomeView: View {
              // Third-party catalog responses are often intentionally compact
              // and omit runtime/status and shelf artwork. Once focus settles,
              // ask for the full metadata record in the background and fill the missing fields.
@@ -1799,7 +1798,7 @@ index b6c20d9..a39eadc 100644
              enrichSettledCatalogMeta(settledMeta, in: targetSectionId)
          }
      }
-@@ -6714,6 +7040,12 @@ struct TVHomeView: View {
+@@ -6714,6 +7041,12 @@ struct TVHomeView: View {
      ) async -> NuvioMeta? {
          await withTaskGroup(of: EnrichmentFetchOutcome.self) { group in
              group.addTask {
@@ -1812,7 +1811,7 @@ index b6c20d9..a39eadc 100644
                  let meta = try? await repository.getMetadata(id: id, type: type)
                  return .completed(meta)
              }
-@@ -6744,8 +7076,9 @@ struct TVHomeView: View {
+@@ -6744,8 +7077,9 @@ struct TVHomeView: View {
      @MainActor
      private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) {
          let enrichmentKey = "\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
@@ -1824,7 +1823,7 @@ index b6c20d9..a39eadc 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -6756,6 +7089,9 @@ struct TVHomeView: View {
+@@ -6756,6 +7090,9 @@ struct TVHomeView: View {
              TVHomeDebugTrace.log("hero.enrich published cached hero item=\(settledMeta.id)")
              return
          }
@@ -1834,7 +1833,7 @@ index b6c20d9..a39eadc 100644
  
          let repository = self.repository
          let targetId = settledMeta.id
-@@ -6765,7 +7101,7 @@ struct TVHomeView: View {
+@@ -6765,7 +7102,7 @@ struct TVHomeView: View {
              guard let fetched = await Task.detached(priority: .utility, operation: {
                  await Self.fetchMetadataWithTimeout(
                      repository: repository,
@@ -1843,7 +1842,7 @@ index b6c20d9..a39eadc 100644
                      type: targetType,
                      timeoutSeconds: 2.0
                  )
-@@ -6773,8 +7109,12 @@ struct TVHomeView: View {
+@@ -6773,8 +7110,12 @@ struct TVHomeView: View {
                  return
              }
              guard !Task.isCancelled else { return }
@@ -1857,7 +1856,7 @@ index b6c20d9..a39eadc 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -8835,12 +9175,15 @@ private struct TVHeroView: View {
+@@ -8835,12 +9176,15 @@ private struct TVHeroView: View {
      var catalogTitle: String? = nil
      var catalogAddonName: String? = nil
      var showsCatalogAddonName: Bool = true
@@ -1874,7 +1873,7 @@ index b6c20d9..a39eadc 100644
      }
  
      private var hasCatalogTitle: Bool {
-@@ -8910,7 +9253,8 @@ private struct TVHeroView: View {
+@@ -8910,7 +9254,8 @@ private struct TVHeroView: View {
  
  extension TVHeroView: Equatable {
      static func == (lhs: TVHeroView, rhs: TVHeroView) -> Bool {
@@ -1884,7 +1883,7 @@ index b6c20d9..a39eadc 100644
              && lhs.meta.name == rhs.meta.name
              && lhs.meta.logoUrl == rhs.meta.logoUrl
              && lhs.meta.description == rhs.meta.description
-@@ -8940,18 +9284,24 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8940,18 +9285,24 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -1910,7 +1909,7 @@ index b6c20d9..a39eadc 100644
      private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
  
      /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
-@@ -8964,9 +9314,11 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8964,9 +9315,11 @@ private struct TVGridHeroSlideshowView: View {
  
          ZStack {
              CrossfadingBackdrop(
@@ -1924,7 +1923,7 @@ index b6c20d9..a39eadc 100644
              )
  
              LinearGradient(
-@@ -8999,7 +9351,6 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8999,7 +9352,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -1932,7 +1931,7 @@ index b6c20d9..a39eadc 100644
                      .transition(.opacity)
              }
  
-@@ -9022,48 +9373,65 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,48 +9374,65 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -2029,7 +2028,7 @@ index b6c20d9..a39eadc 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9494,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9495,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
