@@ -4227,18 +4227,7 @@ struct TVHomeView: View {
                 await load(for: identity, forceReload: true)
             }
         }
-        .onDisappear {
-            focusWork.cancelAll()
-            // The profile-focus retry is owned by a `.task(id:)` and cancels
-            // automatically when this Home view leaves the hierarchy.
-            homeReloadTask?.cancel()
-            continueWatchingRefreshTask?.cancel()
-            continueWatchingRefreshTask = nil
-            traktWatchedHistorySyncTask?.cancel()
-            traktWatchedHistorySyncTask = nil
-            finishSimklHomeLoadingDiagnostic()
-            continueWatchingRefreshGeneration &+= 1
-        }
+        .onDisappear(perform: handleHomeDisappear)
         .onChange(of: isLoading) { _, loading in
             TVHomeDebugTrace.log("home.onChange(isLoading) loading=\(loading) showsLoading=\(showsLoading)")
             if loading && showsLoading {
@@ -5379,6 +5368,19 @@ struct TVHomeView: View {
             ) else { return }
             gridHeroFocusRequestGeneration &+= 1
         }
+    }
+
+    private func handleHomeDisappear() {
+        focusWork.cancelAll()
+        // The profile-focus retry is owned by a `.task(id:)` and cancels
+        // automatically when this Home view leaves the hierarchy.
+        homeReloadTask?.cancel()
+        continueWatchingRefreshTask?.cancel()
+        continueWatchingRefreshTask = nil
+        traktWatchedHistorySyncTask?.cancel()
+        traktWatchedHistorySyncTask = nil
+        finishSimklHomeLoadingDiagnostic()
+        continueWatchingRefreshGeneration &+= 1
     }
 
     @ViewBuilder
