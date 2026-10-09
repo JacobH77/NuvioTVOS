@@ -199,7 +199,7 @@ index f2d90e8..3f8aa36 100644
          // delete. A failed watched-list write must leave that protection intact.
          clearTombstone(meta: meta, season: season, episode: episode)
 diff --git a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
-index b6c20d9..1b74af2 100644
+index b6c20d9..2ebf6f9 100644
 --- a/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 +++ b/tvosApp/NuvioTV/Sources/NuvioTVApp.swift
 @@ -280,7 +280,7 @@ enum TVTab: String, CaseIterable, Identifiable {
@@ -627,13 +627,13 @@ index b6c20d9..1b74af2 100644
 +                    heroEnabled: heroEnabled,
 +                    showsFocusedTitle: showsFocusedTitleBanner
 +                ) {
-+                    if let folder = focusedCollectionFolder {
++                    if let folder = focusedHomePresentationFolder {
 +                        TVCollectionFolderHeroView(
 +                            folder: folder,
 +                            sectionTitle: heroCollectionSection?.title
 +                        )
 +                        .equatable()
-+                    } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
++                    } else if let heroMeta = focusedHomePresentationMeta {
 +                        TVHeroView(
 +                            meta: heroMeta,
 +                            continueItem: heroContinueItem(for: heroMeta),
@@ -1072,10 +1072,73 @@ index b6c20d9..1b74af2 100644
      }
  
      private func estimatedHeight(for section: TVHomeSection) -> CGFloat {
-@@ -6049,6 +6219,23 @@ struct TVHomeView: View {
-         return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
+@@ -5937,11 +6107,32 @@ struct TVHomeView: View {
+     /// actually in the Continue Watching / Upcoming row. The same title can also appear in
+     /// catalog rows (Popular etc.), where the hero should stay generic.
+     private func heroContinueItem(for meta: NuvioMeta) -> ContinueWatchingItem? {
+-        guard visibleFocusedMeta != nil,
+-              (focusedSectionId == TVHomeSection.continueWatchingId || focusedSectionId == TVHomeSection.upcomingId) else { return nil }
++        let sectionId = focusWork.pendingSectionId ?? focusedSectionId
++        guard focusWork.pendingFocusedMeta != nil || visibleFocusedMeta != nil,
++              (sectionId == TVHomeSection.continueWatchingId || sectionId == TVHomeSection.upcomingId) else { return nil }
+         return continueWatchingByMetaId[meta.id]
      }
  
++    /// The focused information strip follows the native focus target immediately.
++    /// The settled values below remain useful for expensive enrichment, but must
++    /// never leave the previous card's title or artwork on screen during that wait.
++    private var focusedHomePresentationMeta: NuvioMeta? {
++        let pending = focusWork.pendingFocusedMeta.flatMap { isVisible($0) ? $0 : nil }
++        return TVHomeHeroPresentation.focusedValue(
++            pending: pending,
++            settled: visibleFocusedMeta,
++            fallback: visibleHero
++        )
++    }
++
++    private var focusedHomePresentationFolder: TVCollectionFolderItem? {
++        TVHomeHeroPresentation.focusedValue(
++            pending: focusWork.pendingFocusedFolder,
++            settled: focusedCollectionFolder,
++            fallback: nil
++        )
++    }
++
+     private var visibleHero: NuvioMeta? {
+         guard let hero = store.hero, isVisible(hero) else { return visibleSections.first?.items.first }
+         return hero
+@@ -5978,14 +6169,14 @@ struct TVHomeView: View {
+     }
+ 
+     private var heroCollectionSection: TVHomeSection? {
+-        if let folder = focusedCollectionFolder {
++        if let folder = focusedHomePresentationFolder {
+             return visibleSections.first(where: { section in
+                 section.collectionFolders.contains(where: { $0.id == folder.id })
+             })
+         }
+-        guard let focusedSectionId else { return nil }
++        guard let sectionId = focusWork.pendingSectionId ?? focusedSectionId else { return nil }
+         return visibleSections.first(where: {
+-            $0.id == focusedSectionId && !$0.collectionFolders.isEmpty
++            $0.id == sectionId && !$0.collectionFolders.isEmpty
+         })
+     }
+ 
+@@ -6042,11 +6233,28 @@ struct TVHomeView: View {
+     private var homeBackdropURL: String? {
+         // Collection folder focus uses its own hero backdrop (Android Modern
+         // Home parity). Fall back to the focused/hero title poster otherwise.
+-        if let folder = focusedCollectionFolder {
++        if let folder = focusedHomePresentationFolder {
+             return folder.preferredHeroBackdropURLString
+-                ?? preferredBackdropURL(for: visibleHero)
++                ?? preferredBackdropURL(for: focusedHomePresentationMeta)
+         }
+-        return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
++        return preferredBackdropURL(for: focusedHomePresentationMeta)
++    }
++
 +    private var shouldShowFocusedHomeArtwork: Bool {
 +        TVHomeHeroPresentation.showsFocusedArtwork(
 +            isLoading: showsLoading,
@@ -1088,15 +1151,13 @@ index b6c20d9..1b74af2 100644
 +    }
 +
 +    private var homeBackdropIdentity: String? {
-+        if let folder = focusedCollectionFolder { return "folder:\(folder.id)" }
-+        let meta = visibleFocusedMeta ?? visibleHero
++        if let folder = focusedHomePresentationFolder { return "folder:\(folder.id)" }
++        let meta = focusedHomePresentationMeta
 +        return meta.map { "\($0.type.lowercased()):\($0.id)" }
-+    }
-+
-     private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
-         guard let meta else { return nil }
+     }
  
-@@ -6610,12 +6797,13 @@ struct TVHomeView: View {
+     private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
+@@ -6610,12 +6818,13 @@ struct TVHomeView: View {
      /// feel responsive when parked, long enough that continuous left/right/up/down
      /// focus does not kick off decode/crossfade every step.
      private var heroSettleNanoseconds: UInt64 {
@@ -1111,7 +1172,7 @@ index b6c20d9..1b74af2 100644
          focusWork.pendingFocusedMeta = meta
          focusWork.pendingFocusedFolder = nil
          focusWork.pendingSectionId = sectionId
-@@ -6625,6 +6813,7 @@ struct TVHomeView: View {
+@@ -6625,6 +6834,7 @@ struct TVHomeView: View {
      /// Collection folder focus: same freeze as catalog — keep previous hero art
      /// until the user rests on a folder card.
      private func settleFolderFocus(_ folder: TVCollectionFolderItem, in sectionId: String) {
@@ -1119,7 +1180,7 @@ index b6c20d9..1b74af2 100644
          focusWork.pendingFocusedMeta = nil
          focusWork.pendingFocusedFolder = folder
          focusWork.pendingSectionId = sectionId
-@@ -6696,7 +6885,8 @@ struct TVHomeView: View {
+@@ -6696,7 +6906,8 @@ struct TVHomeView: View {
              // Third-party catalog responses are often intentionally compact
              // and omit runtime/status and shelf artwork. Once focus settles,
              // ask for the full metadata record in the background and fill the missing fields.
@@ -1129,7 +1190,7 @@ index b6c20d9..1b74af2 100644
              enrichSettledCatalogMeta(settledMeta, in: targetSectionId)
          }
      }
-@@ -6714,6 +6904,12 @@ struct TVHomeView: View {
+@@ -6714,6 +6925,12 @@ struct TVHomeView: View {
      ) async -> NuvioMeta? {
          await withTaskGroup(of: EnrichmentFetchOutcome.self) { group in
              group.addTask {
@@ -1142,7 +1203,7 @@ index b6c20d9..1b74af2 100644
                  let meta = try? await repository.getMetadata(id: id, type: type)
                  return .completed(meta)
              }
-@@ -6745,7 +6941,7 @@ struct TVHomeView: View {
+@@ -6745,7 +6962,7 @@ struct TVHomeView: View {
      private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) {
          let enrichmentKey = "\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
          if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
@@ -1151,7 +1212,7 @@ index b6c20d9..1b74af2 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -6765,7 +6961,7 @@ struct TVHomeView: View {
+@@ -6765,7 +6982,7 @@ struct TVHomeView: View {
              guard let fetched = await Task.detached(priority: .utility, operation: {
                  await Self.fetchMetadataWithTimeout(
                      repository: repository,
@@ -1160,7 +1221,7 @@ index b6c20d9..1b74af2 100644
                      type: targetType,
                      timeoutSeconds: 2.0
                  )
-@@ -6774,7 +6970,7 @@ struct TVHomeView: View {
+@@ -6774,7 +6991,7 @@ struct TVHomeView: View {
              }
              guard !Task.isCancelled else { return }
              focusWork.enrichedHeroMetadata[enrichmentKey] = fetched
@@ -1169,7 +1230,7 @@ index b6c20d9..1b74af2 100644
              guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
                    focusWork.pendingSectionId == sectionId,
                    focusWork.pendingFocusedFolder == nil else {
-@@ -8835,12 +9031,15 @@ private struct TVHeroView: View {
+@@ -8835,12 +9052,15 @@ private struct TVHeroView: View {
      var catalogTitle: String? = nil
      var catalogAddonName: String? = nil
      var showsCatalogAddonName: Bool = true
@@ -1186,7 +1247,7 @@ index b6c20d9..1b74af2 100644
      }
  
      private var hasCatalogTitle: Bool {
-@@ -8910,7 +9109,8 @@ private struct TVHeroView: View {
+@@ -8910,7 +9130,8 @@ private struct TVHeroView: View {
  
  extension TVHeroView: Equatable {
      static func == (lhs: TVHeroView, rhs: TVHeroView) -> Bool {
@@ -1196,7 +1257,7 @@ index b6c20d9..1b74af2 100644
              && lhs.meta.name == rhs.meta.name
              && lhs.meta.logoUrl == rhs.meta.logoUrl
              && lhs.meta.description == rhs.meta.description
-@@ -8940,18 +9140,24 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8940,18 +9161,24 @@ private struct TVGridHeroSlideshowView: View {
      /// widens — the hero's frame, its text, and the focus geometry stay inside
      /// the safe area.
      var backdropBleed: CGFloat = 0
@@ -1222,7 +1283,7 @@ index b6c20d9..1b74af2 100644
      private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
  
      /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
-@@ -8964,9 +9170,11 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8964,9 +9191,11 @@ private struct TVGridHeroSlideshowView: View {
  
          ZStack {
              CrossfadingBackdrop(
@@ -1236,7 +1297,7 @@ index b6c20d9..1b74af2 100644
              )
  
              LinearGradient(
-@@ -8999,7 +9207,6 @@ private struct TVGridHeroSlideshowView: View {
+@@ -8999,7 +9228,6 @@ private struct TVGridHeroSlideshowView: View {
          ZStack(alignment: .bottom) {
              if let activeItem {
                  gridHeroContent(activeItem)
@@ -1244,7 +1305,7 @@ index b6c20d9..1b74af2 100644
                      .transition(.opacity)
              }
  
-@@ -9022,48 +9229,63 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9022,48 +9250,63 @@ private struct TVGridHeroSlideshowView: View {
          // Match the tall Android Grid hero. Besides giving the design the same
          // visual weight, this keeps 16:9 artwork from being vertically cropped
          // into an ultra-wide 5:1 strip where the subject disappears.
@@ -1339,7 +1400,7 @@ index b6c20d9..1b74af2 100644
          }
          .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
              guard items.count > 1 else { return }
-@@ -9126,6 +9348,37 @@ private struct TVGridHeroSlideshowView: View {
+@@ -9126,6 +9369,37 @@ private struct TVGridHeroSlideshowView: View {
                      .lineLimit(2)
                      .lineSpacing(2)
              }
@@ -1486,15 +1547,19 @@ index c8a09cb..fad60a8 100644
          return [GridItem(
 diff --git a/tvosApp/NuvioTV/Sources/UI/Home/TVHomeHeroPresentation.swift b/tvosApp/NuvioTV/Sources/UI/Home/TVHomeHeroPresentation.swift
 new file mode 100644
-index 0000000..8a2be0a
+index 0000000..93f8cd6
 --- /dev/null
 +++ b/tvosApp/NuvioTV/Sources/UI/Home/TVHomeHeroPresentation.swift
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,40 @@
 +import Foundation
 +
 +/// Keeps Home's featured carousel, focused-title information, and focused
 +/// artwork mutually consistent across Modern and Grid layouts.
 +enum TVHomeHeroPresentation {
++    static func focusedValue<Value>(pending: Value?, settled: Value?, fallback: Value?) -> Value? {
++        pending ?? settled ?? fallback
++    }
++
 +    static func showsFeaturedHero(
 +        heroEnabled: Bool,
 +        hasFeaturedTitles: Bool,
@@ -1760,14 +1825,41 @@ index 24aff63..50b8d0f 100644
      /// depends on after the merge above fills it in.
 diff --git a/tvosApp/NuvioTVTests/HomeHeroPresentationTests.swift b/tvosApp/NuvioTVTests/HomeHeroPresentationTests.swift
 new file mode 100644
-index 0000000..ac23e73
+index 0000000..45a40bb
 --- /dev/null
 +++ b/tvosApp/NuvioTVTests/HomeHeroPresentationTests.swift
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,108 @@
 +import XCTest
 +@testable import NuvioTV
 +
 +final class HomeHeroPresentationTests: XCTestCase {
++    func testPendingFocusImmediatelyReplacesSettledTitle() {
++        XCTAssertEqual(
++            TVHomeHeroPresentation.focusedValue(
++                pending: "newly focused",
++                settled: "previous card",
++                fallback: "featured title"
++            ),
++            "newly focused"
++        )
++        XCTAssertEqual(
++            TVHomeHeroPresentation.focusedValue(
++                pending: Optional<String>.none,
++                settled: "settled card",
++                fallback: "featured title"
++            ),
++            "settled card"
++        )
++        XCTAssertEqual(
++            TVHomeHeroPresentation.focusedValue(
++                pending: Optional<String>.none,
++                settled: Optional<String>.none,
++                fallback: "featured title"
++            ),
++            "featured title"
++        )
++    }
++
 +    func testFocusedTitleReplacesCarouselInModernAndGridLayouts() {
 +        for isGridLayout in [false, true] {
 +            XCTAssertFalse(
@@ -1928,7 +2020,7 @@ index 0000000..5196732
 +    }
 +}
 diff --git a/tvosApp/Project.swift b/tvosApp/Project.swift
-index 8e1d2a3..ac5969a 100644
+index 8e1d2a3..e6821fb 100644
 --- a/tvosApp/Project.swift
 +++ b/tvosApp/Project.swift
 @@ -50,7 +50,7 @@ let signingXCConfig: Path = .relativeToManifest("Configurations/Signing.xcconfig
@@ -1936,7 +2028,7 @@ index 8e1d2a3..ac5969a 100644
  let bundleID = "com.pyksel.nuviotvos"
  let marketingVersion = "3.4.1"
 -let projectVersion = "72"
-+let projectVersion = "79"
++let projectVersion = "80"
  let tvOSDeployment = "17.5"
  
  // MARK: - Project-level settings
