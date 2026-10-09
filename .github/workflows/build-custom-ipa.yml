@@ -29,6 +29,8 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             echo "Building the app sources from this pull request checkout"
+          elif [[ ! -f NuvioTVOS-preferences.patch ]]; then
+            echo "No preferences patch is present; building the checked-out sources"
           elif git apply --reverse --check NuvioTVOS-preferences.patch 2>/dev/null; then
             echo "Preference changes are already applied"
           else
