@@ -8,7 +8,7 @@ on:
       - tvosApp/NuvioTV/Sources/**
       - .github/workflows/build-custom-ipa.yml
   push:
-    branches: [main]
+    branches: [main, fresh-bobsupra-feature-port]
     paths:
       - NuvioTVOS-preferences.patch
       - tvosApp/NuvioTV/Sources/**
