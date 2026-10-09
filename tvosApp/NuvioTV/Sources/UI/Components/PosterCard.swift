@@ -1760,14 +1760,23 @@ struct CachedPosterArtwork<Placeholder: View>: View {
 
     var body: some View {
         ZStack(alignment: .center) {
+            placeholder
             if let image = displayedImage {
+                let imageAspect = image.size.width / max(image.size.height, 1)
+                let cardAspect = width / max(height, 1)
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    // Better Posters commonly supplies portrait artwork where
+                    // Home asks for a landscape-focused card. Filling that
+                    // wider frame crops most of the poster away, making a
+                    // successfully loaded image look missing. Preserve the
+                    // complete image when its orientation does not match the
+                    // card; use fill for matching poster/landscape artwork.
+                    .aspectRatio(
+                        contentMode: abs(imageAspect - cardAspect) < 0.08 ? .fill : .fit
+                    )
                     .frame(width: width, height: height, alignment: .center)
                     .clipped()
-            } else {
-                placeholder
             }
         }
         .task(id: cacheKey) {

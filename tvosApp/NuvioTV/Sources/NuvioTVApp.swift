@@ -2906,13 +2906,38 @@ private struct CrossfadingBackdrop: View {
 
     @ViewBuilder
     private func backdropImage(_ uiImage: UIImage, size: CGSize) -> some View {
-        Image(uiImage: uiImage)
-            .resizable()
-            .aspectRatio(contentMode: .fill)
-            // Alignment anchors the crop when the filled image overflows the
-            // screen — critical for tall hero art (collection folder backdrops).
-            .frame(width: size.width, height: size.height, alignment: alignment)
+        let imageAspect = uiImage.size.width / max(uiImage.size.height, 1)
+        let backdropAspect = size.width / max(size.height, 1)
+        if imageAspect < backdropAspect * 0.82 {
+            // Better Posters often has a portrait poster but no landscape
+            // backdrop. A straight aspect-fill zooms into a narrow slice of
+            // that poster. Keep the whole poster visible over a softened,
+            // full-bleed crop so the hero still has contextual artwork.
+            ZStack {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height, alignment: alignment)
+                    .clipped()
+                    .blur(radius: 32)
+                    .overlay(Color.black.opacity(0.28))
+
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size.width, height: size.height)
+            }
+            .frame(width: size.width, height: size.height)
             .clipped()
+        } else {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                // Alignment anchors the crop when the filled image overflows
+                // the screen, critical for tall folder hero art.
+                .frame(width: size.width, height: size.height, alignment: alignment)
+                .clipped()
+        }
     }
 }
 
