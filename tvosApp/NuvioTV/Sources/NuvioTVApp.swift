@@ -3670,7 +3670,7 @@ struct TVHomeView: View {
 
     private var homeVisualContent: some View {
         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
-        ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .topLeading) {
             // Keep TVHomeView mounted in TabView across tab switches so that
             // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
             // 1. Bottom Layer: Crossfading Backdrop
