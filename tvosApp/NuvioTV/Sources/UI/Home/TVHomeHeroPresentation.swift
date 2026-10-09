@@ -67,9 +67,8 @@ enum TVHomeHeroPresentation {
     static func showsFocusedTitleInformation(
         heroEnabled: Bool,
         showsFocusedTitle: Bool,
-        focusedTitleMatchesFeaturedTitle: Bool
     ) -> Bool {
-        heroEnabled && showsFocusedTitle && !focusedTitleMatchesFeaturedTitle
+        heroEnabled && showsFocusedTitle
     }
 
     static func showsFeaturedArtwork(
