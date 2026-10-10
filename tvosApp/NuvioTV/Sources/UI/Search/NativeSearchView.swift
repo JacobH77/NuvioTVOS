@@ -99,7 +99,6 @@ private enum NativeSearchGridMetrics {
     static let gridPosterHeight: CGFloat = 315
     static let gridPosterGap: CGFloat = 28
     static let gridColumnCount: CGFloat = 5
-    static let gridCardRowWidth = gridPosterWidth * gridColumnCount + gridPosterGap * (gridColumnCount - 1)
 
     static let keyboardWidth: CGFloat = 520
     // The system search field includes the prompt and dictation affordance in
@@ -111,7 +110,27 @@ private enum NativeSearchGridMetrics {
     static let gridContentInset: CGFloat = 12
     static let pageInset: CGFloat = 49
     static let topPadding: CGFloat = 68
-    static let contentTopPadding: CGFloat = 210
+}
+
+private struct NativeSearchGridLayout {
+    let resultColumnWidth: CGFloat
+    let posterWidth: CGFloat
+    let posterHeight: CGFloat
+
+    init(viewportWidth: CGFloat) {
+        let resultWidth = viewportWidth
+            - NativeSearchGridMetrics.keyboardWidth
+            - NativeSearchGridMetrics.columnSpacing
+            - NativeSearchGridMetrics.pageInset
+        let cardAreaWidth = resultWidth
+            - (NativeSearchGridMetrics.gridContentInset * 2)
+            - (NativeSearchGridMetrics.gridPosterGap * (NativeSearchGridMetrics.gridColumnCount - 1))
+        let widthForFiveCards = max(1, cardAreaWidth / NativeSearchGridMetrics.gridColumnCount)
+
+        resultColumnWidth = max(1, resultWidth)
+        posterWidth = min(NativeSearchGridMetrics.gridPosterWidth, widthForFiveCards)
+        posterHeight = posterWidth * NativeSearchGridMetrics.gridPosterHeight / NativeSearchGridMetrics.gridPosterWidth
+    }
 }
 
 // MARK: - NativeSearchView
@@ -295,79 +314,79 @@ struct NativeSearchView: View {
     // MARK: - Grid Layout (Side-by-Side: Keyboard on Left, Results on Right)
 
     private var gridSearchBody: some View {
-        gridNavigationBody
+        gridBody
             .padding(.top, 56)
             .safeAreaPadding(.horizontal, TVLayout.rowLeading)
     }
 
-    private var gridNavigationBody: some View {
-        NavigationStack {
-            gridBody
-                .searchable(
-                    text: $viewModel.searchText,
-                    prompt: L10n.string("search_placeholder", fallback: "Search movies & series")
-                )
-                .autocorrectionDisabled()
-                #if os(tvOS)
-                .toolbar(.hidden, for: .navigationBar)
-                .toolbar(.hidden, for: .tabBar)
-                #endif
-        }
-    }
-
     private var gridBody: some View {
-        HStack(alignment: .top, spacing: NativeSearchGridMetrics.columnSpacing) {
-            // Right column: Content (filters + results or discover)
-            VStack(alignment: .leading, spacing: 20) {
-                if viewModel.hasQuery {
-                    GridSearchSuggestionChips(
-                        query: $viewModel.searchText,
-                        suggestions: gridSuggestionTitles,
-                        isDisabled: overlayRestoreResultID != nil,
-                        onSubmit: {
-                            viewModel.performSearch(query: viewModel.searchText)
-                        }
-                    )
-                    typeFilter(width: NativeSearchGridMetrics.gridCardRowWidth, isGridMode: true)
+        GeometryReader { geometry in
+            let layout = NativeSearchGridLayout(viewportWidth: geometry.size.width)
+
+            HStack(alignment: .top, spacing: NativeSearchGridMetrics.columnSpacing) {
+                NativeSearchGridKeyboardHost(
+                    text: $viewModel.searchText,
+                    prompt: L10n.string("search_placeholder", fallback: "Search movies & series"),
+                    isDisabled: overlayRestoreResultID != nil || discoverOverlayTransitionActive,
+                    topPadding: NativeSearchGridMetrics.topPadding,
+                    width: NativeSearchGridMetrics.keyboardWidth,
+                    renderWidth: NativeSearchGridMetrics.keyboardRenderWidth,
+                    height: geometry.size.height
+                )
+
+                // Keep the five-column result area in the space beside the native grid keyboard.
+                VStack(alignment: .leading, spacing: 20) {
+                    if viewModel.hasQuery {
+                        GridSearchSuggestionChips(
+                            query: $viewModel.searchText,
+                            suggestions: gridSuggestionTitles,
+                            isDisabled: overlayRestoreResultID != nil,
+                            onSubmit: {
+                                viewModel.performSearch(query: viewModel.searchText)
+                            }
+                        )
+                        typeFilter(
+                            width: layout.resultColumnWidth - (NativeSearchGridMetrics.gridContentInset * 2),
+                            isGridMode: true
+                        )
                         .padding(.horizontal, NativeSearchGridMetrics.gridContentInset)
                         .disabled(overlayRestoreResultID != nil)
                         .zIndex(1)
-                    resultsContainer(isGridMode: true)
-                        .zIndex(0)
-                } else {
-                    if !viewModel.recentSearches.isEmpty {
-                        recentRow(isGridMode: true)
-                            .disabled(discoverOverlayTransitionActive)
-                    }
-                    if showDiscover {
-                        DiscoverSection(
-                            onContentClick: onContentClick,
-                            isBesideKeyboard: true,
-                            onLongPress: onLongPress,
-                            parentTransitionActive: $discoverOverlayTransitionActive
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        resultsContainer(isGridMode: true, gridLayout: layout)
+                            .zIndex(0)
                     } else {
-                        centeredState {
-                            messageState(
-                                icon: "rectangle.grid.2x2",
-                                title: L10n.string(
-                                    "search_start_subtitle_no_discover",
-                                    fallback: "Discover is disabled. Enter at least 2 characters"
-                                )
+                        if !viewModel.recentSearches.isEmpty {
+                            recentRow(isGridMode: true)
+                                .disabled(discoverOverlayTransitionActive)
+                        }
+                        if showDiscover {
+                            DiscoverSection(
+                                onContentClick: onContentClick,
+                                isBesideKeyboard: true,
+                                onLongPress: onLongPress,
+                                parentTransitionActive: $discoverOverlayTransitionActive
                             )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        } else {
+                            centeredState {
+                                messageState(
+                                    icon: "rectangle.grid.2x2",
+                                    title: L10n.string(
+                                        "search_start_subtitle_no_discover",
+                                        fallback: "Discover is disabled. Enter at least 2 characters"
+                                    )
+                                )
+                            }
                         }
                     }
                 }
+                .frame(width: layout.resultColumnWidth, alignment: .leading)
+                .padding(.top, 24)
+                .ignoresSafeArea(.container, edges: .bottom)
             }
-            .frame(maxWidth: viewModel.hasQuery
-                ? NativeSearchGridMetrics.gridCardRowWidth + (NativeSearchGridMetrics.gridContentInset * 2)
-                : 210 * 5 + 24 * 4 + 24, alignment: .leading)
-            .padding(.top, 24)
-            .ignoresSafeArea(.container, edges: .bottom)
+            .padding(.trailing, NativeSearchGridMetrics.pageInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(.trailing, NativeSearchGridMetrics.pageInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Overlay Focus Restoration
@@ -529,7 +548,7 @@ struct NativeSearchView: View {
     }
 
     @ViewBuilder
-    private func resultsContainer(isGridMode: Bool) -> some View {
+    private func resultsContainer(isGridMode: Bool, gridLayout: NativeSearchGridLayout? = nil) -> some View {
         if viewModel.isLoading {
             centeredState {
                 ProgressView()
@@ -553,7 +572,7 @@ struct NativeSearchView: View {
                 )
             }
         } else {
-            resultsGrid(isGridMode: isGridMode)
+            resultsGrid(isGridMode: isGridMode, gridLayout: gridLayout)
         }
     }
 
@@ -565,8 +584,10 @@ struct NativeSearchView: View {
         return L10n.format("tvos_search_result_count_other", fallback: "%d results", count)
     }
 
-    private func resultsGrid(isGridMode: Bool) -> some View {
-        let cols = isGridMode ? gridModeColumns : linearModeColumns
+    private func resultsGrid(isGridMode: Bool, gridLayout: NativeSearchGridLayout? = nil) -> some View {
+        let posterWidth = gridLayout?.posterWidth ?? NativeSearchGridMetrics.linearPosterWidth
+        let posterHeight = gridLayout?.posterHeight ?? NativeSearchGridMetrics.linearPosterHeight
+        let cols = isGridMode ? gridModeColumns(posterWidth: posterWidth) : linearModeColumns
         let colCount = isGridMode ? Int(NativeSearchGridMetrics.gridColumnCount) : nativeGridColumnCount
 
         return ScrollViewReader { proxy in
@@ -579,8 +600,8 @@ struct NativeSearchView: View {
                     ForEach(Array(visibleResults.enumerated()), id: \.element.id) { index, item in
                         PosterGridCard(
                             meta: item,
-                            width: NativeSearchGridMetrics.linearPosterWidth,
-                            height: NativeSearchGridMetrics.linearPosterHeight,
+                            width: posterWidth,
+                            height: posterHeight,
                             externalFocus: $focusedResultID,
                             retainFocusAppearance: overlayRestoreResultID == item.id,
                             onLongPress: onLongPress.map { cb in { cb(item) } },
@@ -651,12 +672,15 @@ struct NativeSearchView: View {
         )]
     }
 
-    private var gridModeColumns: [GridItem] {
-        [GridItem(
-            .adaptive(minimum: NativeSearchGridMetrics.gridPosterWidth, maximum: NativeSearchGridMetrics.gridPosterWidth),
-            spacing: NativeSearchGridMetrics.gridPosterGap,
-            alignment: .top
-        )]
+    private func gridModeColumns(posterWidth: CGFloat) -> [GridItem] {
+        Array(
+            repeating: GridItem(
+                .fixed(posterWidth),
+                spacing: NativeSearchGridMetrics.gridPosterGap,
+                alignment: .top
+            ),
+            count: Int(NativeSearchGridMetrics.gridColumnCount)
+        )
     }
 
     private func updateNativeGridColumnCount(for width: CGFloat) {
@@ -859,6 +883,7 @@ struct NativeSearchGridKeyboardHost: View {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .searchable(text: $text, prompt: prompt)
+                .autocorrectionDisabled()
                 #if os(tvOS)
                 .toolbar(.hidden, for: .navigationBar)
                 .toolbar(.hidden, for: .tabBar)
