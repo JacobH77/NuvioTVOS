@@ -3021,7 +3021,6 @@ private struct TVMainTabView: View {
             NativeSearchView(
                 viewModel: searchViewModel,
                 showDiscover: discoverLocation == "Search",
-                forcedLayoutMode: .linear,
                 isFullScreenOverlayPresented: isFullScreenOverlayPresented,
                 detailsDidDisappearGeneration: detailsDidDisappearGeneration,
                 onContentClick: onNavigateToDetails,
