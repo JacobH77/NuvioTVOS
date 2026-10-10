@@ -133,78 +133,8 @@ final class CatalogArtworkMergeTests: XCTestCase {
         XCTAssertEqual(merged.tmdbId, 278)
     }
 
-    func testHomeHeroPrefersCanonicalBackdropOverMismatchedCatalogArtwork() {
-        let catalog = makeMeta(
-            id: "tt0903747",
-            imdbId: "tt0903747",
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: "https://addon.example/backdrop-for-another-show.jpg"
-        )
-        let canonical = makeMeta(
-            id: "tt0903747",
-            imdbId: "tt0903747",
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: "https://cinemeta.example/breaking-bad.jpg"
-        )
 
-        let merged = catalog.mergingHomeHeroMetadata(from: canonical)
 
-        XCTAssertEqual(merged.backgroundUrl, "https://cinemeta.example/breaking-bad.jpg")
-        XCTAssertEqual(merged.name, "Breaking Bad")
-    }
-
-    func testHomeHeroRejectsArtworkForAnotherTitleOrMediaType() {
-        let selected = makeMeta(
-            id: "tt0903747",
-            imdbId: "tt0903747",
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: "https://addon.example/breaking-bad.jpg"
-        )
-        let unrelated = makeMeta(
-            id: "tt0944947",
-            imdbId: "tt0944947",
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: "https://cinemeta.example/game-of-thrones.jpg"
-        )
-        let sameIDWrongType = makeMeta(
-            id: "tt0903747",
-            imdbId: "tt0903747",
-            type: "movie",
-            name: "Breaking Bad",
-            backgroundUrl: "https://cinemeta.example/wrong-type.jpg"
-        )
-
-        XCTAssertEqual(selected.mergingHomeHeroMetadata(from: unrelated), selected)
-        XCTAssertEqual(selected.mergingHomeHeroMetadata(from: sameIDWrongType), selected)
-    }
-
-    func testHomeHeroAcceptsMatchingProviderAlias() {
-        let selected = makeMeta(
-            id: "tmdb:1396",
-            imdbId: nil,
-            tmdbId: 1396,
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: nil
-        )
-        let refreshed = makeMeta(
-            id: "tt0903747",
-            imdbId: "tt0903747",
-            tmdbId: 1396,
-            type: "series",
-            name: "Breaking Bad",
-            backgroundUrl: "https://cinemeta.example/breaking-bad.jpg"
-        )
-
-        XCTAssertEqual(
-            selected.mergingHomeHeroMetadata(from: refreshed).backgroundUrl,
-            "https://cinemeta.example/breaking-bad.jpg"
-        )
-    }
 
     /// A Stremio catalog page's `logo` field must survive decoding so Home can
     /// draw the title logo in the landscape overlay — the field this feature

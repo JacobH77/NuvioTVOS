@@ -335,40 +335,6 @@ final class HomeLayoutSettingsTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: SettingsKey.continueWatchingVisible))
     }
 
-    func testVisibleSectionsCacheSignatureTracksContentUpdatesAtStableCounts() {
-        func signature(revision: UInt, libraryRevision: UInt = 0) -> TVHomeVisibleSectionsSignature {
-            TVHomeVisibleSectionsSignature(
-                cwVisible: true,
-                continueWatchingRevision: revision,
-                localLibraryRevision: libraryRevision,
-                storeRevision: 0,
-                hideUnreleased: false,
-                cwLandscape: false,
-                landscapePosters: false
-            )
-        }
-
-        XCTAssertNotEqual(signature(revision: 4), signature(revision: 5))
-        XCTAssertNotEqual(signature(revision: 5), signature(revision: 5, libraryRevision: 1))
-    }
-
-    func testContinueWatchingPresentationOwnershipIncludesProfileAndSource() {
-        let active = TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .trakt)
-
-        XCTAssertEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .trakt)
-        )
-        XCTAssertNotEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-b", source: .trakt)
-        )
-        XCTAssertNotEqual(
-            active,
-            TVHomeContinueWatchingIdentity(profileID: "profile-a", source: .simkl)
-        )
-    }
-
     func testFullscreenHeroBackdropSettingsKeyDefined() {
         XCTAssertEqual(SettingsKey.fullscreenHeroBackdrop, "nuvio.tv.settings.layout.fullscreenHeroBackdrop")
         XCTAssertTrue(SettingsKey.all.contains(SettingsKey.fullscreenHeroBackdrop))

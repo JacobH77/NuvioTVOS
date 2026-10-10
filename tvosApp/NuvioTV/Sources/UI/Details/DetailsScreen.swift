@@ -3614,40 +3614,19 @@ private struct TvDetailsBackdrop: View {
 
     var body: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
-        let posterURL = meta.posterUrl.flatMap { value -> URL? in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : URL(string: trimmed)
-        }
-        let backgroundURL = meta.backgroundUrl.flatMap { value -> URL? in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : URL(string: trimmed)
-        }
-        let primaryURL = backgroundURL ?? posterURL
 
         ZStack {
-            if let url = primaryURL {
+            if let imageUrl = meta.backgroundUrl ?? meta.posterUrl,
+               let url = URL(string: imageUrl.trimmingCharacters(in: .whitespacesAndNewlines)) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()
                             .scaledToFill()
-                    } else if case .failure = phase,
-                              let posterURL,
-                              posterURL != url {
-                        AsyncImage(url: posterURL) { posterPhase in
-                            if case .success(let image) = posterPhase {
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                backdropColor
-                            }
-                        }
                     } else {
                         backdropColor
                     }
                 }
-                .id("\(meta.type.lowercased()):\(meta.id)|\(url.absoluteString)")
                 .blur(radius: blurRadius, opaque: true)
                 .animation(.easeInOut(duration: 0.35), value: blurRadius)
                 .ignoresSafeArea()

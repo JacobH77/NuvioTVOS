@@ -883,24 +883,11 @@ struct TVHomeSeeAllCard: View {
     var onBlur: (() -> Void)? = nil
     let action: () -> Void
 
-    @FocusState private var localFocusRequested: Bool
-    @State private var nativeFocusIsActive = false
+    @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-
-    private var isFocused: Bool {
-        externalFocus == nil ? localFocusRequested : nativeFocusIsActive
-    }
-
-    private func requestFocus() {
-        if let externalFocus {
-            externalFocus.wrappedValue = externalFocusValue
-        } else {
-            localFocusRequested = true
-        }
-    }
 
     private var showsFocusedAppearance: Bool { isFocused || retainFocusAppearance }
 
@@ -942,27 +929,23 @@ struct TVHomeSeeAllCard: View {
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1)
         }
         .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
-            nativeFocusIsActive = focused
             if focused { onFocus() } else { onBlur?() }
         }))
-        .modifier(ExternalFocusBinding(
-            binding: externalFocus,
-            id: externalFocusValue,
-            localBinding: $localFocusRequested
-        ))
+        .focused($isFocused)
+        .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue))
         .focusEffectDisabledIfAvailable()
         .onAppear {
             guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
             didRequestInitialFocus = true
             onInitialFocusRequested?()
-            DispatchQueue.main.async { requestFocus() }
+            DispatchQueue.main.async { isFocused = true }
         }
         .onChange(of: shouldRequestInitialFocus) { _, shouldRequest in
             if shouldRequest {
                 guard !didRequestInitialFocus else { return }
                 didRequestInitialFocus = true
                 onInitialFocusRequested?()
-                DispatchQueue.main.async { requestFocus() }
+                DispatchQueue.main.async { isFocused = true }
             } else {
                 didRequestInitialFocus = false
             }
@@ -1463,24 +1446,9 @@ struct TVCollectionFolderCard: View {
     var onMove: ((MoveCommandDirection) -> Void)? = nil
     let onSelect: () -> Void
 
-    @FocusState private var localFocusRequested: Bool
-    @State private var nativeFocusIsActive = false
+    @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-
-    private var isFocused: Bool {
-        externalFocus == nil ? localFocusRequested : nativeFocusIsActive
-    }
-
-    private var focusIdentity: String { externalFocusValue ?? folder.id }
-
-    private func requestFocus() {
-        if let externalFocus {
-            externalFocus.wrappedValue = focusIdentity
-        } else {
-            localFocusRequested = true
-        }
-    }
 
     private var showFocus: Bool { isFocused || retainFocusAppearance }
 
@@ -1569,31 +1537,19 @@ struct TVCollectionFolderCard: View {
                 cardContent
             }
             .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
-                nativeFocusIsActive = focused
                 if focused { onFocus?() } else { onBlur?() }
             }))
             .disabled(!allowsFocus)
-            .modifier(ExternalFocusBinding(
-                binding: externalFocus,
-                id: focusIdentity,
-                localBinding: $localFocusRequested
-            ))
+            .focused($isFocused)
+            .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? folder.id))
             .focusEffectDisabledIfAvailable()
             .modifier(OptionalMoveCommandHandler(handler: onMove))
             .onAppear {
                 guard shouldRequestInitialFocus, !didRequestInitialFocus else { return }
                 didRequestInitialFocus = true
                 onInitialFocusRequested?()
-                DispatchQueue.main.async { requestFocus() }
-            }
-            .onChange(of: shouldRequestInitialFocus) { _, shouldRequest in
-                if shouldRequest {
-                    guard !didRequestInitialFocus else { return }
-                    didRequestInitialFocus = true
-                    onInitialFocusRequested?()
-                    DispatchQueue.main.async { requestFocus() }
-                } else {
-                    didRequestInitialFocus = false
+                DispatchQueue.main.async {
+                    isFocused = true
                 }
             }
             .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
