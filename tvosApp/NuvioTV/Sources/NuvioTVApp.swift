@@ -3660,292 +3660,10 @@ struct TVHomeView: View {
     var body: some View {
         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
         ZStack(alignment: .topLeading) {
-            // Keep TVHomeView mounted in TabView across tab switches so that
-            // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
-            // 1. Bottom Layer: Crossfading Backdrop
-            // When fullscreenHeroBackdrop is true: full bleed backdrop across entire screen.
-            // When fullscreenHeroBackdrop is false: contained top-right hero art with soft dissolve masks.
-            let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
-            GeometryReader { proxy in
-                if fullscreenHeroBackdrop {
-                    CrossfadingBackdrop(
-                        url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
-                        placeholder: backdropColor,
-                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center
-                    )
-                    .equatable()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
-                } else {
-                    let backdropWidth = proxy.size.width * 0.65
-                    let backdropHeight: CGFloat = homeLayout == "Compact" ? 440 : 560
-                    ZStack(alignment: .topTrailing) {
-                        backdropColor
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        CrossfadingBackdrop(
-                            url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
-                            placeholder: backdropColor,
-                            alignment: .topTrailing
-                        )
-                        .equatable()
-                        .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
-                        .mask(
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .clear, location: 0),
-                                    .init(color: .black.opacity(0.30), location: 0.28),
-                                    .init(color: .black, location: 0.65)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .mask(
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .black, location: 0),
-                                    .init(color: .black, location: 0.48),
-                                    .init(color: .black.opacity(0.40), location: 0.78),
-                                    .init(color: .clear, location: 1.0)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .clipped()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                }
-            }
-            .ignoresSafeArea()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            // 2. Gradients overlay for backdrop blending and readability (Fullscreen mode)
-            if fullscreenHeroBackdrop {
-                GeometryReader { proxy in
-                    LinearGradient(
-                        stops: [
-                            .init(color: backdropColor.opacity(0.96), location: 0),
-                            .init(color: backdropColor.opacity(0.85), location: 0.22),
-                            .init(color: backdropColor.opacity(0.52), location: 0.46),
-                            .init(color: backdropColor.opacity(0.14), location: 0.76),
-                            .init(color: .clear, location: 1)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: proxy.size.width * 0.58, height: proxy.size.height)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-                .ignoresSafeArea()
-
-                GeometryReader { proxy in
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: backdropColor.opacity(0.20), location: 0.42),
-                                .init(color: backdropColor.opacity(0.58), location: 0.78),
-                                .init(color: backdropColor, location: 1)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: proxy.size.height * 0.40)
-                    }
-                }
-                .ignoresSafeArea()
-            }
-
-            // 3. Scrollable catalog rows overlay, with pinned Hero at the top
-            VStack(alignment: .leading, spacing: 0) {
-                if showsLoading {
-                    TVLoadingView()
-                        .overlay {
-                            Color.clear
-                                .frame(width: 1, height: 1)
-                                .focusable(true)
-                                .focused($isLoadingFocusActive)
-                        }
-                        // Match Settings: make the content a focus section with
-                        // an explicit default target during the initial focus
-                        // pass. The async write below remains a fallback.
-                        .focusSection()
-                        .defaultFocusIfAvailable($isLoadingFocusActive, true)
-                        .onAppear {
-                            requestLoadingFocus()
-                        }
-                } else if let errorMessage, profileGateStartupFocusTarget == nil {
-                    TVErrorView(message: errorMessage) {
-                        homeReloadTask?.cancel()
-                        homeReloadTask = Task { @MainActor in
-                            await loadWithAutomaticRetry(for: contentIdentity)
-                        }
-                    }
-                } else {
-                    // Header Hero Meta block (static, outside the rows). Folder
-                    // focus swaps poster meta for emoji + folder title (browse-style).
-                    if heroEnabled && homeLayout != "Grid View" {
-                        if let folder = focusedCollectionFolder {
-                            TVCollectionFolderHeroView(
-                                folder: folder,
-                                sectionTitle: heroCollectionSection?.title
-                            )
-                            .equatable()
-                        } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
-                            let catalogSection = heroCatalogSection
-                            TVHeroView(
-                                meta: heroMeta,
-                                continueItem: heroContinueItem(for: heroMeta),
-                                catalogTitle: catalogSection?.title,
-                                catalogAddonName: catalogSection?.addonName,
-                                showsCatalogAddonName: catalogAddonNames
-                            ) {
-                                navigateToDetailsFromHome(id: heroMeta.id, type: heroMeta.type)
-                            }
-                            .equatable()
-                        }
-                    }
-                    
-                    // Android uses a LazyColumn of LazyRows: only viewport rows
-                    // and cards own render work. Keep the vertical Home strip
-                    // lazy as well; rows retain their horizontal position in
-                    // `rowScrollStore` while focused-row shells preserve focus.
-                    GeometryReader { proxy in
-                        let sections = visibleSections
-                        let horizontalEdgeInset = max(
-                            0,
-                            (UIScreen.main.bounds.width - proxy.size.width) / 2
-                        )
-                        if homeLayout == "Grid View" {
-                            // Grid Home has no row strip to hold open, so a
-                            // skeleton there would just be an empty heading.
-                            // This proxy is laid out inside the horizontal safe
-                            // area, so hand the grid the inset it has to cancel
-                            // out for a hero that reaches the screen edges.
-                            homeGrid(
-                                sections: sections.filter { !$0.isLoadingPlaceholder },
-                                heroBleed: horizontalEdgeInset
-                            )
-                        } else {
-                            // Native lazy vertical scrolling for the rows. The
-                            // focused row ±2 window controls real card/artwork
-                            // materialization; lazy mounting limits row work
-                            // outside the viewport without changing row geometry.
-                            ScrollViewReader { verticalScrollProxy in
-                                ScrollView(.vertical, showsIndicators: false) {
-                                    VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
-                                        if sessionNeedsReauthentication && !isBannerDismissed {
-                                            TVReauthBannerView(
-                                                onSignIn: onRequestReauth,
-                                                onDismiss: {
-                                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                                        isBannerDismissed = true
-                                                    }
-                                                }
-                                            )
-                                            .padding(.horizontal, horizontalEdgeInset)
-                                        }
-
-                                        ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                                            let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
-                                            if isNearFocusedRow {
-                                                homeSectionRow(
-                                                    index: index,
-                                                    section: section,
-                                                    horizontalEdgeInset: horizontalEdgeInset,
-                                                    verticalScrollProxy: verticalScrollProxy
-                                                )
-                                            } else {
-                                                Color.clear
-                                                    .frame(
-                                                        height: estimatedHeight(for: section),
-                                                        alignment: .topLeading
-                                                    )
-                                                    .id(section.id)
-                                                    .accessibilityHidden(true)
-                                            }
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, TVHomeLayout.rowsTopPadding)
-                                    .padding(.bottom, 80)
-                                    #if os(tvOS)
-                                    // Place the configurator inside the scroll content so its
-                                    // ancestor is the UIScrollView that owns the row offset.
-                                    .background(TVScrollViewFocusConfigurator())
-                                    #endif
-                                    .onAppear {
-                                        prepareInitialFocusViewport(
-                                            for: sections,
-                                            using: verticalScrollProxy
-                                        )
-                                    }
-                                    .onChange(of: initialFocusContentSignature) { _, _ in
-                                        prepareInitialFocusViewport(
-                                            for: sections,
-                                            using: verticalScrollProxy
-                                        )
-                                    }
-                                    .onChange(of: isActive) { _, active in
-                                        if active {
-                                            prepareInitialFocusViewport(
-                                                for: sections,
-                                                using: verticalScrollProxy
-                                            )
-                                        }
-                                    }
-                                    .task(id: profileGateFocusRequestSignature) {
-                                        await maintainProfileGateFocus(
-                                            for: sections,
-                                            using: verticalScrollProxy
-                                        )
-                                    }
-                                    .onChange(of: scrollToTopGeneration) { _, _ in
-                                        let animation = (isFastScrolling || fastNavigation)
-                                            ? TVHomeLayout.fastVerticalScrollAnimation
-                                            : TVHomeLayout.verticalScrollAnimation
-                                        withAnimation(animation) {
-                                            let targetId = targetScrollToTopSectionId ?? firstFocusableSectionId
-                                            if let targetId {
-                                                verticalScrollProxy.scrollTo(targetId, anchor: .top)
-                                            }
-                                        }
-                                    }
-
-                                    // The final row otherwise hits the
-                                    // ScrollView's bottom limit before it can
-                                    // reach the same fixed position as the
-                                    // preceding rows. Keep a full viewport of
-                                    // non-focusable runway, plus the 24pt
-                                    // design inset, after the last catalog.
-                                    Color.clear
-                                        .frame(height: proxy.size.height + TVHomeLayout.finalRowScrollRunway)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .focusSection()
-                    .defaultFocusIfAvailable($focusedCardID, initialDefaultFocusCardID)
-                }
-            }
-            // Ignore the bottom safe-area inset too, so the scrolling rows window
-            // runs to the screen's bottom edge instead of stopping short and
-            // leaving a black bar below the lowest visible row.
-            .ignoresSafeArea(.container, edges: [.top, .bottom])
-
-            if let report = simklLoadingDebugInfo, !report.isEmpty {
-                SimklHomeLoadingDebugReport(report: report)
-                    .frame(maxWidth: 920)
-                    .padding(.horizontal, 48)
-                    .padding(.top, 48)
-                    .zIndex(20)
-                    .allowsHitTesting(false)
-            }
+            homeBackdropLayer
+            homeBackdropGradients
+            homeCatalogContent
+            homeDebugOverlay
         }
         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
             let isLoaded = store.isLoaded(for: contentIdentity)
@@ -4382,6 +4100,309 @@ struct TVHomeView: View {
         finishSimklHomeLoadingDiagnostic()
         continueWatchingRefreshGeneration &+= 1
     }
+
+    private var homeBackdropColor: Color {
+        Color.nuvioBackground(amoled: amoled, body: bodyColor)
+    }
+
+    private var homeBackdropLayer: some View {
+            // Keep TVHomeView mounted in TabView across tab switches so that
+            // tab transitions are instantaneous (0ms) and focus/scroll state is preserved.
+            // 1. Bottom Layer: Crossfading Backdrop
+            // When fullscreenHeroBackdrop is true: full bleed backdrop across entire screen.
+            // When fullscreenHeroBackdrop is false: contained top-right hero art with soft dissolve masks.
+            GeometryReader { proxy in
+                if fullscreenHeroBackdrop {
+                    CrossfadingBackdrop(
+                        url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
+                        placeholder: homeBackdropColor,
+                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center
+                    )
+                    .equatable()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+                } else {
+                    let backdropWidth = proxy.size.width * 0.65
+                    let backdropHeight: CGFloat = homeLayout == "Compact" ? 440 : 560
+                    ZStack(alignment: .topTrailing) {
+                        homeBackdropColor
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        CrossfadingBackdrop(
+                            url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
+                            placeholder: homeBackdropColor,
+                            alignment: .topTrailing
+                        )
+                        .equatable()
+                        .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: 0),
+                                    .init(color: .black.opacity(0.30), location: 0.28),
+                                    .init(color: .black, location: 0.65)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0),
+                                    .init(color: .black, location: 0.48),
+                                    .init(color: .black.opacity(0.40), location: 0.78),
+                                    .init(color: .clear, location: 1.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .clipped()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                }
+            }
+            .ignoresSafeArea()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+    }
+
+    @ViewBuilder
+    private var homeBackdropGradients: some View {
+            // 2. Gradients overlay for backdrop blending and readability (Fullscreen mode)
+            if fullscreenHeroBackdrop {
+                GeometryReader { proxy in
+                    LinearGradient(
+                        stops: [
+                            .init(color: homeBackdropColor.opacity(0.96), location: 0),
+                            .init(color: homeBackdropColor.opacity(0.85), location: 0.22),
+                            .init(color: homeBackdropColor.opacity(0.52), location: 0.46),
+                            .init(color: homeBackdropColor.opacity(0.14), location: 0.76),
+                            .init(color: .clear, location: 1)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: proxy.size.width * 0.58, height: proxy.size.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .ignoresSafeArea()
+
+                GeometryReader { proxy in
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: homeBackdropColor.opacity(0.20), location: 0.42),
+                                .init(color: homeBackdropColor.opacity(0.58), location: 0.78),
+                                .init(color: homeBackdropColor, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: proxy.size.height * 0.40)
+                    }
+                }
+                .ignoresSafeArea()
+            }
+
+    }
+
+    @ViewBuilder
+    private var homeCatalogContent: some View {
+            // 3. Scrollable catalog rows overlay, with pinned Hero at the top
+            VStack(alignment: .leading, spacing: 0) {
+                if showsLoading {
+                    TVLoadingView()
+                        .overlay {
+                            Color.clear
+                                .frame(width: 1, height: 1)
+                                .focusable(true)
+                                .focused($isLoadingFocusActive)
+                        }
+                        // Match Settings: make the content a focus section with
+                        // an explicit default target during the initial focus
+                        // pass. The async write below remains a fallback.
+                        .focusSection()
+                        .defaultFocusIfAvailable($isLoadingFocusActive, true)
+                        .onAppear {
+                            requestLoadingFocus()
+                        }
+                } else if let errorMessage, profileGateStartupFocusTarget == nil {
+                    TVErrorView(message: errorMessage) {
+                        homeReloadTask?.cancel()
+                        homeReloadTask = Task { @MainActor in
+                            await loadWithAutomaticRetry(for: contentIdentity)
+                        }
+                    }
+                } else {
+                    // Header Hero Meta block (static, outside the rows). Folder
+                    // focus swaps poster meta for emoji + folder title (browse-style).
+                    if heroEnabled && homeLayout != "Grid View" {
+                        if let folder = focusedCollectionFolder {
+                            TVCollectionFolderHeroView(
+                                folder: folder,
+                                sectionTitle: heroCollectionSection?.title
+                            )
+                            .equatable()
+                        } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
+                            let catalogSection = heroCatalogSection
+                            TVHeroView(
+                                meta: heroMeta,
+                                continueItem: heroContinueItem(for: heroMeta),
+                                catalogTitle: catalogSection?.title,
+                                catalogAddonName: catalogSection?.addonName,
+                                showsCatalogAddonName: catalogAddonNames
+                            ) {
+                                navigateToDetailsFromHome(id: heroMeta.id, type: heroMeta.type)
+                            }
+                            .equatable()
+                        }
+                    }
+                    
+                    // Android uses a LazyColumn of LazyRows: only viewport rows
+                    // and cards own render work. Keep the vertical Home strip
+                    // lazy as well; rows retain their horizontal position in
+                    // `rowScrollStore` while focused-row shells preserve focus.
+                    GeometryReader { proxy in
+                        let sections = visibleSections
+                        let horizontalEdgeInset = max(
+                            0,
+                            (UIScreen.main.bounds.width - proxy.size.width) / 2
+                        )
+                        if homeLayout == "Grid View" {
+                            // Grid Home has no row strip to hold open, so a
+                            // skeleton there would just be an empty heading.
+                            // This proxy is laid out inside the horizontal safe
+                            // area, so hand the grid the inset it has to cancel
+                            // out for a hero that reaches the screen edges.
+                            homeGrid(
+                                sections: sections.filter { !$0.isLoadingPlaceholder },
+                                heroBleed: horizontalEdgeInset
+                            )
+                        } else {
+                            // Native lazy vertical scrolling for the rows. The
+                            // focused row ±2 window controls real card/artwork
+                            // materialization; lazy mounting limits row work
+                            // outside the viewport without changing row geometry.
+                            ScrollViewReader { verticalScrollProxy in
+                                ScrollView(.vertical, showsIndicators: false) {
+                                    VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
+                                        if sessionNeedsReauthentication && !isBannerDismissed {
+                                            TVReauthBannerView(
+                                                onSignIn: onRequestReauth,
+                                                onDismiss: {
+                                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                                        isBannerDismissed = true
+                                                    }
+                                                }
+                                            )
+                                            .padding(.horizontal, horizontalEdgeInset)
+                                        }
+
+                                        ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                                            let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
+                                            if isNearFocusedRow {
+                                                homeSectionRow(
+                                                    index: index,
+                                                    section: section,
+                                                    horizontalEdgeInset: horizontalEdgeInset,
+                                                    verticalScrollProxy: verticalScrollProxy
+                                                )
+                                            } else {
+                                                Color.clear
+                                                    .frame(
+                                                        height: estimatedHeight(for: section),
+                                                        alignment: .topLeading
+                                                    )
+                                                    .id(section.id)
+                                                    .accessibilityHidden(true)
+                                            }
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, TVHomeLayout.rowsTopPadding)
+                                    .padding(.bottom, 80)
+                                    #if os(tvOS)
+                                    // Place the configurator inside the scroll content so its
+                                    // ancestor is the UIScrollView that owns the row offset.
+                                    .background(TVScrollViewFocusConfigurator())
+                                    #endif
+                                    .onAppear {
+                                        prepareInitialFocusViewport(
+                                            for: sections,
+                                            using: verticalScrollProxy
+                                        )
+                                    }
+                                    .onChange(of: initialFocusContentSignature) { _, _ in
+                                        prepareInitialFocusViewport(
+                                            for: sections,
+                                            using: verticalScrollProxy
+                                        )
+                                    }
+                                    .onChange(of: isActive) { _, active in
+                                        if active {
+                                            prepareInitialFocusViewport(
+                                                for: sections,
+                                                using: verticalScrollProxy
+                                            )
+                                        }
+                                    }
+                                    .task(id: profileGateFocusRequestSignature) {
+                                        await maintainProfileGateFocus(
+                                            for: sections,
+                                            using: verticalScrollProxy
+                                        )
+                                    }
+                                    .onChange(of: scrollToTopGeneration) { _, _ in
+                                        let animation = (isFastScrolling || fastNavigation)
+                                            ? TVHomeLayout.fastVerticalScrollAnimation
+                                            : TVHomeLayout.verticalScrollAnimation
+                                        withAnimation(animation) {
+                                            let targetId = targetScrollToTopSectionId ?? firstFocusableSectionId
+                                            if let targetId {
+                                                verticalScrollProxy.scrollTo(targetId, anchor: .top)
+                                            }
+                                        }
+                                    }
+
+                                    // The final row otherwise hits the
+                                    // ScrollView's bottom limit before it can
+                                    // reach the same fixed position as the
+                                    // preceding rows. Keep a full viewport of
+                                    // non-focusable runway, plus the 24pt
+                                    // design inset, after the last catalog.
+                                    Color.clear
+                                        .frame(height: proxy.size.height + TVHomeLayout.finalRowScrollRunway)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .focusSection()
+                    .defaultFocusIfAvailable($focusedCardID, initialDefaultFocusCardID)
+                }
+            }
+            // Ignore the bottom safe-area inset too, so the scrolling rows window
+            // runs to the screen's bottom edge instead of stopping short and
+            // leaving a black bar below the lowest visible row.
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
+
+    }
+
+    @ViewBuilder
+    private var homeDebugOverlay: some View {
+            if let report = simklLoadingDebugInfo, !report.isEmpty {
+                SimklHomeLoadingDebugReport(report: report)
+                    .frame(maxWidth: 920)
+                    .padding(.horizontal, 48)
+                    .padding(.top, 48)
+                    .zIndex(20)
+                    .allowsHitTesting(false)
+            }    }
 
     /// - Parameter heroBleed: Horizontal safe-area inset this grid sits inside.
     ///   The scroll view gives it back so the hero backdrop runs to the physical
