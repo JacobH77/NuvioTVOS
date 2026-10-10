@@ -303,6 +303,58 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
         return !hasRuntime || (isSeries && !hasStatus) || !hasLogo || !hasBackdrop
     }
 
+    /// Search records also need both external identifiers so watched-state
+    /// matching can resolve the same title as Discovery.
+    var needsSearchMetadataEnrichment: Bool {
+        needsHeroMetadataEnrichment
+            || trimmedNonEmpty(imdbId) == nil
+            || tmdbId == nil
+    }
+
+    /// Merges a refreshed `/meta` record into this catalog card. Catalog values
+    /// win wherever they are present — so a source-provided logo is never
+    /// replaced by a TMDB one — while missing or blank artwork (poster,
+    /// backdrop, title logo), IMDb/TMDB ids, missing year, runtime, and status
+    /// are filled from the full record. The refreshed record itself only
+    /// carries TMDB artwork when that integration/artwork option is enabled, so
+    /// a disabled TMDB can never inject or suppress logos here.
+    func fillingMissingHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
+        let resolvedPoster = trimmedNonEmpty(posterUrl) ?? fullMeta.posterUrl
+        let resolvedBackground = trimmedNonEmpty(backgroundUrl) ?? fullMeta.backgroundUrl
+        let resolvedLogo = trimmedNonEmpty(logoUrl) ?? fullMeta.logoUrl
+        let resolvedRuntime = trimmedNonEmpty(runtime) ?? fullMeta.runtime
+        let resolvedStatus = trimmedNonEmpty(status) ?? fullMeta.status
+
+        return NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: resolvedPoster,
+            backgroundUrl: resolvedBackground,
+            logoUrl: resolvedLogo,
+            imdbId: imdbId ?? fullMeta.imdbId,
+            tmdbId: tmdbId ?? fullMeta.tmdbId,
+            type: type,
+            year: year ?? fullMeta.year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: resolvedRuntime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification ?? fullMeta.certification,
+            country: country ?? fullMeta.country,
+            language: language ?? fullMeta.language,
+            released: released ?? fullMeta.released,
+            status: resolvedStatus,
+            videos: videos,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings,
+            posterShape: posterShape ?? fullMeta.posterShape
+        )
+    }
+
     /// Search-specific merge for a compact result and its refreshed `/meta`
     /// record. Search artwork can be stale even when it is present, so the
     /// refreshed poster, backdrop, and logo win; compact artwork is used only
