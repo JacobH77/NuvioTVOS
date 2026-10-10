@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - NuvioTVOS-preferences.patch
+      - tvosApp/NuvioTV/Sources/NuvioTVApp.swift
       - .github/workflows/build-custom-ipa.yml
 
 permissions:
