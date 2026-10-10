@@ -133,9 +133,6 @@ final class CatalogArtworkMergeTests: XCTestCase {
         XCTAssertEqual(merged.tmdbId, 278)
     }
 
-
-
-
     /// A Stremio catalog page's `logo` field must survive decoding so Home can
     /// draw the title logo in the landscape overlay — the field this feature
     /// depends on after the merge above fills it in.
@@ -332,7 +329,7 @@ final class CatalogArtworkMergeTests: XCTestCase {
     private func makeMeta(
         id: String,
         imdbId: String?,
-        tmdbId: Int? = nil,
+        tmdbId: Int?,
         type: String = "series",
         name: String = "Test Title",
         year: Int? = nil,
